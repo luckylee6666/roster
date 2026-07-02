@@ -602,6 +602,9 @@ pub struct TermTheme {
     /// 点击迸出爱心/花瓣特效
     #[serde(default)]
     pub click_fx: bool,
+    /// 菜单缩略图标路径（""=菜单用背景图缩略图兜底）。预装樱花靠它保留专属花朵图标。
+    #[serde(default)]
+    pub icon: String,
     #[serde(default)]
     pub created_at: String,
 }

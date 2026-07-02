@@ -1436,11 +1436,13 @@ const TERM_THEMES = {
   // 上一版原色（深蓝灰底）
   'classic': {
     name: '默认深色',
+    icon: 'assets/theme-icon-classic.png',
     theme: { background: '#14171e', foreground: '#e6eaf2', cursor: '#1677ff' },
   },
   // macOS 终端 Homebrew 描述文件：黑底绿字 + 标准 ANSI 调色板
   'homebrew': {
     name: 'Homebrew',
+    icon: 'assets/theme-icon-homebrew.png',
     theme: {
       background: '#000000', foreground: '#00ff00', cursor: '#23ff18', selectionBackground: '#0860a8',
       black: '#000000', red: '#990000', green: '#00a600', yellow: '#999900',
@@ -1449,9 +1451,12 @@ const TERM_THEMES = {
       brightBlue: '#0000ff', brightMagenta: '#e500e5', brightCyan: '#00e5e5', brightWhite: '#e5e5e5',
     },
   },
-  // 卡哇伊·樱花：半透明莓紫底 + 立绘背景图 + 粉彩 ANSI（背景靠 allowTransparency 透上来）
+  // 卡哇伊·樱花：仅作 DIY 的粉彩 base 调色板保留（hidden：不在主题菜单单列，
+  // 招牌樱花改由 initTermTheme 预装成「可删的自定义主题」，见 SAKURA_PRESET）。
   'sakura': {
     name: '🌸 樱花',
+    icon: 'assets/theme-icon-sakura.png',
+    hidden: true,
     theme: {
       // 底色全透明：带图主题靠 DOM 渲染 + CSS 强制透明，让立绘透上来；文字对比靠 .terminal-bodies 暗化
       background: 'rgba(40, 24, 44, 0)', foreground: '#ffe6f2', cursor: '#ff8fc4',
@@ -1557,9 +1562,30 @@ function applyThemeDef(def) {
   applyTermBackground(def);
 }
 
+// 预装「樱花」主题：招牌卡哇伊立绘,降级成可编辑可删除的自定义主题(不再硬编码内置)。
+// base 仍指向 TERM_THEMES.sakura 的粉彩调色板(hidden 保留),icon 用专属花朵图。
+const SAKURA_PRESET = {
+  id: 'sakura-default', name: '🌸 樱花', base: 'sakura',
+  image: 'builtin:assets/term-bg-kawaii.png', dim: 0.30, tint: '120, 45, 95',
+  clickFx: true, icon: 'assets/theme-icon-sakura.png', createdAt: '',
+};
+
 // 启动：拉自定义主题表 + 恢复上次主题（可能是 custom:*）
 async function initTermTheme() {
   try { termCustomThemes = await invoke('get_term_themes'); } catch (_) { termCustomThemes = []; }
+  // 首次运行预装樱花(可删)。用持久标记判断而非"表为空"——否则用户删掉后每次启动又被种回来。
+  if (!localStorage.getItem('term-sakura-seeded')) {
+    localStorage.setItem('term-sakura-seeded', '1');
+    if (!termCustomThemes.some(t => t.id === SAKURA_PRESET.id)) {
+      termCustomThemes.push({ ...SAKURA_PRESET });
+      try { termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes }); } catch (_) {}
+    }
+    // 老用户此前选中的是内置樱花(已降级)——迁移到预装的自定义樱花,避免菜单里选中项消失
+    if (currentTheme === 'sakura') {
+      currentTheme = 'custom:' + SAKURA_PRESET.id;
+      localStorage.setItem('term-theme', currentTheme);
+    }
+  }
   try { applyThemeDef(await resolveThemeDef(currentTheme)); } catch (_) {}
 }
 
@@ -2537,34 +2563,58 @@ async function setTermTheme(key, persist = true) {
   renderThemeMenu();
 }
 
+const DIY_ICON = 'assets/theme-icon-diy.png'; // 自定义主题无背景图时的兜底图标 + DIY 新建行图标
+
 function renderThemeMenu() {
   termEl.themeMenu.innerHTML = '';
-  const addOpt = (key, name, t, custom) => {
+  // icon: 图标路径（内置主题固定图；自定义主题优先用其背景图缩略图，异步替换）
+  const addOpt = (key, name, icon, custom) => {
     const opt = document.createElement('div');
     opt.className = 'term-theme-opt' + (key === currentTheme ? ' active' : '');
-    // 无完整 ANSI 调色板的主题（如默认深色）回退到 前景/光标 色，色卡不留空
-    const sw = [t.background, t.red || t.foreground, t.green || t.cursor, t.blue || t.cursor, t.yellow || t.foreground];
-    opt.innerHTML =
-      `<span class="term-theme-swatch">` +
-      sw.map(c => `<i style="background:${c}"></i>`).join('') +
-      `</span>` +
-      `<span class="term-theme-label">${esc(name)}</span>` +
-      (custom ? `<span class="term-theme-edit" title="编辑此主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16.9 4.5l2.6 2.6L8 18.6l-3.6 1 1-3.6z"/></svg></span>` : '') +
-      `<svg class="term-theme-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>`;
+    const img = document.createElement('img');
+    img.className = 'term-theme-icon';
+    img.src = icon || DIY_ICON;
+    img.alt = '';
+    const label = document.createElement('span');
+    label.className = 'term-theme-label';
+    label.textContent = name;
+    opt.append(img, label);
+    if (custom) {
+      const edit = document.createElement('span');
+      edit.className = 'term-theme-edit';
+      edit.title = '编辑此主题';
+      edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16.9 4.5l2.6 2.6L8 18.6l-3.6 1 1-3.6z"/></svg>';
+      opt.appendChild(edit);
+    }
+    const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    check.setAttribute('class', 'term-theme-check');
+    check.setAttribute('viewBox', '0 0 24 24');
+    check.innerHTML = '<path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="3"/>';
+    opt.appendChild(check);
     opt.onclick = (e) => {
       if (custom && e.target.closest('.term-theme-edit')) { closeThemeMenu(); openDiyPanel(custom); return; }
       setTermTheme(key); closeThemeMenu();
     };
     termEl.themeMenu.appendChild(opt);
+    // 自定义主题缩略图：显式 icon（预装樱花的花朵图）优先；否则异步用背景图缩略图；
+    // 都没有则保留 DIY 兜底图标。
+    if (custom && !custom.icon && custom.image) {
+      resolveThemeImage(custom.image).then(url => { if (url) img.src = url; }).catch(() => {});
+    }
   };
-  Object.entries(TERM_THEMES).forEach(([key, def]) => addOpt(key, def.name, def.theme, null));
-  termCustomThemes.forEach(t => addOpt('custom:' + t.id, t.name, (TERM_THEMES[t.base] || TERM_THEMES.classic).theme, t));
+  // hidden 的内置项（如 sakura）只作 DIY base 调色板，不在菜单单列
+  Object.entries(TERM_THEMES).forEach(([key, def]) => { if (!def.hidden) addOpt(key, def.name, def.icon, null); });
+  termCustomThemes.forEach(t => addOpt('custom:' + t.id, t.name, t.icon || DIY_ICON, t));
   // ＋ 新建 DIY 主题
   const add = document.createElement('div');
   add.className = 'term-theme-opt term-theme-add';
-  add.innerHTML =
-    `<span class="term-theme-plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m7-7H5"/></svg></span>` +
-    `<span class="term-theme-label">DIY 自定义主题…</span>`;
+  const plus = document.createElement('span');
+  plus.className = 'term-theme-plus';
+  plus.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m7-7H5"/></svg>';
+  const addLabel = document.createElement('span');
+  addLabel.className = 'term-theme-label';
+  addLabel.textContent = 'DIY 自定义主题…';
+  add.append(plus, addLabel);
   add.onclick = () => { closeThemeMenu(); openDiyPanel(null); };
   termEl.themeMenu.appendChild(add);
 }
