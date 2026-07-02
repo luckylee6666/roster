@@ -2,6 +2,42 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.7
+
+### English
+
+**Added**
+- **Terminal DIY theme customizer**: build your own kawaii terminal themes — swap the background art, adjust the dim overlay and tint, toggle click effects (hearts/petals), and save several. The theme menu now shows an illustrated icon per theme (custom themes preview their own background). Stored in `term-themes.json`.
+- **Git branch badge on terminal tabs**: each terminal tab shows the current git branch of its working directory.
+- **Scheduled snippet send**: a snippet can auto-send on a fixed interval.
+
+**Changed**
+- The signature **Sakura** theme is no longer a hard-coded built-in — it now ships as a pre-installed **editable and deletable** custom theme (built-ins are just color palettes now). Delete it and it stays gone.
+- The usage countdown is aligned to the OAuth rate-limit window; the automatic "hello" on window reset was removed.
+
+**Security / Hardened**
+- **Mobile-remote**: the LAN terminal mirror now locks out PIN brute-forcing (exponential backoff after repeated wrong PINs) and compares the PIN in constant time. Closing the panel now **actually stops the server** — it clears the PIN, disconnects connected phones, and stops listening — instead of only hiding the UI while the listener and PIN stayed live for the app's whole lifetime.
+- Fixed a toast-notification HTML-injection path (user-controlled snippet titles are now escaped).
+- Group rename can be abandoned by clicking away (blur cancels instead of committing), since macOS swallows the Esc key.
+- Terminal-theme saves are serialized so concurrent writes can't corrupt `term-themes.json`.
+
+### 中文
+
+**新增**
+- **终端 DIY 主题定制器**：自己捏卡哇伊终端主题——换背景立绘、调遮罩浓度与色调、开关点击特效（爱心/花瓣），可存多套。主题菜单每项改用插画图标（自定义主题预览自己的背景）。数据存 `term-themes.json`。
+- **终端标签 Git 分支徽标**：每个终端标签显示其工作目录当前的 git 分支。
+- **片段定时发送**：片段可按固定间隔自动发送。
+
+**变更**
+- 招牌 **樱花** 主题不再硬编码为内置——改为**预装的可编辑、可删除**自定义主题（内置只保留纯配色方案）。删掉后不会再被种回来。
+- 用量倒计时对齐 OAuth 限流窗口；移除窗口重置后的自动 hello。
+
+**安全 / 加固**
+- **手机远程**：局域网终端镜像现在会对 PIN 暴力枚举做锁定（连续错误后指数退避）并用定长比较。关闭面板现在**真正停止服务**——清空 PIN、断开已连接的手机、停止监听——而非只隐藏界面、让监听端口和 PIN 一直活到应用退出。
+- 修复一处提示消息的 HTML 注入路径（用户可控的片段标题现已转义）。
+- 分组重命名可点击别处放弃（失焦=取消而非提交），因为 macOS 会吞掉 Esc 键。
+- 终端主题保存串行化，并发写入不会损坏 `term-themes.json`。
+
 ## v1.2.6
 
 ### English
