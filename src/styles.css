@@ -1543,6 +1543,10 @@ body {
   background: linear-gradient(180deg, #232936, #1d222c);
   border-bottom: 1px solid #2b313d;
   flex-shrink: 0;
+  /* 抬高整个头栏的层叠上下文：卡哇伊模式的 backdrop-filter 会把主题菜单困在头栏层里，
+     被后面透明的终端区盖住（看得见点不着）——头栏整体压过 main 区的定位元素 */
+  position: relative;
+  z-index: 30;
 }
 
 .terminal-tabs {
@@ -2002,6 +2006,63 @@ body {
   overflow: hidden;
   background: #14171e;
 }
+
+/* 带背景立绘的主题（卡哇伊）：强制 xterm 各层透明，让 .terminal-bodies 上的立绘透上来。
+   仅在 .has-bg 下生效，普通主题不受影响；配合 DOM 渲染（带图主题不挂 WebGL）。 */
+.terminal-bodies.has-bg .term-body .xterm,
+.terminal-bodies.has-bg .term-body .xterm-viewport,
+.terminal-bodies.has-bg .term-body .xterm-screen,
+.terminal-bodies.has-bg .term-body .xterm .xterm-rows {
+  background-color: transparent !important;
+  background: transparent !important;
+}
+
+/* 卡哇伊主题：整张立绘横跨整个 dock（JS 把图铺到 .terminal-dock），头栏/侧栏做成
+   半透明莓紫面板浮在同一张图上 → 一个连续场景，而不是「深色侧栏 + 带图终端」。 */
+.terminal-dock.has-bg {
+  border-top-color: #4d3044;
+  /* 卡哇伊：魔法少女变身棒光标（agy 绘制+绿幕抠图，32px WebKit 上限内，热点=星星尖 12,1）
+     + 圆体软萌字（chrome 用，终端仍等宽对齐） */
+  cursor: url("assets/cursor-wand.png") 12 1, auto;
+  font-family: 'SF Pro Rounded', ui-rounded, 'Hiragino Maru Gothic ProN', 'Yuanti SC', 'PingFang SC', -apple-system, sans-serif;
+}
+/* xterm 自带 cursor:text 会盖掉容器光标，需 !important 压过 */
+.terminal-dock.has-bg .term-body,
+.terminal-dock.has-bg .terminal-bodies,
+.terminal-dock.has-bg .xterm,
+.terminal-dock.has-bg .xterm .xterm-screen {
+  cursor: url("assets/cursor-wand.png") 12 1, text !important;
+}
+.terminal-dock.has-bg .terminal-head {
+  background: rgba(44, 25, 41, 0.55);
+  border-bottom-color: rgba(255, 143, 196, 0.20);
+  backdrop-filter: blur(2px);
+}
+.terminal-dock.has-bg .terminal-main { background: transparent; }
+.terminal-dock.has-bg .terminal-content { background: transparent; }
+.terminal-dock.has-bg .term-tab { border-right-color: rgba(255, 143, 196, 0.16); color: #d9b3cb; }
+.terminal-dock.has-bg .term-tab:hover { background: rgba(255, 143, 196, 0.10); color: #ffe6f2; }
+.terminal-dock.has-bg .term-tab.active {
+  background: rgba(255, 143, 196, 0.14);
+  color: #fff2f9;
+  box-shadow: inset 0 2px 0 #ff8fc4;
+}
+.terminal-dock.has-bg .terminal-tabs::-webkit-scrollbar-thumb { background: #5a3a50; }
+.terminal-dock.has-bg .term-tool-btn { color: #c9a3ba; }
+.terminal-dock.has-bg .term-tool-btn:hover { background: rgba(255, 143, 196, 0.12); color: #ffe6f2; }
+.terminal-dock.has-bg .term-tool-btn.active { background: rgba(255, 143, 196, 0.18); color: #ffdcef; }
+.terminal-dock.has-bg .term-tab-close:hover { background: rgba(255, 143, 196, 0.22); color: #fff2f9; }
+.terminal-dock.has-bg .terminal-tree {
+  background: rgba(30, 17, 28, 0.50);
+  border-right-color: rgba(255, 143, 196, 0.20);
+  backdrop-filter: blur(2px);
+}
+.terminal-dock.has-bg .tree-head { border-bottom-color: rgba(255, 143, 196, 0.18); }
+.terminal-dock.has-bg .tree-root-name { color: #e0bcd2; }
+.terminal-dock.has-bg .tree-head-btn { color: #b98fa8; }
+.terminal-dock.has-bg .tree-head-btn:hover { background: rgba(255, 143, 196, 0.14); color: #fff2f9; }
+.terminal-dock.has-bg .tree-row { color: #d4aec6; }
+.terminal-dock.has-bg .tree-row:hover { background: rgba(255, 143, 196, 0.10); color: #fff2f9; }
 
 /* 片段快捷悬浮面板：浮在终端右下角，卡片单击即注入并回车 */
 .snippet-quick {
@@ -2663,3 +2724,99 @@ body {
 .req-edit-row { display: flex; align-items: center; gap: 8px; }
 .req-edit-row .form-select { width: 130px; flex-shrink: 0; }
 .req-edit-spacer { flex: 1; }
+
+/* ===== 点击特效：爱心/花瓣/星星迸出（clickFx 主题开启时） ===== */
+.term-fx {
+  position: fixed;
+  z-index: 3200;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: term-fx-fly 0.75s ease-out forwards;
+}
+.term-fx svg { width: 100%; height: 100%; display: block; }
+@keyframes term-fx-fly {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  18% { opacity: 1; }
+  100% { opacity: 0; transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1.05) rotate(var(--rot)); }
+}
+
+/* ===== DIY 主题面板：浮在终端 dock 右上，实时预览 ===== */
+.term-diy {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  z-index: 40;
+  width: 320px;
+  padding: 12px 14px;
+  display: none;
+  background: rgba(24, 16, 24, 0.92);
+  border: 1px solid rgba(255, 143, 196, 0.25);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  color: #e8d5e2;
+}
+.term-diy.active { display: block; }
+.term-diy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffd7ea;
+  margin-bottom: 10px;
+}
+.term-diy-x {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; cursor: pointer; color: #b98fa8;
+}
+.term-diy-x:hover { background: rgba(255, 143, 196, 0.15); color: #fff; }
+.term-diy-x svg { width: 13px; height: 13px; }
+.term-diy-row { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; font-size: 12px; }
+.term-diy-row > label { width: 30px; flex-shrink: 0; color: #c9a3ba; }
+.term-diy-input {
+  flex: 1; height: 26px; padding: 0 8px; font-size: 12px; color: #ffe6f2;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 143, 196, 0.25);
+  border-radius: 6px; outline: none;
+}
+.term-diy-input:focus { border-color: #ff8fc4; }
+.term-diy-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.term-diy-chip {
+  padding: 3px 9px; font-size: 11.5px; border-radius: 999px; cursor: pointer;
+  color: #d4aec6; background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 143, 196, 0.18); user-select: none;
+}
+.term-diy-chip:hover { border-color: #ff8fc4; color: #ffe6f2; }
+.term-diy-chip.on { background: rgba(255, 143, 196, 0.20); border-color: #ff8fc4; color: #fff2f9; }
+.term-diy-swatches { display: flex; gap: 7px; }
+.term-diy-swatch {
+  width: 20px; height: 20px; border-radius: 6px; cursor: pointer;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+.term-diy-swatch.on { border-color: #ff8fc4; }
+.term-diy-row input[type="range"] { flex: 1; accent-color: #ff8fc4; }
+.term-diy-dimval { width: 34px; text-align: right; color: #ffd7ea; font-size: 11.5px; }
+.term-diy-fx {
+  display: flex; align-items: center; gap: 6px;
+  color: #d4aec6; cursor: pointer; font-size: 12px;
+  /* 覆盖 .term-diy-row > label 的 30px 定宽（此开关自身也是 label，被误伤成一字一行） */
+  width: auto; flex: 1; white-space: nowrap;
+}
+.term-diy-fx input { accent-color: #ff8fc4; }
+.term-diy-btns { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.term-diy-spacer { flex: 1; }
+
+/* 主题菜单：自定义主题的编辑铅笔 + 「＋DIY」行 */
+.term-theme-edit {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 5px;
+  color: var(--text-3); opacity: 0; flex-shrink: 0;
+}
+.term-theme-opt:hover .term-theme-edit { opacity: 1; }
+.term-theme-edit:hover { background: rgba(255, 143, 196, 0.2); color: #ff8fc4; }
+.term-theme-edit svg { width: 12px; height: 12px; }
+.term-theme-plus { display: inline-flex; width: 40px; justify-content: center; color: var(--text-3); flex-shrink: 0; }
+.term-theme-plus svg { width: 14px; height: 14px; }

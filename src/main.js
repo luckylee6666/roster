@@ -103,6 +103,7 @@ const el = {
 async function init() {
   await load();
   bind();
+  await initTermTheme(); // 自定义主题表 + 恢复上次主题（可能是 custom:*），先于会话还原
   bindUsageEvents();
   maybeRestoreSessions();
 }
@@ -228,7 +229,9 @@ function renderGroups() {
   });
 }
 
-// 分组就地重命名：把名字 span 换成输入框，回车提交 / Esc 取消（WKWebView 无原生 prompt）
+// 分组就地重命名：把名字 span 换成输入框，回车提交 / 点击外部或 Esc 取消（WKWebView 无原生 prompt）。
+// 注意：macOS WKWebView 会在系统层吞掉 Esc，JS 永远收不到，所以不能把它当唯一取消路径——
+// 失焦（点击外部）也必须走取消，否则用户在 Esc 失效的平台上根本没法放弃一次误改。
 function startRenameGroup(groupItemEl, oldName) {
   const nameSpan = groupItemEl.querySelector(':scope > .menu-item > .group-name');
   if (!nameSpan) return;
@@ -263,7 +266,7 @@ function startRenameGroup(groupItemEl, oldName) {
     if (e.key === 'Enter') { e.preventDefault(); finish(true); }
     else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
   };
-  const onBlur = () => finish(true);
+  const onBlur = () => finish(false);
   input.addEventListener('keydown', onKey);
   input.addEventListener('blur', onBlur);
   input.addEventListener('click', e => e.stopPropagation());
@@ -564,7 +567,7 @@ function bind() {
     e.preventDefault();
     setTermFontSize(currentFontSize + (e.deltaY < 0 ? 1 : -1));
   }, { passive: false });
-  termEl.bodies.style.background = TERM_THEMES[currentTheme].theme.background;
+  applyTermBackground(currentThemeDef || TERM_THEMES.classic); // custom:* 由 initTermTheme 异步精确应用
   setupTermResize();
   // 文件树 + 内容预览
   termEl.treeBtn.onclick = toggleTree;
@@ -901,6 +904,9 @@ async function openRemote() {
 
 function closeRemote() {
   $('remote-overlay').classList.remove('active');
+  // 真正停掉手机远程服务（清空 PIN、断开已连接的手机、停止监听），
+  // 不只是隐藏这个面板——不然 PIN 和监听会一直有效到应用退出。
+  invoke('terminal_remote_stop').catch(() => {});
 }
 
 // ===== Claude 用量（5 小时窗口） =====
@@ -1252,7 +1258,10 @@ function msg(text, type = 'info') {
     : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>';
   const d = document.createElement('div');
   d.className = `message ${type}`;
-  d.innerHTML = `${icon}<span>${text}</span>`;
+  d.innerHTML = icon; // icon 是固定的内置 SVG 字符串，不含用户数据
+  const span = document.createElement('span');
+  span.textContent = text; // text 可能来自用户数据（如片段标题），必须转义
+  d.appendChild(span);
   el.toasts.appendChild(d);
   setTimeout(() => d.remove(), 3000);
 }
@@ -1440,9 +1449,290 @@ const TERM_THEMES = {
       brightBlue: '#0000ff', brightMagenta: '#e500e5', brightCyan: '#00e5e5', brightWhite: '#e5e5e5',
     },
   },
+  // 卡哇伊·樱花：半透明莓紫底 + 立绘背景图 + 粉彩 ANSI（背景靠 allowTransparency 透上来）
+  'sakura': {
+    name: '🌸 樱花',
+    theme: {
+      // 底色全透明：带图主题靠 DOM 渲染 + CSS 强制透明，让立绘透上来；文字对比靠 .terminal-bodies 暗化
+      background: 'rgba(40, 24, 44, 0)', foreground: '#ffe6f2', cursor: '#ff8fc4',
+      cursorAccent: '#2b1b2e', selectionBackground: 'rgba(255, 143, 196, 0.40)',
+      black: '#4a3442', red: '#ff8093', green: '#9be3c0', yellow: '#ffd9a0',
+      blue: '#b4a6ff', magenta: '#ff9ecf', cyan: '#a0e6e6', white: '#f4d9e6',
+      brightBlack: '#6b4f5f', brightRed: '#ff9db0', brightGreen: '#b6f0d6', brightYellow: '#ffe8c4',
+      brightBlue: '#cfc4ff', brightMagenta: '#ffbfe0', brightCyan: '#c4f0f0', brightWhite: '#fff2f9',
+    },
+    bg: { image: 'assets/term-bg-kawaii.png', dim: 0.30, tint: '120, 45, 95', base: '#3a2338' },
+    clickFx: true, // 点击迸出爱心/花瓣
+  },
 };
 let currentTheme = localStorage.getItem('term-theme') || 'classic';
-if (!TERM_THEMES[currentTheme]) currentTheme = 'classic';
+
+// 应用终端背景（含卡哇伊立绘）：有 bg.image 铺图 + 暗化遮罩，否则纯色底。
+// 图铺在 .terminal-bodies 上，term-body/xterm 透明，靠 allowTransparency + 半透明主题底透上来。
+function applyTermBackground(def) {
+  const dock = termEl.dock, b = termEl.bodies;
+  if (!dock || !b) return;
+  if (def && def.bg && def.bg.image) {
+    const dim = def.bg.dim != null ? def.bg.dim : 0.3;
+    const tint = def.bg.tint || '20, 12, 20'; // 遮罩色调：卡哇伊用玫瑰粉而非深黑，避免发暗发灰
+    // 立绘铺满整个 dock（头栏+侧栏+终端共享一张连续背景）；头/侧栏做半透明面板浮其上
+    dock.style.backgroundColor = def.bg.base || '#1b1420';
+    dock.style.backgroundImage =
+      `linear-gradient(rgba(${tint}, ${dim}), rgba(${tint}, ${dim})), url("${def.bg.image}")`;
+    dock.style.backgroundSize = 'cover';
+    dock.style.backgroundPosition = 'center';
+    dock.style.backgroundRepeat = 'no-repeat';
+    dock.classList.add('has-bg');
+    b.classList.add('has-bg');       // 触发 CSS 强制 xterm 各层透明，让 dock 立绘透上来
+    b.style.background = 'transparent';
+    b.style.backgroundImage = 'none';
+  } else {
+    dock.classList.remove('has-bg');
+    b.classList.remove('has-bg');
+    dock.style.backgroundImage = 'none';
+    dock.style.backgroundColor = '';   // 还原到 CSS 的 #1b1f27
+    b.style.backgroundImage = 'none';
+    b.style.background = def.theme.background;
+  }
+}
+if (!TERM_THEMES[currentTheme] && !String(currentTheme).startsWith('custom:')) currentTheme = 'classic';
+
+// ===== DIY 自定义主题：换背景图 / 遮罩调节 / 多套保存（term-themes.json）+ 点击特效 =====
+let termCustomThemes = [];       // 自定义主题表（get_term_themes 拉取）
+let currentThemeDef = TERM_THEMES[currentTheme] || TERM_THEMES.classic; // custom:* 启动先兜底，initTermTheme 精确应用
+let clickFxEnabled = !!currentThemeDef.clickFx;
+const themeImageCache = new Map(); // 'file:<name>' → data URL，避免重复 IPC 读图
+
+// 主题 key（内置 key 或 'custom:<id>'）→ 可应用的 def {name, theme, bg?, clickFx}
+async function resolveThemeDef(key) {
+  if (TERM_THEMES[key]) return TERM_THEMES[key];
+  if (String(key).startsWith('custom:')) {
+    const t = termCustomThemes.find(x => x.id === key.slice(7));
+    if (t) return buildCustomDef(t);
+  }
+  return TERM_THEMES.classic;
+}
+
+async function buildCustomDef(t) {
+  const base = TERM_THEMES[t.base] || TERM_THEMES.classic;
+  const def = { name: t.name, theme: { ...base.theme }, clickFx: !!t.clickFx };
+  const url = await resolveThemeImage(t.image);
+  if (url) {
+    def.theme.background = 'rgba(0, 0, 0, 0)'; // 带图必须全透底，立绘才透得上来
+    def.bg = { image: url, dim: t.dim != null ? t.dim : 0.3, tint: t.tint || '120, 45, 95', base: '#3a2338' };
+  } else {
+    def.theme.background = base.theme.background; // 无图还原基础底色（樱花底本身是透明的）
+    if (t.base === 'sakura') def.theme.background = '#2b1b2e';
+  }
+  return def;
+}
+
+// 背景图引用 → 可用 URL："builtin:<path>" 直接用；"file:<name>" 走后端读成 data URL 并缓存
+async function resolveThemeImage(image) {
+  if (!image) return '';
+  if (image.startsWith('builtin:')) return image.slice(8);
+  if (image.startsWith('file:')) {
+    if (themeImageCache.has(image)) return themeImageCache.get(image);
+    try {
+      const url = await invoke('load_theme_image', { name: image.slice(5) });
+      themeImageCache.set(image, url);
+      return url;
+    } catch (e) { appLog('error', '加载主题背景图失败：' + e); return ''; }
+  }
+  return image;
+}
+
+// 把解析好的 def 应用到所有会话与 dock（DIY 面板实时预览也走这里，不落盘）
+function applyThemeDef(def) {
+  currentThemeDef = def;
+  clickFxEnabled = !!def.clickFx;
+  const hasBg = !!def.bg;
+  sessions.forEach(s => {
+    s.term.options.theme = def.theme;
+    // 带图主题必须 DOM 渲染：拆掉 WebGL；切回无图主题再装回（恢复防 ghosting）
+    if (hasBg && s.webgl) { try { s.webgl.dispose(); } catch (_) {} s.webgl = null; }
+    else if (!hasBg && !s.webgl) { s.webgl = attachWebgl(s.term); }
+    clearTermAtlas(s.term);
+  });
+  applyTermBackground(def);
+}
+
+// 启动：拉自定义主题表 + 恢复上次主题（可能是 custom:*）
+async function initTermTheme() {
+  try { termCustomThemes = await invoke('get_term_themes'); } catch (_) { termCustomThemes = []; }
+  try { applyThemeDef(await resolveThemeDef(currentTheme)); } catch (_) {}
+}
+
+// —— 点击特效：迸出爱心/花瓣/星星（主题可开关，仅终端 dock 内触发）——
+const FX_SHAPES = [
+  '<svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.9-9.8-9.2C.7 8.9 2.2 5.5 5.3 5c2-.3 3.6.7 4.7 2.2C11.1 5.7 12.7 4.7 14.7 5c3.1.5 4.6 3.9 3.1 6.8C15.5 16.1 12 21 12 21z" fill="#ff8fbf"/></svg>',
+  '<svg viewBox="0 0 24 24"><path d="M12 2.5c3 3.6 3 7.4 0 11-3-3.6-3-7.4 0-11z" fill="#ffc0de" transform="rotate(35 12 12)"/></svg>',
+  '<svg viewBox="0 0 24 24"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z" fill="#fff0f8"/></svg>',
+];
+function spawnClickFx(x, y) {
+  for (let i = 0; i < 5; i++) {
+    const el = document.createElement('span');
+    el.className = 'term-fx';
+    el.innerHTML = FX_SHAPES[(Math.random() * FX_SHAPES.length) | 0];
+    const a = Math.random() * Math.PI * 2;
+    const d = 24 + Math.random() * 36;
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    el.style.width = el.style.height = (10 + Math.random() * 8) + 'px';
+    el.style.setProperty('--dx', (Math.cos(a) * d) + 'px');
+    el.style.setProperty('--dy', (Math.sin(a) * d - 22) + 'px');
+    el.style.setProperty('--rot', (Math.random() * 140 - 70) + 'deg');
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 800);
+  }
+}
+termEl.dock.addEventListener('pointerdown', (e) => { if (clickFxEnabled) spawnClickFx(e.clientX, e.clientY); });
+
+// —— DIY 面板：所有控件改动实时预览，保存整表回写 term-themes.json ——
+const DIY_BASES = [['sakura', '樱花粉彩'], ['classic', '默认深色']];
+const DIY_TINTS = [
+  { name: '玫瑰粉', v: '120, 45, 95' },
+  { name: '薰衣草', v: '96, 64, 160' },
+  { name: '薄荷', v: '30, 90, 75' },
+  { name: '天蓝', v: '40, 70, 140' },
+  { name: '暗夜', v: '20, 12, 20' },
+];
+let diyEl = null, diyEditing = null, diyPrevKey = null;
+
+function ensureDiyPanel() {
+  if (diyEl) return;
+  diyEl = document.createElement('div');
+  diyEl.className = 'term-diy';
+  diyEl.innerHTML =
+    `<div class="term-diy-head"><span>DIY 主题</span>` +
+    `<span class="term-diy-x" title="取消并关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg></span></div>` +
+    `<div class="term-diy-row"><label>名称</label><input class="term-diy-input" id="diy-name" placeholder="我的主题" maxlength="12"></div>` +
+    `<div class="term-diy-row"><label>配色</label><div class="term-diy-chips" id="diy-base"></div></div>` +
+    `<div class="term-diy-row"><label>背景</label><div class="term-diy-chips" id="diy-img"></div></div>` +
+    `<div class="term-diy-row"><label>遮罩</label><div class="term-diy-swatches" id="diy-tint"></div></div>` +
+    `<div class="term-diy-row"><label>浓度</label><input type="range" id="diy-dim" min="0" max="0.7" step="0.02"><span class="term-diy-dimval" id="diy-dim-val"></span></div>` +
+    `<div class="term-diy-row"><label>特效</label><label class="term-diy-fx"><input type="checkbox" id="diy-fx"> 点击迸出爱心花瓣</label></div>` +
+    `<div class="term-diy-btns">` +
+    `<button class="btn btn-danger btn-sm" id="diy-del" style="display:none;">删除</button>` +
+    `<span class="term-diy-spacer"></span>` +
+    `<button class="btn btn-default btn-sm" id="diy-cancel">取消</button>` +
+    `<button class="btn btn-primary btn-sm" id="diy-save">保存</button></div>`;
+  termEl.dock.appendChild(diyEl);
+  diyEl.querySelector('.term-diy-x').onclick = diyCancel;
+  diyEl.querySelector('#diy-cancel').onclick = diyCancel;
+  diyEl.querySelector('#diy-save').onclick = diySave;
+  diyEl.querySelector('#diy-del').onclick = diyDelete;
+  diyEl.querySelector('#diy-name').oninput = (e) => { diyEditing.name = e.target.value; };
+  diyEl.querySelector('#diy-dim').oninput = (e) => {
+    diyEditing.dim = parseFloat(e.target.value);
+    diyEl.querySelector('#diy-dim-val').textContent = Math.round(diyEditing.dim * 100) + '%';
+    diyPreview();
+  };
+  diyEl.querySelector('#diy-fx').onchange = (e) => { diyEditing.clickFx = e.target.checked; diyPreview(); };
+}
+
+function fillDiyForm() {
+  diyEl.querySelector('#diy-name').value = diyEditing.name || '';
+  diyEl.querySelector('#diy-dim').value = diyEditing.dim;
+  diyEl.querySelector('#diy-dim-val').textContent = Math.round(diyEditing.dim * 100) + '%';
+  diyEl.querySelector('#diy-fx').checked = !!diyEditing.clickFx;
+  diyEl.querySelector('#diy-del').style.display =
+    diyEditing.id && termCustomThemes.some(t => t.id === diyEditing.id) ? '' : 'none';
+  // 基础配色
+  const baseBox = diyEl.querySelector('#diy-base');
+  baseBox.innerHTML = '';
+  DIY_BASES.forEach(([key, name]) => {
+    const c = document.createElement('span');
+    c.className = 'term-diy-chip' + (diyEditing.base === key ? ' on' : '');
+    c.textContent = name;
+    c.onclick = () => { diyEditing.base = key; fillDiyForm(); diyPreview(); };
+    baseBox.appendChild(c);
+  });
+  // 背景图：无图 / 内置立绘 / 选本地图片（拷入 appdata，agy 出的图从这里换上）
+  const imgBox = diyEl.querySelector('#diy-img');
+  imgBox.innerHTML = '';
+  const isFile = (diyEditing.image || '').startsWith('file:');
+  [['', '无图'], ['builtin:assets/term-bg-kawaii.png', '内置立绘']].forEach(([v, name]) => {
+    const c = document.createElement('span');
+    c.className = 'term-diy-chip' + (diyEditing.image === v ? ' on' : '');
+    c.textContent = name;
+    c.onclick = () => { diyEditing.image = v; fillDiyForm(); diyPreview(); };
+    imgBox.appendChild(c);
+  });
+  const pick = document.createElement('span');
+  pick.className = 'term-diy-chip' + (isFile ? ' on' : '');
+  pick.textContent = isFile ? '已选图片 · 重选…' : '选择图片…';
+  pick.onclick = async () => {
+    try {
+      const name = await invoke('pick_theme_image');
+      if (name) { diyEditing.image = 'file:' + name; fillDiyForm(); diyPreview(); }
+    } catch (e) { msg('选图失败：' + e, 'error'); }
+  };
+  imgBox.appendChild(pick);
+  // 遮罩色
+  const tintBox = diyEl.querySelector('#diy-tint');
+  tintBox.innerHTML = '';
+  DIY_TINTS.forEach(t => {
+    const s = document.createElement('span');
+    s.className = 'term-diy-swatch' + (diyEditing.tint === t.v ? ' on' : '');
+    s.title = t.name;
+    s.style.background = `rgb(${t.v})`;
+    s.onclick = () => { diyEditing.tint = t.v; fillDiyForm(); diyPreview(); };
+    tintBox.appendChild(s);
+  });
+}
+
+function openDiyPanel(theme) {
+  ensureDiyPanel();
+  diyPrevKey = currentTheme;
+  diyEditing = theme
+    ? { ...theme }
+    : { id: '', name: '', base: 'sakura', image: 'builtin:assets/term-bg-kawaii.png', dim: 0.30, tint: '120, 45, 95', clickFx: true, createdAt: '' };
+  fillDiyForm();
+  diyEl.classList.add('active');
+  diyPreview();
+}
+
+async function diyPreview() {
+  try { applyThemeDef(await buildCustomDef(diyEditing)); } catch (_) {}
+}
+
+async function diyCancel() {
+  diyEl.classList.remove('active');
+  diyEditing = null;
+  try { applyThemeDef(await resolveThemeDef(diyPrevKey)); } catch (_) {}
+  renderThemeMenu();
+}
+
+async function diySave() {
+  if (!diyEditing) return;
+  if (!diyEditing.name.trim()) diyEditing.name = '我的主题';
+  if (!diyEditing.id) diyEditing.id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const i = termCustomThemes.findIndex(t => t.id === diyEditing.id);
+  if (i >= 0) termCustomThemes[i] = { ...diyEditing };
+  else termCustomThemes.push({ ...diyEditing });
+  try {
+    termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes });
+  } catch (e) { msg('保存失败：' + e, 'error'); return; }
+  const key = 'custom:' + diyEditing.id;
+  diyEl.classList.remove('active');
+  diyEditing = null;
+  await setTermTheme(key);
+  msg('主题已保存', 'success');
+}
+
+async function diyDelete() {
+  if (!diyEditing || !diyEditing.id) return;
+  const deletedKey = 'custom:' + diyEditing.id;
+  termCustomThemes = termCustomThemes.filter(t => t.id !== diyEditing.id);
+  try {
+    termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes });
+  } catch (e) { msg('删除失败：' + e, 'error'); return; }
+  diyEl.classList.remove('active');
+  diyEditing = null;
+  await setTermTheme(diyPrevKey === deletedKey ? 'sakura' : diyPrevKey);
+  msg('主题已删除', 'success');
+}
 
 // 终端字号（⌘+ / ⌘- / ⌘0 调整，⌘+滚轮缩放，持久化）
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 32, TERM_FONT_DEFAULT = 13;
@@ -2226,20 +2516,30 @@ function clearTermAtlas(term) {
   try { term.clearTextureAtlas && term.clearTextureAtlas(); } catch (_) {}
 }
 
-function setTermTheme(key) {
-  if (!TERM_THEMES[key]) return;
+// 挂 WebGL 渲染器（防选区 ghosting）；无 WebGL 环境安全降级回 DOM 渲染器。返回 addon 或 null。
+function attachWebgl(term) {
+  try {
+    const w = new window.WebglAddon.WebglAddon();
+    w.onContextLoss(() => w.dispose());
+    term.loadAddon(w);
+    return w;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function setTermTheme(key, persist = true) {
+  const def = await resolveThemeDef(key); // 内置 key 或 custom:<id>
+  if (!def) return;
   currentTheme = key;
-  localStorage.setItem('term-theme', key);
-  const t = TERM_THEMES[key].theme;
-  sessions.forEach(s => { s.term.options.theme = t; clearTermAtlas(s.term); });
-  termEl.bodies.style.background = t.background;
+  if (persist) localStorage.setItem('term-theme', key);
+  applyThemeDef(def);
   renderThemeMenu();
 }
 
 function renderThemeMenu() {
   termEl.themeMenu.innerHTML = '';
-  Object.entries(TERM_THEMES).forEach(([key, def]) => {
-    const t = def.theme;
+  const addOpt = (key, name, t, custom) => {
     const opt = document.createElement('div');
     opt.className = 'term-theme-opt' + (key === currentTheme ? ' active' : '');
     // 无完整 ANSI 调色板的主题（如默认深色）回退到 前景/光标 色，色卡不留空
@@ -2248,11 +2548,25 @@ function renderThemeMenu() {
       `<span class="term-theme-swatch">` +
       sw.map(c => `<i style="background:${c}"></i>`).join('') +
       `</span>` +
-      `<span class="term-theme-label">${esc(def.name)}</span>` +
+      `<span class="term-theme-label">${esc(name)}</span>` +
+      (custom ? `<span class="term-theme-edit" title="编辑此主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16.9 4.5l2.6 2.6L8 18.6l-3.6 1 1-3.6z"/></svg></span>` : '') +
       `<svg class="term-theme-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>`;
-    opt.onclick = () => { setTermTheme(key); closeThemeMenu(); };
+    opt.onclick = (e) => {
+      if (custom && e.target.closest('.term-theme-edit')) { closeThemeMenu(); openDiyPanel(custom); return; }
+      setTermTheme(key); closeThemeMenu();
+    };
     termEl.themeMenu.appendChild(opt);
-  });
+  };
+  Object.entries(TERM_THEMES).forEach(([key, def]) => addOpt(key, def.name, def.theme, null));
+  termCustomThemes.forEach(t => addOpt('custom:' + t.id, t.name, (TERM_THEMES[t.base] || TERM_THEMES.classic).theme, t));
+  // ＋ 新建 DIY 主题
+  const add = document.createElement('div');
+  add.className = 'term-theme-opt term-theme-add';
+  add.innerHTML =
+    `<span class="term-theme-plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m7-7H5"/></svg></span>` +
+    `<span class="term-theme-label">DIY 自定义主题…</span>`;
+  add.onclick = () => { closeThemeMenu(); openDiyPanel(null); };
+  termEl.themeMenu.appendChild(add);
 }
 
 function openThemeMenu() { renderThemeMenu(); termEl.themeMenu.classList.add('active'); }
@@ -2857,7 +3171,8 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
     cursorBlink: true,
     scrollback: 5000,
-    theme: TERM_THEMES[currentTheme].theme,
+    allowTransparency: true, // 让半透明主题底透出背景立绘（卡哇伊主题）
+    theme: (currentThemeDef || TERM_THEMES.classic).theme,
     // 默认 4.5：会为对比度再生成一批变体字形，配上彩色中文把 WebGL 纹理图集塞爆
     // → 字形错位/残影。设 1 关掉对比度调整，大幅降低图集条目数（修中文花屏的关键）。
     minimumContrastRatio: 1,
@@ -2867,16 +3182,14 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   term.open(bodyEl);
   // WebGL 渲染器：默认 DOM 渲染器在触控板滚动时选区会糊成一大块（ghosting），
   // 改用 GPU 渲染正确重绘选区/滚动。WebGL 不可用或上下文丢失时安全降级回默认渲染器。
-  try {
-    const webgl = new window.WebglAddon.WebglAddon();
-    webgl.onContextLoss(() => webgl.dispose());
-    term.loadAddon(webgl);
-  } catch (_) {
-    /* WKWebView 无 WebGL 时退回默认 DOM 渲染器 */
+  // 但带背景立绘的主题（卡哇伊）必须走 DOM 渲染——WebGL 画布是像素级不透明，立绘透不上来。
+  let webgl = null;
+  if (!(currentThemeDef && currentThemeDef.bg)) {
+    webgl = attachWebgl(term);
   }
   term.onData(d => invoke('terminal_write', { id, data: d }).catch(() => {}));
 
-  sessions.set(id, { term, fit, tabEl, bodyEl, name: label, status: 'running', cwd, tool: autoCmd, startedAt: Date.now() });
+  sessions.set(id, { term, fit, tabEl, bodyEl, webgl, name: label, status: 'running', cwd, tool: autoCmd, startedAt: Date.now() });
 
   openDock();
   activateSession(id);

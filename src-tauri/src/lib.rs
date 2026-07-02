@@ -581,6 +581,128 @@ fn save_snippets(
     Ok(snippets)
 }
 
+// ===== 终端 DIY 主题：整表读写 term-themes.json（仿片段库），背景图拷入 appdata/theme-images/ =====
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermTheme {
+    pub id: String,
+    pub name: String,
+    /// 基础配色 key：sakura / cream / classic / homebrew（xterm 调色板来源）
+    pub base: String,
+    /// 背景图："" 无图；"builtin:<path>" 内置资源；"file:<name>" 用户上传（appdata/theme-images/）
+    #[serde(default)]
+    pub image: String,
+    /// 遮罩浓度 0~0.7
+    #[serde(default)]
+    pub dim: f64,
+    /// 遮罩色 "r, g, b"
+    #[serde(default)]
+    pub tint: String,
+    /// 点击迸出爱心/花瓣特效
+    #[serde(default)]
+    pub click_fx: bool,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+fn term_theme_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vibe-coding-manage")
+        .join("term-themes.json")
+}
+
+/// 主题表不在 AppState 里（那是项目/服务器数据），但整表读改写仍需互斥：
+/// 两次并发 save_term_themes 若都在跑 atomic_write，会同时截断同一个
+/// term-themes.tmp，产出合并坏文件——用这把独立锁把它俩串行化。
+struct TermThemeLock(Mutex<()>);
+
+fn theme_image_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vibe-coding-manage")
+        .join("theme-images")
+}
+
+#[tauri::command]
+fn get_term_themes(lock: State<TermThemeLock>) -> Result<Vec<TermTheme>, String> {
+    let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+    Ok(load_json_or_backup(&term_theme_path()))
+}
+
+/// 整表保存（前端管理增删改后回写）。给缺 id / created_at 的项补齐。
+#[tauri::command]
+fn save_term_themes(
+    lock: State<TermThemeLock>,
+    themes: Vec<TermTheme>,
+) -> Result<Vec<TermTheme>, String> {
+    let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let themes: Vec<TermTheme> = themes
+        .into_iter()
+        .map(|mut t| {
+            if t.id.is_empty() {
+                t.id = Uuid::new_v4().to_string();
+            }
+            if t.created_at.is_empty() {
+                t.created_at = now.clone();
+            }
+            t
+        })
+        .collect();
+    let data = serde_json::to_string_pretty(&themes).map_err(|e| e.to_string())?;
+    atomic_write(&term_theme_path(), data.as_bytes()).map_err(|e| {
+        crate::log_error!("写 term-themes.json 失败：{e}");
+        e.to_string()
+    })?;
+    Ok(themes)
+}
+
+/// 选一张背景图并拷入 appdata/theme-images/（原图不动），返回存储文件名。
+#[tauri::command]
+fn pick_theme_image() -> Result<Option<String>, String> {
+    let Some(src) = rfd::FileDialog::new()
+        .set_title("选择主题背景图")
+        .add_filter("图片", &["png", "jpg", "jpeg", "webp"])
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let dir = theme_image_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("创建主题图目录失败：{e}"))?;
+    let name = format!("{}.{ext}", Uuid::new_v4());
+    fs::copy(&src, dir.join(&name)).map_err(|e| format!("拷贝背景图失败：{e}"))?;
+    crate::log_info!("主题背景图已导入：{name}（来自 {src:?}）");
+    Ok(Some(name))
+}
+
+/// 读取已导入的主题背景图，返回 data URL（前端直接用作 background-image）。
+#[tauri::command]
+fn load_theme_image(name: String) -> Result<String, String> {
+    // 防目录穿越：只允许纯文件名
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("非法文件名".to_string());
+    }
+    let path = theme_image_dir().join(&name);
+    let bytes = fs::read(&path).map_err(|e| format!("读取背景图失败：{e}"))?;
+    let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    };
+    use base64::Engine as _;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 #[tauri::command]
 fn get_requirements(state: State<Mutex<AppState>>) -> Result<Vec<Requirement>, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
@@ -1749,6 +1871,14 @@ fn terminal_remote_info(state: State<TerminalState>) -> RemoteInfo {
     RemoteInfo { addrs, port, pin }
 }
 
+/// 关闭「手机远程」面板时调用：真正停掉服务（清空 PIN、踢掉所有已连接的手机、
+/// 停止监听），而不是只隐藏桌面 UI。下次打开面板会重新生成新 PIN 并按需监听。
+#[tauri::command]
+fn terminal_remote_stop(state: State<TerminalState>) {
+    state.hub.stop();
+    crate::log_info!("手机远程服务已停止");
+}
+
 /// 查询当前 5 小时窗口的 Claude 用量（走 ccusage）。
 /// async + spawn_blocking：ccusage 要跑几秒，绝不能阻塞主线程（否则 UI 冻住）。
 #[tauri::command]
@@ -1850,6 +1980,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(state)
         .manage(term_state)
+        .manage(TermThemeLock(Mutex::new(())))
         .setup(move |app| {
             // 会话状态感知：监控线程扫描"活跃后静默"的终端，emit terminal-attention
             let mon_app = app.handle().clone();
@@ -1937,6 +2068,7 @@ pub fn run() {
             terminal_resize,
             terminal_close,
             terminal_remote_info,
+            terminal_remote_stop,
             notify,
             git_status_batch,
             git_branch,
@@ -1944,6 +2076,10 @@ pub fn run() {
             context_usage,
             get_snippets,
             save_snippets,
+            get_term_themes,
+            save_term_themes,
+            pick_theme_image,
+            load_theme_image,
             get_requirements,
             save_requirements,
             claude_usage,

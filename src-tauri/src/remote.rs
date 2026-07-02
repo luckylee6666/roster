@@ -3,8 +3,10 @@
 // 数据流：PTY ←→ RemoteHub（会话表 + 滚动缓存 + 广播通道）←→ WebSocket ←→ 手机 xterm.js
 // 桌面窗口仍走 Tauri 事件，手机走这里的 WS，两边订阅同一批会话，互不影响。
 //
-// 安全：服务绑定 0.0.0.0 但要求 6 位 PIN（启动时随机生成，桌面 UI 展示）。
+// 安全：服务绑定 0.0.0.0 但要求 6 位 PIN（启动时随机生成，桌面 UI 展示），
+// 连续猜错会触发指数退避锁定（见 AuthGuard），比对用定长比较避免时序侧信道。
 // 这一层暴露的是「在本机跑 shell」的能力，PIN 是最低门槛，远程场景（Tailscale）务必保留。
+// 关闭面板会调用 stop()：清空 PIN、断开所有已连接会话、停止监听，下次打开才重新暴露。
 
 use axum::{
     extract::{
@@ -23,7 +25,34 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
+
+/// 连续错误 PIN 达到这个次数后开始锁定，防止暴力枚举 6 位 PIN。
+const MAX_AUTH_FAILS: u32 = 5;
+/// 每多失败一次翻倍的基础锁定时长；封顶见下方 `.min(...)`。
+const LOCKOUT_BASE: Duration = Duration::from_secs(30);
+const LOCKOUT_CAP: Duration = Duration::from_secs(15 * 60);
+
+/// 鉴权失败计数 + 锁定状态：所有请求共享（不区分来源 IP），
+/// 因为这一层只挡「猜 PIN」，不是多用户系统，全局锁定足够也更简单。
+#[derive(Default)]
+struct AuthGuard {
+    fails: u32,
+    locked_until: Option<Instant>,
+}
+
+/// 定长比较，避免字节级提前退出泄露 PIN 前缀的时序信息。
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 /// 单个会话的滚动缓存上限（字节）。手机连上时回放最近这么多输出，避免黑屏。
 const SCROLLBACK_CAP: usize = 256 * 1024;
@@ -61,14 +90,20 @@ pub struct RemoteHub {
     pub token: Arc<Mutex<String>>,
     pub port: u16,
     /// axum 服务是否已起。按需启动：用户首次打开「手机远程」面板才监听端口，
-    /// 不用就永不对外暴露（compare_exchange 保证只起一次）。
+    /// 关闭面板时 `stop()` 会把这个复位，允许下次重新按需启动（新 PIN、新监听）。
     started: Arc<AtomicBool>,
+    auth: Arc<Mutex<AuthGuard>>,
+    /// 广播一次即：(1) 通知 axum accept 循环优雅关闭，不再接受新连接；
+    /// (2) 所有正在桥接的 WS 会话各自收到信号后主动断开——两者共用一个信号，
+    /// 保证「停止」是真的停止，而不是只关掉了监听、留着已连上的手机继续用。
+    shutdown_tx: broadcast::Sender<()>,
 }
 
 impl RemoteHub {
     pub fn new(port: u16) -> Self {
         let (output_tx, _) = broadcast::channel(2048);
         let (exit_tx, _) = broadcast::channel(64);
+        let (shutdown_tx, _) = broadcast::channel(8);
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             metas: Arc::new(Mutex::new(HashMap::new())),
@@ -78,14 +113,29 @@ impl RemoteHub {
             token: Arc::new(Mutex::new(String::new())),
             port,
             started: Arc::new(AtomicBool::new(false)),
+            auth: Arc::new(Mutex::new(AuthGuard::default())),
+            shutdown_tx,
         }
     }
 
-    /// 首次调用返回 true（并把状态置为已启动），之后恒返回 false。用于「按需起服务」。
+    /// 首次调用返回 true（并把状态置为已启动），之后恒返回 false，直到 `stop()` 复位。
     pub fn start_if_needed(&self) -> bool {
         self.started
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
+    }
+
+    /// 真正停止手机端服务：清空 PIN（旧 PIN 立即失效）、复位启动状态（允许下次重新
+    /// 生成新 PIN 并监听）、广播关闭信号（accept 循环停止 + 所有已连接的手机会话断开）。
+    pub fn stop(&self) {
+        self.started.store(false, Ordering::SeqCst);
+        if let Ok(mut t) = self.token.lock() {
+            t.clear();
+        }
+        if let Ok(mut g) = self.auth.lock() {
+            *g = AuthGuard::default();
+        }
+        let _ = self.shutdown_tx.send(());
     }
 
     /// 由 reader 线程调用：把一段输出同时广播给 WS 客户端并追加进滚动缓存。
@@ -141,6 +191,7 @@ pub fn spawn_server(hub: RemoteHub) {
         };
         rt.block_on(async move {
             let port = hub.port;
+            let mut shutdown_rx = hub.shutdown_tx.subscribe();
             let app = Router::new()
                 .route("/", get(serve_index))
                 .route("/vendor/xterm.css", get(serve_xterm_css))
@@ -152,9 +203,13 @@ pub fn spawn_server(hub: RemoteHub) {
             match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
                 Ok(listener) => {
                     println!("[remote] 手机端服务监听 0.0.0.0:{port}");
-                    if let Err(e) = axum::serve(listener, app).await {
+                    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.recv().await;
+                    });
+                    if let Err(e) = serve.await {
                         eprintln!("[remote] 服务退出: {e}");
                     }
+                    println!("[remote] 手机端服务已停止");
                 }
                 Err(e) => eprintln!("[remote] 端口 {port} 绑定失败: {e}"),
             }
@@ -198,8 +253,38 @@ async fn serve_fit_js() -> Response {
 // ===== 鉴权 + API =====
 
 fn token_ok(hub: &RemoteHub, q: &HashMap<String, String>) -> bool {
+    let mut guard = match hub.auth.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    if let Some(until) = guard.locked_until {
+        if Instant::now() < until {
+            return false;
+        }
+        // 锁定期已过，进入下一轮，允许重新尝试。
+        guard.locked_until = None;
+        guard.fails = 0;
+    }
+
     let want = hub.token.lock().map(|t| t.clone()).unwrap_or_default();
-    !want.is_empty() && q.get("token").map(|t| t.as_str()) == Some(want.as_str())
+    let provided = q.get("token").map(|s| s.as_str()).unwrap_or("");
+    let ok = !want.is_empty() && constant_time_eq(provided.as_bytes(), want.as_bytes());
+
+    if ok {
+        guard.fails = 0;
+        guard.locked_until = None;
+    } else {
+        guard.fails += 1;
+        if guard.fails >= MAX_AUTH_FAILS {
+            // 每多一次失败翻倍退避，封顶 15 分钟，挡住持续枚举。
+            let extra = guard.fails - MAX_AUTH_FAILS;
+            let backoff = LOCKOUT_BASE
+                .saturating_mul(1u32 << extra.min(5))
+                .min(LOCKOUT_CAP);
+            guard.locked_until = Some(Instant::now() + backoff);
+        }
+    }
+    ok
 }
 
 /// 列出当前活跃会话，供手机端选「人物」。需 PIN。
@@ -239,6 +324,7 @@ async fn handle_socket(mut socket: WebSocket, hub: RemoteHub, id: String) {
     // 先订阅，再快照滚动缓存——宁可首屏重复一小段，也不丢中间产生的输出。
     let mut out_rx = hub.output_tx.subscribe();
     let mut exit_rx = hub.exit_tx.subscribe();
+    let mut shutdown_rx = hub.shutdown_tx.subscribe();
 
     // 告知手机端 PTY 的真实尺寸：手机按此 cols/rows 镜像渲染（自动缩字号铺满宽度），
     // 不反过来改 PTY，桌面端尺寸不受影响。
@@ -291,6 +377,12 @@ async fn handle_socket(mut socket: WebSocket, hub: RemoteHub, id: String) {
                 Some(Err(_)) => break,
                 _ => {}
             },
+            // 桌面端主动 stop()：把这个已经连上的手机会话也一并断开，
+            // 不然只关监听端口，已建立的连接会继续用旧 PIN 对应的会话工作。
+            _ = shutdown_rx.recv() => {
+                let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
         }
     }
 }
