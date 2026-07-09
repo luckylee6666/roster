@@ -41,36 +41,66 @@ pub struct ClaudeUsage {
 /// 拿不到 nvm 的 node/npx → ccusage 跑不起来。内置终端是真交互 PTY 所以一直正常。
 /// 带超时，避免 ccusage / claude 卡死拖住调用线程。
 fn run_shell(script: &str, timeout_secs: u64) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    // 持 child 句柄而非把整个 output() 丢进线程：超时时才能 kill 掉子进程（ccusage/npx/node
+    // 整棵进程树），否则超时返回后进程会成孤儿继续跑、读线程也永远醒不过来——是真实的泄漏。
+    #[cfg(not(target_os = "windows"))]
+    let spawn = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        std::process::Command::new(shell)
+            .arg("-ilc")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    };
+    #[cfg(target_os = "windows")]
+    let spawn = std::process::Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = spawn.map_err(|e| e.to_string())?;
+    let mut stdout_pipe = child.stdout.take().ok_or("无法接管子进程 stdout")?;
+    let mut stderr_pipe = child.stderr.take().ok_or("无法接管子进程 stderr")?;
+
+    // stdout / stderr 各用一个线程读干净：任一管道写满都会阻塞子进程（经典 pipe 死锁），
+    // 分开排空避开它。stdout 读完（子进程退出即 EOF）作为完成信号；kill 后管道关闭，
+    // 两个读线程都会自然从 read_to_end 返回，不残留线程。
     let (tx, rx) = std::sync::mpsc::channel();
-    let script = script.to_string();
     std::thread::spawn(move || {
-        #[cfg(not(target_os = "windows"))]
-        let out = {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-            std::process::Command::new(shell)
-                .arg("-ilc")
-                .arg(&script)
-                .output()
-        };
-        #[cfg(target_os = "windows")]
-        let out = std::process::Command::new("powershell.exe")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(&script)
-            .output();
-        let _ = tx.send(out);
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        let _ = tx.send(buf);
     });
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+
     match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(Ok(o)) => {
-            let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+        Ok(out) => {
+            let _ = child.wait(); // 回收，避免僵尸进程
+            let stdout = String::from_utf8_lossy(&out).to_string();
             if !stdout.trim().is_empty() {
                 Ok(stdout)
             } else {
-                Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
+                let err = stderr_handle.join().unwrap_or_default();
+                Err(String::from_utf8_lossy(&err).trim().to_string())
             }
         }
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err("命令超时（ccusage/claude 未响应）".to_string()),
+        Err(_) => {
+            // 超时：杀子进程并回收——不然进程 + 两个读线程都会泄漏
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("命令超时（ccusage/claude 未响应）".to_string())
+        }
     }
 }
 
