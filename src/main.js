@@ -909,13 +909,8 @@ function closeRemote() {
   invoke('terminal_remote_stop').catch(() => {});
 }
 
-// ===== Claude 用量（5 小时窗口） =====
-const FIVE_HOUR_MS = 5 * 3600000;
-let usageCountdownTimer = null;
-let usageResetEpoch = 0;
-let oauthResetMs = 0;           // 权威 5h 限流重置时刻（来自 OAuth resets_at），供计费窗口倒计时统一使用
+// ===== 用量统计 =====
 let usageAgent = 'claude';      // 当前用量 tab：claude / codex / opencode
-let lastClaudeWeekly = null;    // 缓存 Claude 周用量，poller 重渲染窗口时不丢失
 let npxAvailable = null;        // null=未知 / true / false：花费统计(ccusage)是否可用
 
 // 没有 npx 时花费/Codex/OpenCode 的友好降级块（限流用量不受影响）
@@ -951,7 +946,6 @@ async function openUsage() {
 }
 function closeUsage() {
   $('usage-overlay').classList.remove('active');
-  stopUsageCountdown();
 }
 
 // 切 tab（不触发加载，仅改激活态）。
@@ -966,39 +960,13 @@ async function loadUsage() {
   const body = $('usage-body');
   try {
     if (agent === 'claude') {
-      lastClaudeWeekly = null;
-      // 分两块：上方 OAuth 限流（快，缓存），下方 ccusage 花费（慢，后台补）
-      body.innerHTML =
-        '<div id="usage-oauth"><div class="usage-loading">查询限流用量…</div></div>' +
-        '<div id="usage-ccusage" style="margin-top:14px;"><div class="usage-loading">查询花费（ccusage，首次稍慢）…</div></div>';
-      // OAuth 限流：和 /usage 同源，秒出（零依赖，不需要 Node）
+      // Claude tab 只展示 OAuth 限流用量（5h / 7d 使用率 + 重置倒计时）：和 /usage 同源，
+      // 零依赖秒出、不需要 Node。花费/燃烧速率/token/周用量等 ccusage 明细已按需求移除。
+      body.innerHTML = '<div id="usage-oauth"><div class="usage-loading">查询限流用量…</div></div>';
       invoke('oauth_usage').then(o => {
         if (usageAgent === 'claude') renderOAuth(o);
       }).catch(() => {});
-      // 花费部分依赖 ccusage(npx)：没 npx 就友好降级，不丢报错
-      if (npxAvailable === false) {
-        const cc = document.getElementById('usage-ccusage');
-        if (cc) cc.innerHTML = nodeNeededHTML('花费统计');
-      } else {
-        // ccusage 花费窗口（不阻塞 OAuth 显示）
-        invoke('claude_usage').then(u => {
-          if (usageAgent === 'claude') renderUsage(u);
-        }).catch(e => {
-          const cc = document.getElementById('usage-ccusage');
-          if (cc && usageAgent === 'claude') cc.innerHTML = `<div class="usage-error">花费查询失败：${esc(String(e))}</div>`;
-        });
-        // 周用量异步补在最下方
-        invoke('agent_weekly', { agent: 'claude' }).then(w => {
-          if (usageAgent !== 'claude') return;
-          lastClaudeWeekly = w;
-          const cc = document.getElementById('usage-ccusage');
-          const existing = document.getElementById('usage-weekly-sec');
-          if (existing) existing.outerHTML = renderWeeklyHTML(w, '周用量');
-          else if (cc) cc.insertAdjacentHTML('beforeend', renderWeeklyHTML(w, '周用量'));
-        }).catch(() => {});
-      }
     } else {
-      stopUsageCountdown();
       if (npxAvailable === false) {
         body.innerHTML = nodeNeededHTML(agent === 'codex' ? 'Codex 用量' : 'OpenCode 用量');
         return;
@@ -1009,57 +977,8 @@ async function loadUsage() {
       body.innerHTML = renderAgentHTML(w, agent);
     }
   } catch (e) {
-    stopUsageCountdown();
     body.innerHTML = `<div class="usage-error">查询失败：${esc(String(e))}</div>`;
   }
-}
-
-// Claude 5 小时窗口主视图（含下方周用量）。写入 #usage-ccusage 子容器（OAuth 限流在其上方）。
-function renderUsage(u) {
-  if (usageAgent !== 'claude') return;
-  const body = document.getElementById('usage-ccusage') || $('usage-body');
-  const weekly = lastClaudeWeekly ? renderWeeklyHTML(lastClaudeWeekly, '周用量') : '';
-  if (!u || !u.ok) {
-    stopUsageCountdown();
-    body.innerHTML = `<div class="usage-error">${esc((u && u.error) || '查询失败')}<br><br>` +
-      `需本机装有 Node/npx 且用过 Claude Code：经 <code>ccusage</code> 读取 <code>~/.claude</code> 本地日志统计，不上传任何数据。</div>` + weekly;
-    return;
-  }
-  if (!u.active) {
-    usageResetEpoch = 0; stopUsageCountdown();
-    body.innerHTML = `<div class="usage-window reset">` +
-      `<div class="usage-window-top"><span class="usage-countdown">无活跃窗口</span></div>` +
-      `<div class="usage-reset-at">当前 5 小时窗口已重置 / 空闲。在终端里用一次 Claude 即可开启新窗口。</div>` +
-      `</div>` + weekly;
-    return;
-  }
-  // 重置时刻优先用权威的 OAuth 限流窗口（resets_at），保证与上方「限流用量」一致；
-  // 拿不到（oauth 未返回/已过期）才退回 ccusage 估算的 endTime。
-  const useOAuth = oauthResetMs > Date.now();
-  usageResetEpoch = useOAuth ? oauthResetMs : Date.parse(u.endTime);
-  const startEpoch = useOAuth ? (oauthResetMs - FIVE_HOUR_MS) : Date.parse(u.startTime);
-  body.innerHTML =
-    `<div class="usage-window">` +
-      `<div class="usage-window-top">` +
-        `<span><span class="usage-countdown" id="usage-countdown">--:--</span> <span class="usage-countdown-label">后重置</span></span>` +
-        `<span class="usage-reset-at" id="usage-reset-at"></span>` +
-      `</div>` +
-      `<div class="usage-bar"><div class="usage-bar-fill" id="usage-bar-fill" style="width:0%"></div></div>` +
-    `</div>` +
-    `<div class="usage-grid">` +
-      `<div class="usage-cell"><span class="usage-cell-label">本窗口花费</span>` +
-        `<span class="usage-cell-val">$${(u.costUsd || 0).toFixed(2)}</span>` +
-        `${u.projectedCost ? `<span class="usage-cell-sub">预计到重置 $${u.projectedCost.toFixed(2)}</span>` : ''}</div>` +
-      `<div class="usage-cell"><span class="usage-cell-label">燃烧速率</span>` +
-        `<span class="usage-cell-val">${u.costPerHour ? '$' + u.costPerHour.toFixed(2) : '—'}</span>` +
-        `<span class="usage-cell-sub">每小时</span></div>` +
-      `<div class="usage-cell"><span class="usage-cell-label">总 Token</span>` +
-        `<span class="usage-cell-val">${fmtTokens(u.totalTokens)}</span>` +
-        `<span class="usage-cell-sub">输出 ${fmtTokens(u.outputTokens)}</span></div>` +
-      `<div class="usage-cell"><span class="usage-cell-label">模型</span>` +
-        `<span class="usage-models">${(u.models && u.models.length) ? u.models.map(m => `<b>${esc(shortModel(m))}</b>`).join('、') : '—'}</span></div>` +
-    `</div>` + weekly;
-  startUsageCountdown(startEpoch);
 }
 
 // OAuth 限流用量（Claude 专属，和 /usage 同源）：5h / 7d 使用百分比 + 重置倒计时。
@@ -1067,16 +986,8 @@ function renderOAuth(o) {
   const el = document.getElementById('usage-oauth');
   if (!el) return;
   if (!o || !o.ok) {
-    oauthResetMs = 0; // 无权威数据 → 下方倒计时退回 ccusage
     el.innerHTML = `<div class="usage-error">${esc((o && o.error) || '限流用量查询失败')}</div>`;
     return;
-  }
-  // 记下权威 5h 重置时刻；若下方 ccusage 倒计时已渲染（oauth 晚于 ccusage 返回），立即校准。
-  oauthResetMs = (o.fiveHour && o.fiveHour.resetsAt) ? Date.parse(o.fiveHour.resetsAt) : 0;
-  if (isNaN(oauthResetMs)) oauthResetMs = 0;
-  if (oauthResetMs > Date.now() && document.getElementById('usage-countdown')) {
-    usageResetEpoch = oauthResetMs;
-    startUsageCountdown(oauthResetMs - FIVE_HOUR_MS);
   }
   const plan = o.plan ? ` · ${esc(o.plan)}` : '';
   const age = `<span class="usage-age">${esc(fmtUsageAge(o.ageSecs))}</span>`;
@@ -1165,34 +1076,6 @@ function weekLabel(period) {
   const d = new Date(period + 'T00:00:00');
   if (isNaN(d.getTime())) return period || '—';
   return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} 当周`;
-}
-
-function tickUsageCountdown(startEpoch) {
-  const cd = document.getElementById('usage-countdown');
-  if (!cd || !usageResetEpoch) return;
-  const now = Date.now();
-  const remain = Math.max(0, usageResetEpoch - now);
-  const h = Math.floor(remain / 3600000);
-  const m = Math.floor((remain % 3600000) / 60000);
-  const s = Math.floor((remain % 60000) / 1000);
-  cd.textContent = `${h}:${pad2(m)}:${pad2(s)}`;
-  const ra = document.getElementById('usage-reset-at');
-  if (ra) ra.textContent = '重置于 ' + new Date(usageResetEpoch).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  const fill = document.getElementById('usage-bar-fill');
-  if (fill) {
-    const total = usageResetEpoch - startEpoch;
-    const pct = total > 0 ? Math.min(100, Math.max(0, (now - startEpoch) / total * 100)) : 0;
-    fill.style.width = pct.toFixed(1) + '%';
-  }
-  if (remain <= 0) { stopUsageCountdown(); loadUsage(); }
-}
-function startUsageCountdown(startEpoch) {
-  stopUsageCountdown();
-  tickUsageCountdown(startEpoch);
-  usageCountdownTimer = setInterval(() => tickUsageCountdown(startEpoch), 1000);
-}
-function stopUsageCountdown() {
-  if (usageCountdownTimer) { clearInterval(usageCountdownTimer); usageCountdownTimer = null; }
 }
 
 function copyText(text) {

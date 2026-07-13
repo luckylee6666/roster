@@ -2511,17 +2511,7 @@ body {
   background: var(--bg-3); padding: 1px 5px; border-radius: 4px; color: var(--text-2); }
 .usage-node-needed .btn { margin-top: 2px; }
 
-/* 倒计时大字 + 进度环（用渐变条代替环，简洁） */
-.usage-window { display: flex; flex-direction: column; gap: 10px; padding: 16px;
-  border-radius: var(--radius-md); border: 1px solid var(--blue-border); background: var(--blue-bg);
-  box-shadow: var(--shadow-sm); }
-.usage-window.reset { border-color: var(--border); background: var(--bg-2); }
-.usage-window-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.usage-countdown { font-family: "JetBrains Mono", Menlo, monospace; font-size: 26px; font-weight: 700;
-  color: var(--blue-active); letter-spacing: 0.5px; line-height: 1; }
-.usage-window.reset .usage-countdown { color: var(--text-2); font-size: 18px; }
-.usage-countdown-label { font-size: 12px; color: var(--text-3); }
-.usage-reset-at { font-size: 12px; color: var(--text-3); }
+/* 使用率进度条（OAuth 5h / 7d 限流用量） */
 .usage-bar { height: 6px; border-radius: 3px; background: rgba(0,0,0,0.06); overflow: hidden; }
 .usage-bar-fill { height: 100%; border-radius: 3px;
   background: linear-gradient(90deg, var(--blue) 0%, var(--blue-hover) 100%); transition: width .4s ease; }
@@ -2544,17 +2534,6 @@ body {
 .usage-oauth-pct.warn { color: var(--orange); }
 .usage-oauth-pct.danger { color: var(--red); }
 .usage-oauth-reset { font-size: 11.5px; color: var(--text-3); }
-
-/* 指标网格 */
-.usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.usage-cell { padding: 11px 13px; border-radius: var(--radius-md); background: var(--bg-1);
-  border: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; }
-.usage-cell-label { font-size: 11px; color: var(--text-3); }
-.usage-cell-val { font-size: 17px; font-weight: 650; color: var(--text-1);
-  font-family: "JetBrains Mono", Menlo, monospace; }
-.usage-cell-sub { font-size: 11px; color: var(--text-3); }
-.usage-models { font-size: 12px; color: var(--text-2); }
-.usage-models b { color: var(--text-1); font-weight: 600; }
 
 /* CLI 切换 tab（claude / codex / opencode） */
 .usage-tabs { display: flex; gap: 4px; padding: 3px; border-radius: var(--radius-md);
@@ -2585,24 +2564,6 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .usage-week-cost { font-size: 13px; font-weight: 650; color: var(--text-1);
   font-family: "JetBrains Mono", Menlo, monospace; text-align: right; min-width: 56px; }
-
-/* 自动 hello 区块 */
-.usage-auto { margin-top: 4px; padding: 14px; border-radius: var(--radius-md);
-  border: 1px solid var(--border); background: var(--bg-1); display: flex; flex-direction: column; gap: 12px; }
-.usage-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; cursor: pointer; }
-.usage-auto-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.usage-auto-text b { font-size: 13px; color: var(--text-1); font-weight: 600; }
-.usage-auto-text small { font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
-
-/* 开关 */
-.usage-switch { flex: none; position: relative; width: 40px; height: 22px; }
-.usage-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
-.usage-switch-slider { position: absolute; inset: 0; border-radius: 22px; background: var(--text-4);
-  transition: background .2s ease; }
-.usage-switch-slider::before { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
-  border-radius: 50%; background: #fff; box-shadow: var(--shadow-sm); transition: transform .2s ease; }
-.usage-switch input:checked + .usage-switch-slider { background: var(--blue); }
-.usage-switch input:checked + .usage-switch-slider::before { transform: translateX(18px); }
 
 /* ===== 需求清单 ===== */
 .req-capture {
