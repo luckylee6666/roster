@@ -60,7 +60,8 @@ const SCROLLBACK_CAP: usize = 256 * 1024;
 /// 一个活跃的伪终端会话：保留 master（resize）、writer（写入键入）、child（kill）。
 pub struct PtySession {
     pub master: Box<dyn MasterPty + Send>,
-    pub writer: Box<dyn Write + Send>,
+    /// Arc<Mutex<>>：让写入在锁外进行，一个会话的阻塞写不至于攥着全局 sessions 锁楔死其它会话。
+    pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub child: Box<dyn Child + Send + Sync>,
 }
 
@@ -172,7 +173,11 @@ impl RemoteHub {
     /// 由 reader 线程在 EOF 时调用：广播退出并清理该会话（含 sessions，防 PtySession 泄漏）。
     pub fn mark_exit(&self, id: &str) {
         let _ = self.exit_tx.send(id.to_string());
-        let _ = self.cleanup_session(id);
+        if let Some(mut sess) = self.cleanup_session(id) {
+            // EOF 时子进程通常已退出；wait() 回收僵尸，否则它会挂到 app 退出。kill 幂等兜底。
+            let _ = sess.child.kill();
+            let _ = sess.child.wait();
+        }
     }
 }
 
@@ -253,38 +258,44 @@ async fn serve_fit_js() -> Response {
 // ===== 鉴权 + API =====
 
 fn token_ok(hub: &RemoteHub, q: &HashMap<String, String>) -> bool {
+    // 先比对 PIN（定长比较，无论如何都跑完，不泄露时序）。
+    let want = hub.token.lock().map(|t| t.clone()).unwrap_or_default();
+    let provided = q.get("token").map(|s| s.as_str()).unwrap_or("");
+    let matched = !want.is_empty() && constant_time_eq(provided.as_bytes(), want.as_bytes());
+
     let mut guard = match hub.auth.lock() {
         Ok(g) => g,
         Err(_) => return false,
     };
+
+    // 正确 PIN 永远放行并清零——即便正处于锁定期也不能把合法用户挡在门外。
+    // 否则 LAN 上任何人只要持续发错 PIN 就能让合法用户永久登不进来（持续拒绝服务），
+    // 手机端拿旧 PIN 的重连循环也会把自己锁死。
+    if matched {
+        guard.fails = 0;
+        guard.locked_until = None;
+        return true;
+    }
+
+    // 错误 PIN：锁定期内直接拒绝，且不再累加（避免锁定期内的猜测把计数灌大）。
     if let Some(until) = guard.locked_until {
         if Instant::now() < until {
             return false;
         }
-        // 锁定期已过，进入下一轮，允许重新尝试。
+        // 锁定期已过：清除锁定但保留 fails，好让下一次失败在既有基础上继续升级退避。
+        // （旧实现这里把 fails 清零，导致 extra 恒为 0、翻倍/封顶成了死代码，退避永远只有 30s。）
         guard.locked_until = None;
-        guard.fails = 0;
     }
-
-    let want = hub.token.lock().map(|t| t.clone()).unwrap_or_default();
-    let provided = q.get("token").map(|s| s.as_str()).unwrap_or("");
-    let ok = !want.is_empty() && constant_time_eq(provided.as_bytes(), want.as_bytes());
-
-    if ok {
-        guard.fails = 0;
-        guard.locked_until = None;
-    } else {
-        guard.fails += 1;
-        if guard.fails >= MAX_AUTH_FAILS {
-            // 每多一次失败翻倍退避，封顶 15 分钟，挡住持续枚举。
-            let extra = guard.fails - MAX_AUTH_FAILS;
-            let backoff = LOCKOUT_BASE
-                .saturating_mul(1u32 << extra.min(5))
-                .min(LOCKOUT_CAP);
-            guard.locked_until = Some(Instant::now() + backoff);
-        }
+    guard.fails = guard.fails.saturating_add(1);
+    if guard.fails >= MAX_AUTH_FAILS {
+        // 每多失败一次翻倍退避，封顶 15 分钟，挡住持续枚举。
+        let extra = guard.fails - MAX_AUTH_FAILS;
+        let backoff = LOCKOUT_BASE
+            .saturating_mul(1u32 << extra.min(5))
+            .min(LOCKOUT_CAP);
+        guard.locked_until = Some(Instant::now() + backoff);
     }
-    ok
+    false
 }
 
 /// 列出当前活跃会话，供手机端选「人物」。需 PIN。
@@ -426,10 +437,16 @@ fn handle_client_msg(hub: &RemoteHub, id: &str, txt: &str) {
     match v.get("t").and_then(|t| t.as_str()) {
         Some("i") => {
             if let Some(data) = v.get("d").and_then(|d| d.as_str()) {
-                if let Ok(mut sessions) = hub.sessions.lock() {
-                    if let Some(s) = sessions.get_mut(id) {
-                        let _ = s.writer.write_all(data.as_bytes());
-                        let _ = s.writer.flush();
+                // 与桌面 terminal_write 一样：锁内只取 writer 句柄，锁外再写，避免阻塞写攥住全局锁
+                let writer = hub
+                    .sessions
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get(id).map(|p| p.writer.clone()));
+                if let Some(writer) = writer {
+                    if let Ok(mut w) = writer.lock() {
+                        let _ = w.write_all(data.as_bytes());
+                        let _ = w.flush();
                     }
                 }
             }

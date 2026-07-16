@@ -162,7 +162,9 @@ fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path: &PathBuf)
     match serde_json::from_str::<T>(&data) {
         Ok(v) => v,
         Err(e) => {
-            let bad = path.with_extension("bad");
+            // 带时间戳命名，避免二次损坏覆盖掉上一份含可恢复数据的备份
+            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+            let bad = path.with_extension(format!("{stamp}.bad"));
             let _ = fs::copy(path, &bad);
             crate::log_error!(
                 "解析 {:?} 失败：{e}；已备份损坏文件到 {:?}",
@@ -1303,14 +1305,15 @@ fn find_claude_project_dir(cwd: &str) -> Option<PathBuf> {
         if !p.is_dir() {
             continue;
         }
-        // 读该目录任一 jsonl 的首行，比对 cwd 字段
+        // 读该目录任一 jsonl 的首行，比对 cwd 字段（只读首行，别把整份 transcript 读进内存）
         if let Some(j) = newest_jsonl(&p) {
-            if let Ok(content) = fs::read_to_string(&j) {
-                if let Some(line) = content.lines().next() {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                        if v.get("cwd").and_then(|x| x.as_str()) == Some(cwd) {
-                            return Some(p);
-                        }
+            if let Some(Ok(line)) = fs::File::open(&j)
+                .ok()
+                .and_then(|f| std::io::BufRead::lines(std::io::BufReader::new(f)).next())
+            {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if v.get("cwd").and_then(|x| x.as_str()) == Some(cwd) {
+                        return Some(p);
                     }
                 }
             }
@@ -1359,6 +1362,25 @@ fn detect_context_window(s: &str) -> Option<u64> {
     }
     let num: u64 = lower[start..end - 1].parse().ok()?;
     Some(num * mult)
+}
+
+/// 读文件尾部至多 max 字节；从尾部第一个换行之后返回，避免截断出半截行。
+/// 文件不超过 max 则整读。用于 transcript 这类「只关心最近记录」的大文件，免整读进内存。
+fn read_file_tail(path: &PathBuf, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len <= max {
+        let mut s = String::new();
+        f.read_to_string(&mut s).ok()?;
+        return Some(s);
+    }
+    f.seek(SeekFrom::Start(len - max)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    // 丢掉可能被截断的首行残片（从第一个换行之后开始）
+    let start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+    Some(String::from_utf8_lossy(&buf[start..]).into_owned())
 }
 
 /// 估算某 Claude 会话的当前上下文占比。
@@ -1410,28 +1432,39 @@ async fn context_usage(
             cu.ok = true; // 本会话尚无上下文
             return cu;
         }
-        let Ok(content) = fs::read_to_string(&jsonl) else { return cu };
-        for line in content.lines().rev() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            let Some(usage) = v.pointer("/message/usage") else { continue };
-            let g = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-            let tokens = g("input_tokens")
-                + g("cache_read_input_tokens")
-                + g("cache_creation_input_tokens");
-            if tokens == 0 {
-                continue;
+        // transcript 可能达数十 MB；最近一条 usage 几乎总在文件尾部——先只读尾部 512KB 扫，
+        // 命中就用；没命中（罕见：尾部恰好没有带 usage 的助手消息）再整读兜底，
+        // 避免每次轮询都把整份文件读进内存。
+        let scan = |text: &str| -> Option<(u64, u64)> {
+            for line in text.lines().rev() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Some(usage) = v.pointer("/message/usage") else { continue };
+                let g = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+                let tokens = g("input_tokens")
+                    + g("cache_read_input_tokens")
+                    + g("cache_creation_input_tokens");
+                if tokens == 0 {
+                    continue;
+                }
+                let model = v
+                    .pointer("/message/model")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                // 横幅探到的窗口最准；否则按模型默认兜底
+                let limit = limit_override.unwrap_or_else(|| context_limit_for(model, tokens));
+                return Some((tokens, limit));
             }
-            let model = v
-                .pointer("/message/model")
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            // 横幅探到的窗口最准；否则按模型默认兜底
-            let limit = limit_override.unwrap_or_else(|| context_limit_for(model, tokens));
+            None
+        };
+        let found = read_file_tail(&jsonl, 512 * 1024)
+            .as_deref()
+            .and_then(&scan)
+            .or_else(|| fs::read_to_string(&jsonl).ok().and_then(|c| scan(&c)));
+        if let Some((tokens, limit)) = found {
             cu.ok = true;
             cu.tokens = tokens;
             cu.limit = limit;
             cu.percent = ((tokens as f64 / limit as f64) * 100.0).round().min(100.0) as u32;
-            break;
         }
         cu
     })
@@ -1642,6 +1675,32 @@ fn terminal_create(
             );
     }
 
+    // 先登记会话元信息 + PtySession，再起 reader 线程——否则 shell 秒退时 reader 可能
+    // 在下面登记之前就读到 EOF、触发 cleanup_session 扑空，之后登记的这两张表就再没人清理
+    // （泄漏 master FD + 手机端幽灵会话）。writer 包一层 Arc<Mutex<>>，让 terminal_write
+    // 能在锁外做可能阻塞的写、不攥着全局 sessions 锁。
+    state.hub.metas.lock().map_err(|e| e.to_string())?.insert(
+        id.clone(),
+        SessionMeta {
+            id: id.clone(),
+            name: sess_name.clone(),
+            tool: sess_tool.clone(),
+        },
+    );
+    state
+        .hub
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(
+            id.clone(),
+            PtySession {
+                master: pair.master,
+                writer: Arc::new(Mutex::new(writer)),
+                child,
+            },
+        );
+
     let app_evt = app.clone();
     let sid = id.clone();
     let hub_evt = state.hub.clone();
@@ -1692,42 +1751,22 @@ fn terminal_create(
         }
     });
 
-    // 注册会话元信息（供手机端列表展示）
-    state.hub.metas.lock().map_err(|e| e.to_string())?.insert(
-        id.clone(),
-        SessionMeta {
-            id: id.clone(),
-            name: sess_name,
-            tool: sess_tool,
-        },
-    );
-
-    state
-        .hub
-        .sessions
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(
-            id,
-            PtySession {
-                master: pair.master,
-                writer,
-                child,
-            },
-        );
     Ok(())
 }
 
 /// 把前端的键入（已是 UTF-8 文本）写进对应会话的 PTY。
 #[tauri::command]
 fn terminal_write(state: State<TerminalState>, id: String, data: String) -> Result<(), String> {
-    let mut sessions = state.hub.sessions.lock().map_err(|e| e.to_string())?;
-    let session = sessions.get_mut(&id).ok_or("会话不存在")?;
-    session
-        .writer
-        .write_all(data.as_bytes())
-        .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())?;
+    // 只在锁内取出该会话的 writer 句柄（clone Arc，廉价），随即释放全局 sessions 锁，
+    // 再做可能阻塞的 write_all/flush——否则向「暂不读 stdin 的前台程序」灌大段内容时，
+    // 阻塞的写会一直攥着全局锁，把 create/resize/close 所有会话（含关掉这个卡住的）全楔死。
+    let writer = {
+        let sessions = state.hub.sessions.lock().map_err(|e| e.to_string())?;
+        sessions.get(&id).ok_or("会话不存在")?.writer.clone()
+    };
+    let mut w = writer.lock().map_err(|e| e.to_string())?;
+    w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    w.flush().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1760,6 +1799,7 @@ fn terminal_close(state: State<TerminalState>, id: String) -> Result<(), String>
     // 与 reader 线程 EOF 路径（mark_exit）共用同一处逻辑，避免漏删某个表泄漏。
     if let Some(mut session) = state.hub.cleanup_session(&id) {
         let _ = session.child.kill();
+        let _ = session.child.wait(); // 回收，否则子进程变僵尸挂到 app 退出
     }
     if let Ok(mut map) = state.activity.lock() {
         map.remove(&id);

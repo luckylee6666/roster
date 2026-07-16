@@ -160,8 +160,8 @@ function renderGroups() {
     const isActive = activeGroup === name;
     const groupProjects = projects.filter(p => (p.group || '未分组') === name);
     return `
-    <div class="menu-group-item ${isActive ? 'expanded' : ''}" data-group="${esc(name)}">
-      <a class="menu-item ${isActive ? 'active' : ''}" href="#" data-group="${esc(name)}">
+    <div class="menu-group-item ${isActive ? 'expanded' : ''}" data-group="${escAttr(name)}">
+      <a class="menu-item ${isActive ? 'active' : ''}" href="#" data-group="${escAttr(name)}">
         <svg class="group-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M9 18l6-6-6-6"/>
         </svg>
@@ -185,7 +185,7 @@ function renderGroups() {
 
   el.groupSuggestions.innerHTML = Object.keys(groups)
     .filter(g => g !== '未分组')
-    .map(g => `<option value="${esc(g)}">`)
+    .map(g => `<option value="${escAttr(g)}">`)
     .join('');
 
   el.groupList.querySelectorAll('.menu-group-item > .menu-item').forEach(item => {
@@ -282,10 +282,10 @@ function filterAndRender() {
 
   if (q) {
     filtered = filtered.filter(p =>
-      p.name.toLowerCase().includes(q) ||
-      p.description.toLowerCase().includes(q) ||
-      p.localPath.toLowerCase().includes(q) ||
-      p.remoteUrl.toLowerCase().includes(q)
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.description || '').toLowerCase().includes(q) ||
+      (p.localPath || '').toLowerCase().includes(q) ||
+      (p.remoteUrl || '').toLowerCase().includes(q)
     );
   }
 
@@ -317,11 +317,11 @@ function render(list) {
           <div class="card-info">
             <div class="info-item">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
-              <span title="${esc(p.localPath)}">${esc(short(p.localPath))}</span>
+              <span title="${escAttr(p.localPath)}">${esc(short(p.localPath))}</span>
             </div>
             ${p.remoteUrl ? `<div class="info-item">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg>
-              <a href="${esc(p.remoteUrl)}" target="_blank">${esc(repo(p.remoteUrl))}</a>
+              <a class="card-remote-link" href="${escAttr(p.remoteUrl)}" rel="noopener noreferrer">${esc(repo(p.remoteUrl))}</a>
             </div>` : ''}
           </div>
           ${p.description ? `<div class="card-desc">${esc(p.description)}</div>` : ''}
@@ -363,6 +363,15 @@ function render(list) {
     };
     card.querySelector('.edit-btn').onclick = () => openModal(p);
     card.querySelector('.del-btn').onclick = () => del(p.id, p.name);
+    const remoteLink = card.querySelector('.card-remote-link');
+    if (remoteLink) remoteLink.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      // 只放行 http(s) 并交给系统浏览器打开——绝不让注入的 javascript: 或异常 scheme
+      // 在 webview 里执行，也不让主 webview 被导航离开应用。
+      const u = p.remoteUrl || '';
+      if (/^https?:\/\//i.test(u)) invoke('open_url', { url: u }).catch(() => {});
+    };
   });
 
   refreshGitStatus();
@@ -379,7 +388,7 @@ function gitBadgeHtml(r) {
   if (r.behind) metrics += `<span class="git-m git-behind" title="落后上游提交">↓${r.behind}</span>`;
   if (!r.dirty && !r.ahead && !r.behind) metrics = '<span class="git-m git-ok" title="干净，与上游同步">✓</span>';
   return `<span class="git-badge ${r.dirty ? 'is-dirty' : 'is-clean'}">`
-    + `<span class="git-branch" title="当前分支：${esc(r.branch)}">${branchIcon}${esc(r.branch || '?')}</span>`
+    + `<span class="git-branch" title="当前分支：${escAttr(r.branch)}">${branchIcon}${esc(r.branch || '?')}</span>`
     + metrics + '</span>';
 }
 
@@ -729,12 +738,15 @@ function closeLaunchMenu() {
   launchMenuProject = null;
 }
 
+let submitting = false;
 async function submit(e) {
   e.preventDefault();
   if (!el.form.checkValidity()) {
     el.form.reportValidity();
     return;
   }
+  if (submitting) return; // 防止 invoke 在途时重复点「确定」产生重复项目
+  submitting = true;
 
   const data = {
     name: el.name.value.trim(),
@@ -765,6 +777,8 @@ async function submit(e) {
   } catch (e) {
     console.error('操作失败:', e);
     msg('操作失败: ' + (e.message || e), 'error');
+  } finally {
+    submitting = false;
   }
 }
 
@@ -822,12 +836,15 @@ function closeServerModal() {
   currentServerEditId = null;
 }
 
+let submittingServer = false;
 async function submitServer(e) {
   e.preventDefault();
   if (!el.serverForm.checkValidity()) {
     el.serverForm.reportValidity();
     return;
   }
+  if (submittingServer) return; // 防重复点击产生重复服务器
+  submittingServer = true;
 
   const data = {
     name: el.serverName.value.trim(),
@@ -856,6 +873,8 @@ async function submitServer(e) {
   } catch (e) {
     console.error('服务器操作失败:', e);
     msg('操作失败: ' + (e.message || e), 'error');
+  } finally {
+    submittingServer = false;
   }
 }
 
@@ -1159,6 +1178,18 @@ function esc(s) {
 // 用于 HTML 属性值（如 title="..."）：在 esc 基础上再转义引号，防内容里的 " 截断属性
 function escAttr(s) {
   return esc(s).replace(/"/g, '&quot;');
+}
+
+// 整表保存后，把后端生成的 id/时间戳按发送顺序回填到原对象引用（不整体替换数组）。
+// 只回填 fields 指定的后端元字段，绝不覆盖标题/内容等用户可编辑字段——
+// 否则会把「保存在途期间的并发编辑」一并冲掉。
+function backfillMeta(snapshot, saved, fields) {
+  if (!Array.isArray(saved)) return;
+  saved.forEach((row, i) => {
+    const obj = snapshot[i];
+    if (!obj || !row) return;
+    fields.forEach(f => { if (row[f] != null) obj[f] = row[f]; });
+  });
 }
 
 function short(p) {
@@ -1721,7 +1752,8 @@ function maybeRestoreSessions() {
   if (!Array.isArray(layout) || !layout.length) return;
   // 问一次就把记录清掉：恢复会重新落盘最新布局，取消则不再纠缠
   localStorage.removeItem('term-session-layout');
-  const cmds = layout.filter(it => it.autoCmd).map(it => it.autoCmd.trim().split(/\s+/)[0]);
+  const cmds = layout.filter(it => it && typeof it.autoCmd === 'string' && it.autoCmd)
+    .map(it => it.autoCmd.trim().split(/\s+/)[0]);
   const hasClaude = cmds.includes('claude');
   showConfirm({
     title: '恢复终端会话',
@@ -1733,7 +1765,8 @@ function maybeRestoreSessions() {
 }
 async function restoreSessions(layout) {
   for (const it of layout) {
-    let cmd = (it.autoCmd || '').trim();
+    if (!it || typeof it !== 'object') continue;
+    let cmd = (typeof it.autoCmd === 'string' ? it.autoCmd : '').trim();
     const first = cmd.split(/\s+/)[0];
     // claude 接上次对话；已带 continue/resume 就不重复加
     if (first === 'claude' && !/(^|\s)(--continue|--resume|-c)(\s|$)/.test(cmd)) {
@@ -1849,20 +1882,25 @@ async function saveSnippetFromEditor() {
   } else {
     snippets.push({ id: '', title, content, createdAt: '', schedule });
   }
-  await persistSnippets();
+  try { await persistSnippets(); } catch (_) { return; } // 保存失败已弹错，别再弹「已保存」
   clearSnippetEditor();
   renderSnippetList();
   msg('已保存', 'success');
 }
 // 串行化保存（同 persistRequirements），避免快速增改时整表快照乱序覆盖。
+// 关键：不再用后端返回值整体替换数组——那会把「保存在途期间新增/删除的条目」一并覆盖丢掉。
+// 改为按发送顺序把后端补的 id/时间戳回填到原对象引用上（后端保持顺序、只补空字段）。
+// 保存失败时上抛（且弹错），让调用方据此不再弹「已保存」等假成功提示。
 let snippetSaveChain = Promise.resolve();
 function persistSnippets() {
-  snippetSaveChain = snippetSaveChain.then(async () => {
-    try { snippets = await invoke('save_snippets', { snippets }); }
-    catch (e) { msg('保存失败: ' + (e.message || e), 'error'); }
+  const run = snippetSaveChain.then(async () => {
+    const snapshot = snippets.slice(); // 定格本次发送的成员引用
+    const saved = await invoke('save_snippets', { snippets: snapshot });
+    backfillMeta(snapshot, saved, ['id', 'createdAt']);
     renderSnippetQuick();
-  });
-  return snippetSaveChain;
+  }).catch(e => { msg('保存失败: ' + (e.message || e), 'error'); throw e; });
+  snippetSaveChain = run.catch(() => {}); // 链子始终保持 resolved，避免一次失败后续保存全被跳过
+  return run;
 }
 
 // 终端右下角片段快捷浮层：列出片段卡片，单击即注入并回车。无片段时整体隐藏。
@@ -1918,7 +1956,8 @@ function renderSnippetList() {
     if (tgl) tgl.onclick = async () => {
       s.schedule.enabled = !s.schedule.enabled;
       schedRuntime.delete(s.id);
-      await persistSnippets();
+      try { await persistSnippets(); }
+      catch (_) { s.schedule.enabled = !s.schedule.enabled; renderSnippetList(); return; } // 失败回滚
       renderSnippetList();
       msg(s.schedule.enabled ? '已启用定时' : '已暂停定时', 'info');
     };
@@ -1927,7 +1966,7 @@ function renderSnippetList() {
     row.querySelector('.snippet-del-btn').onclick = () => {
       askConfirm('片段', s.title, async () => {
         snippets = snippets.filter(x => x.id !== s.id);
-        await persistSnippets();
+        try { await persistSnippets(); } catch (_) { return; }
         renderSnippetList();
         msg('已删除', 'success');
       });
@@ -2062,14 +2101,18 @@ function openReqModal() {
 function closeReqModal() { $('req-modal-overlay')?.classList.remove('active'); }
 
 // 串行化保存：连续快速增改时，避免两次保存的整表快照乱序覆盖、把刚记的项挤掉。
+// 同 persistSnippets：不整体替换数组（否则丢在途新增/删除），只按序回填后端 id/时间戳；
+// 失败时上抛，调用方据此不弹假成功。
 let reqSaveChain = Promise.resolve();
 function persistRequirements() {
-  reqSaveChain = reqSaveChain.then(async () => {
-    try { requirements = await invoke('save_requirements', { requirements }); }
-    catch (e) { msg('保存失败: ' + (e.message || e), 'error'); }
+  const run = reqSaveChain.then(async () => {
+    const snapshot = requirements.slice();
+    const saved = await invoke('save_requirements', { requirements: snapshot });
+    backfillMeta(snapshot, saved, ['id', 'createdAt', 'updatedAt']);
     updateReqBadge();
-  });
-  return reqSaveChain;
+  }).catch(e => { msg('保存失败: ' + (e.message || e), 'error'); throw e; });
+  reqSaveChain = run.catch(() => {});
+  return run;
 }
 
 async function addRequirement() {
@@ -2084,14 +2127,15 @@ async function addRequirement() {
     createdAt: '', updatedAt: '',
   });
   input.value = '';
-  await persistRequirements();
+  try { await persistRequirements(); } catch (_) { return; }
   renderReqList();
   input.focus();
 }
 
 async function cycleReqStatus(r) {
+  const prev = r.status;
   r.status = REQ_STATUS[r.status]?.next || 'todo';
-  await persistRequirements();
+  try { await persistRequirements(); } catch (_) { r.status = prev; renderReqList(); return; }
   renderReqList();
 }
 
@@ -2185,7 +2229,7 @@ function renderReqList() {
         r.priority = $('req-edit-priority').value;
         r.projectId = $('req-edit-project').value;
         reqEditId = null;
-        await persistRequirements();
+        try { await persistRequirements(); } catch (_) { renderReqList(); return; }
         renderReqList();
       };
       $('req-edit-title').addEventListener('keydown', e => {
@@ -2208,7 +2252,7 @@ function renderReqList() {
         if (act === 'del') {
           askConfirm('需求', r.title, async () => {
             requirements = requirements.filter(x => x.id !== r.id);
-            await persistRequirements();
+            try { await persistRequirements(); } catch (_) { return; }
             renderReqList();
             msg('已删除', 'success');
           });

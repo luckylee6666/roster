@@ -48,12 +48,16 @@ fn run_shell(script: &str, timeout_secs: u64) -> Result<String, String> {
     // 整棵进程树），否则超时返回后进程会成孤儿继续跑、读线程也永远醒不过来——是真实的泄漏。
     #[cfg(not(target_os = "windows"))]
     let spawn = {
+        use std::os::unix::process::CommandExt;
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         std::process::Command::new(shell)
             .arg("-ilc")
             .arg(script)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // 自成进程组：超时时才能连 shell 派生的 ccusage/npx/node 孙进程一起 kill，
+            // 否则只杀直接子进程（shell），孙进程成孤儿继续跑、两个读线程也醒不过来。
+            .process_group(0)
             .spawn()
     };
     #[cfg(target_os = "windows")]
@@ -96,8 +100,17 @@ fn run_shell(script: &str, timeout_secs: u64) -> Result<String, String> {
             }
         }
         Err(_) => {
-            // 超时：杀子进程并回收——不然进程 + 两个读线程都会泄漏
-            let _ = child.kill();
+            // 超时：杀掉整个进程组（shell + ccusage/npx/node 孙进程）并回收，
+            // 不然孙进程成孤儿继续跑、两个读线程也永远等不到 EOF。
+            #[cfg(not(target_os = "windows"))]
+            {
+                // child 是进程组组长（process_group(0)），pid==pgid，kill 负号 pid 即杀整组。
+                let _ = std::process::Command::new("/bin/kill")
+                    .arg("-KILL")
+                    .arg(format!("-{}", child.id()))
+                    .status();
+            }
+            let _ = child.kill(); // 兜底 + Windows 路径
             let _ = child.wait();
             Err("命令超时（ccusage/claude 未响应）".to_string())
         }
@@ -455,7 +468,11 @@ fn cache_read<T: serde::de::DeserializeOwned>(path: &PathBuf, ttl_ms: u64) -> Op
 fn cache_write<T: Serialize>(path: &PathBuf, data: &T) {
     let v = serde_json::json!({ "ts": now_ms(), "data": data });
     if let Ok(s) = serde_json::to_string(&v) {
-        let _ = std::fs::write(path, s);
+        // 同目录 tmp + rename，避免崩溃/断电留半截缓存文件（与主数据存储一致）
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 }
 
