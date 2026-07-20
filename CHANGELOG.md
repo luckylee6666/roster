@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.8
+
+### English
+
+**Fixed**
+- **Runaway `ccusage` processes could exhaust memory and freeze the whole machine**: every cache-miss usage query spawned its own `ccusage`/`npx`/`node` process tree, and each one loads the full local JSONL logs into memory — rapid refresh clicks or quick tab switches piled up half a dozen of them within the 90-second timeout. Usage queries now go through a global single-flight gate (at most one `ccusage` process tree at any moment; queued callers re-check the cache once the running one finishes), failures enter a 30-second cooldown instead of re-spawning on every click, and the panel ignores repeat clicks while a query is already in flight.
+
+**Removed**
+- The dead `claude_usage` backend command (the old ccusage 5-hour-window path; the panel stopped calling it in v1.2.7). Claude usage no longer touches `ccusage` at all — the Claude tab is a single rate-limit API call. Only the Codex / OpenCode weekly stats still use `ccusage`, now behind the guards above.
+
+### 中文
+
+**修复**
+- **ccusage 进程堆积可致内存爆满、整机卡死**：此前缓存未命中的用量查询各自拉起一棵 `ccusage`/`npx`/`node` 进程树，每棵都把全量本地 JSONL 日志读进内存——连点刷新或快速切换标签，90 秒超时内能堆出成排进程。现在用量查询过全局单飞锁（任一时刻至多一棵 ccusage 进程树；排队的调用等它跑完后先重查缓存），失败进入 30 秒冷却期、不再每次点击都重新拉起进程，且面板在查询在途时忽略重复点击。
+
+**移除**
+- 后端残留的 `claude_usage` 命令（旧的 ccusage 5 小时窗口路径；面板自 v1.2.7 起已不再调用）。Claude 用量彻底不再碰 `ccusage`——Claude 标签只走一次限流接口调用。仅 Codex / OpenCode 周用量仍用 `ccusage`，且已加上述防护。
+
 ## v1.2.7
 
 ### English
