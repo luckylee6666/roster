@@ -1354,6 +1354,14 @@ const termEl = {
   previewClose: $('file-preview-close'),
 };
 
+// 标签一屏放不下时横向滚动查看；触控板本来能横滑，这里让鼠标竖向滚轮也能滚
+termEl.tabs.addEventListener('wheel', (ev) => {
+  if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
+  if (termEl.tabs.scrollWidth <= termEl.tabs.clientWidth) return;
+  ev.preventDefault();
+  termEl.tabs.scrollLeft += ev.deltaY;
+}, { passive: false });
+
 // 终端配色方案
 const TERM_THEMES = {
   // 上一版原色（深蓝灰底）
@@ -3080,6 +3088,8 @@ function activateSession(id) {
   });
   closePreview();
   if (rootChanged) renderTree(s.cwd);
+  // 标签栏可横向滚动：激活的标签可能在可视区外，滚进来
+  s.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   fitSession(id);
   s.term.focus();
   clearAttention(id);

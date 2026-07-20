@@ -1573,7 +1573,9 @@ body {
   gap: 8px;
   padding: 0 12px;
   min-width: 120px;
-  max-width: 250px;
+  max-width: 420px;
+  /* 不许被挤压：标签多时靠容器横向滚动，名字不被徽标挤没 */
+  flex-shrink: 0;
   height: 100%;
   border-right: 1px solid #2b313d;
   color: #aeb6c4;
@@ -1629,6 +1631,7 @@ body {
 
 .term-tab-name {
   flex: 1;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
