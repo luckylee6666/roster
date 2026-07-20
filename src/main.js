@@ -931,6 +931,7 @@ function closeRemote() {
 // ===== 用量统计 =====
 let usageAgent = 'claude';      // 当前用量 tab：claude / codex / opencode
 let npxAvailable = null;        // null=未知 / true / false：花费统计(ccusage)是否可用
+const usageWeeklyInflight = new Set(); // 查询在途的 agent：防连点/快速切 tab 并发起 ccusage
 
 // 没有 npx 时花费/Codex/OpenCode 的友好降级块（限流用量不受影响）
 function nodeNeededHTML(what) {
@@ -990,10 +991,18 @@ async function loadUsage() {
         body.innerHTML = nodeNeededHTML(agent === 'codex' ? 'Codex 用量' : 'OpenCode 用量');
         return;
       }
+      // 每单 agent_weekly 都是一棵吃内存的 ccusage/node 进程树（后端另有全局单飞锁兜底），
+      // 该 tab 已有一单在途就不再叠加
+      if (usageWeeklyInflight.has(agent)) return;
+      usageWeeklyInflight.add(agent);
       body.innerHTML = '<div class="usage-loading">查询中…（首次走 npx 拉 ccusage，稍等）</div>';
-      const w = await invoke('agent_weekly', { agent });
-      if (usageAgent !== agent) return;
-      body.innerHTML = renderAgentHTML(w, agent);
+      try {
+        const w = await invoke('agent_weekly', { agent });
+        if (usageAgent !== agent) return;
+        body.innerHTML = renderAgentHTML(w, agent);
+      } finally {
+        usageWeeklyInflight.delete(agent);
+      }
     }
   } catch (e) {
     body.innerHTML = `<div class="usage-error">查询失败：${esc(String(e))}</div>`;

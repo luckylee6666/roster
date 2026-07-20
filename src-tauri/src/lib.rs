@@ -1922,16 +1922,8 @@ fn terminal_remote_stop(state: State<TerminalState>) {
     crate::log_info!("手机远程服务已停止");
 }
 
-/// 查询当前 5 小时窗口的 Claude 用量（走 ccusage）。
-/// async + spawn_blocking：ccusage 要跑几秒，绝不能阻塞主线程（否则 UI 冻住）。
-#[tauri::command]
-async fn claude_usage() -> Result<usage::ClaudeUsage, String> {
-    tauri::async_runtime::spawn_blocking(usage::fetch_usage_cached)
-        .await
-        .map_err(|e| e.to_string())
-}
-
 /// 查询某个 CLI 的周用量（claude / codex / opencode），走 ccusage。
+/// async + spawn_blocking：ccusage 要跑几秒，绝不能阻塞主线程（否则 UI 冻住）。
 #[tauri::command]
 async fn agent_weekly(agent: String) -> Result<usage::AgentWeekly, String> {
     tauri::async_runtime::spawn_blocking(move || usage::fetch_agent_weekly_cached(&agent))
@@ -2125,7 +2117,6 @@ pub fn run() {
             load_theme_image,
             get_requirements,
             save_requirements,
-            claude_usage,
             agent_weekly,
             oauth_usage,
             has_npx,

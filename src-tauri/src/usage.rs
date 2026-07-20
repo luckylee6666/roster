@@ -1,38 +1,16 @@
-//! Claude 用量查询（5 小时窗口 / 限流用量）。
+//! 用量查询：OAuth 限流用量（Claude，同 /usage 数据源）+ 多 CLI 周用量（ccusage）。
 //!
-//! 数据源：社区工具 `ccusage`（读 ~/.claude/projects 下的 JSONL 本地日志，不联网传数据），
-//! 取 `ccusage blocks --json` 里 `isActive` 的那一块——即当前 5 小时计费窗口，
-//! 含起止时间、花费、token、燃烧速率、预测。
+//! Claude 限流用量走一次 https 调用（api/oauth/usage），零 Node 依赖。
+//! Codex / OpenCode 周用量走社区工具 `ccusage`（读各 CLI 本地日志，不联网传数据）。
+//! ccusage 每次运行都把全量 JSONL 日志读进内存（可达数百 MB），并发多个足以把整机
+//! 内存吃爆——所以走 ccusage 的路径必须过全局单飞锁 + 失败冷却（见 CCUSAGE_GATE）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-/// 当前 5 小时窗口的用量快照，推给前端展示。
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaudeUsage {
-    /// ccusage 是否成功跑通（没装 / 没日志时为 false）
-    pub ok: bool,
-    pub error: Option<String>,
-    /// 是否存在活跃的 5h 窗口（false = 已重置 / 空闲）
-    pub active: bool,
-    /// 窗口起始（ISO，UTC）
-    pub start_time: String,
-    /// 窗口重置时刻（ISO，UTC）——前端据此倒计时
-    pub end_time: String,
-    pub cost_usd: f64,
-    pub total_tokens: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub models: Vec<String>,
-    /// 按当前速率预测到窗口结束的总花费
-    pub projected_cost: Option<f64>,
-    /// 燃烧速率（美元/小时）
-    pub cost_per_hour: Option<f64>,
-}
 
 /// 经「交互式登录」shell 跑一条命令，继承用户完整 PATH
 /// （GUI 启动的进程默认拿不到 nvm/npx/claude）。
@@ -117,45 +95,6 @@ fn run_shell(script: &str, timeout_secs: u64) -> Result<String, String> {
     }
 }
 
-/// 拉取当前 5 小时窗口用量。优先全局 `ccusage`，否则 `npx -y ccusage@latest`。
-pub fn fetch_usage() -> ClaudeUsage {
-    // stderr 丢弃（npm 的 warn 不影响 stdout 的 JSON）
-    // 优先全局 ccusage；否则 npx 拉 @latest。不用 --prefer-offline：缓存里的旧版可能缺
-    // darwin-arm64 原生依赖（报 "native binary is not available"），@latest 会装齐 optional deps。
-    let script = "ccusage blocks --json 2>/dev/null || npx -y ccusage@latest blocks --json 2>/dev/null";
-    match run_shell(script, 60) {
-        Ok(json) => match parse_blocks(&json) {
-            Ok(mut u) => {
-                u.ok = true;
-                u
-            }
-            Err(e) => {
-                crate::log_warn!("ccusage blocks 解析失败：{e}");
-                ClaudeUsage {
-                    ok: false,
-                    error: Some(format!("解析 ccusage 输出失败：{e}")),
-                    ..Default::default()
-                }
-            }
-        },
-        Err(e) => {
-            crate::log_warn!(
-                "ccusage blocks 运行失败：{}",
-                if e.is_empty() { "(无输出)" } else { e.as_str() }
-            );
-            ClaudeUsage {
-                ok: false,
-                error: Some(if e.is_empty() {
-                    "无法运行 ccusage（确认已装 Node/npx，且用过 Claude Code）".to_string()
-                } else {
-                    e
-                }),
-                ..Default::default()
-            }
-        }
-    }
-}
-
 /// 从可能带 shell 启动噪声（交互式 zsh 的 .zshrc 偶尔往 stdout 打印 "Restored session:" 等）
 /// 的输出里截出 JSON 主体——从第一个 `{` 或 `[` 开始。
 fn slice_json(s: &str) -> &str {
@@ -163,59 +102,6 @@ fn slice_json(s: &str) -> &str {
         Some(i) => &s[i..],
         None => s,
     }
-}
-
-fn parse_blocks(json: &str) -> Result<ClaudeUsage, String> {
-    let v: Value = serde_json::from_str(slice_json(json)).map_err(|e| e.to_string())?;
-    let blocks = v
-        .get("blocks")
-        .and_then(|b| b.as_array())
-        .ok_or("缺少 blocks 字段")?;
-    let block = blocks
-        .iter()
-        .find(|b| b.get("isActive").and_then(|x| x.as_bool()).unwrap_or(false));
-
-    let Some(b) = block else {
-        // 没有活跃窗口 = 已重置 / 空闲
-        return Ok(ClaudeUsage {
-            active: false,
-            ..Default::default()
-        });
-    };
-
-    let counts = b.get("tokenCounts");
-    let get_u64 = |obj: Option<&Value>, k: &str| -> u64 {
-        obj.and_then(|o| o.get(k)).and_then(|x| x.as_u64()).unwrap_or(0)
-    };
-
-    Ok(ClaudeUsage {
-        active: true,
-        start_time: b.get("startTime").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        end_time: b.get("endTime").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        cost_usd: b.get("costUSD").and_then(|x| x.as_f64()).unwrap_or(0.0),
-        total_tokens: b.get("totalTokens").and_then(|x| x.as_u64()).unwrap_or(0),
-        input_tokens: get_u64(counts, "inputTokens"),
-        output_tokens: get_u64(counts, "outputTokens"),
-        cache_read_tokens: get_u64(counts, "cacheReadInputTokens"),
-        models: b
-            .get("models")
-            .and_then(|m| m.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        projected_cost: b
-            .get("projection")
-            .and_then(|p| p.get("totalCost"))
-            .and_then(|x| x.as_f64()),
-        cost_per_hour: b
-            .get("burnRate")
-            .and_then(|p| p.get("costPerHour"))
-            .and_then(|x| x.as_f64()),
-        ..Default::default()
-    })
 }
 
 // ============================================================================
@@ -476,28 +362,61 @@ fn cache_write<T: Serialize>(path: &PathBuf, data: &T) {
     }
 }
 
-/// 带缓存的 5h 窗口用量（面板用）：60s 内直接返缓存；否则实时拉并写缓存。
-pub fn fetch_usage_cached() -> ClaudeUsage {
-    let path = cache_file("ccusage-blocks-cache.json");
-    if let Some(c) = cache_read::<ClaudeUsage>(&path, 60_000) {
-        return c;
-    }
-    let u = fetch_usage();
-    if u.ok {
-        cache_write(&path, &u);
-    }
-    u
+// ============================================================================
+// ccusage 进程防护：全局单飞 + 失败冷却。
+// 每棵 ccusage/npx/node 进程树都把全量日志读进内存；没有防护时连点刷新/快速切
+// tab 会并发堆出一排 node，内存爆满整机卡死（真实事故，2026-07）。
+// ============================================================================
+
+/// 全局单飞锁：任一时刻至多一棵 ccusage 进程树在跑，其余调用排队等锁后重查缓存。
+static CCUSAGE_GATE: Mutex<()> = Mutex::new(());
+
+/// 失败冷却表：key → (失败时刻 ms, 错误信息)。冷却窗口内直接返回上次错误，不再起进程。
+static LAST_FAIL: OnceLock<Mutex<HashMap<String, (u64, String)>>> = OnceLock::new();
+const FAIL_COOLDOWN_MS: u64 = 30_000;
+
+fn fail_map() -> &'static Mutex<HashMap<String, (u64, String)>> {
+    LAST_FAIL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn recent_failure(key: &str) -> Option<String> {
+    let m = fail_map().lock().unwrap_or_else(|p| p.into_inner());
+    m.get(key)
+        .filter(|(ts, _)| now_ms().saturating_sub(*ts) < FAIL_COOLDOWN_MS)
+        .map(|(_, err)| err.clone())
+}
+fn record_failure(key: &str, err: &str) {
+    let mut m = fail_map().lock().unwrap_or_else(|p| p.into_inner());
+    m.insert(key.to_string(), (now_ms(), err.to_string()));
 }
 
 /// 带缓存的周用量（面板用）：周数据变化慢，缓存 10 分钟。
+/// 缓存未命中时过全局单飞锁——等锁期间别的调用可能已拉好或刚失败，拿到锁后先重查。
 pub fn fetch_agent_weekly_cached(agent: &str) -> AgentWeekly {
+    let fail_result = |err: String| AgentWeekly {
+        ok: false,
+        agent: agent.to_string(),
+        error: Some(err),
+        ..Default::default()
+    };
     let path = cache_file(&format!("ccusage-weekly-{agent}-cache.json"));
     if let Some(c) = cache_read::<AgentWeekly>(&path, 600_000) {
         return c;
     }
+    if let Some(err) = recent_failure(agent) {
+        return fail_result(err);
+    }
+    let _gate = CCUSAGE_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(c) = cache_read::<AgentWeekly>(&path, 600_000) {
+        return c;
+    }
+    if let Some(err) = recent_failure(agent) {
+        return fail_result(err);
+    }
     let w = fetch_agent_weekly(agent);
     if w.ok {
         cache_write(&path, &w);
+    } else {
+        record_failure(agent, w.error.as_deref().unwrap_or("ccusage 运行失败"));
     }
     w
 }
@@ -722,34 +641,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_active_block() {
-        let json = r#"{"blocks":[
-            {"isActive":false,"isGap":true,"id":"gap"},
-            {"isActive":true,"id":"2026-06-15T12:00:00.000Z",
-             "startTime":"2026-06-15T12:00:00.000Z","endTime":"2026-06-15T17:00:00.000Z",
-             "costUSD":54.677,"totalTokens":77577653,
-             "tokenCounts":{"inputTokens":30192,"outputTokens":162249,"cacheReadInputTokens":76145464},
-             "models":["claude-opus-4-8"],
-             "burnRate":{"costPerHour":27.93},
-             "projection":{"remainingMinutes":144,"totalCost":121.71}}
-        ]}"#;
-        let u = parse_blocks(json).expect("应解析成功");
-        assert!(u.active);
-        assert_eq!(u.end_time, "2026-06-15T17:00:00.000Z");
-        assert_eq!(u.total_tokens, 77577653);
-        assert_eq!(u.output_tokens, 162249);
-        assert_eq!(u.cache_read_tokens, 76145464);
-        assert_eq!(u.models, vec!["claude-opus-4-8".to_string()]);
-        assert_eq!(u.projected_cost, Some(121.71));
-        assert_eq!(u.cost_per_hour, Some(27.93));
-    }
-
-    #[test]
-    fn parse_no_active_block() {
-        let json = r#"{"blocks":[{"isActive":false,"id":"old"}]}"#;
-        let u = parse_blocks(json).expect("应解析成功");
-        assert!(!u.active);
-        assert_eq!(u.total_tokens, 0);
+    fn failure_cooldown_roundtrip() {
+        record_failure("test-cooldown-agent", "boom");
+        assert_eq!(
+            recent_failure("test-cooldown-agent"),
+            Some("boom".to_string())
+        );
+        assert_eq!(recent_failure("never-failed-agent"), None);
     }
 
     #[test]
