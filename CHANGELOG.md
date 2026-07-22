@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.9
+
+### English
+
+**Fixed**
+- **Claude rate-limit usage now follows the active Claude Code API configuration**: the app resolves `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` from the process environment first, then from `~/.claude/settings.json`. Custom base URLs correctly map to `/api/oauth/usage` (including configurations ending in `/v1`), while an unconfigured installation still uses Anthropic's official endpoint and Claude Code OAuth login.
+- **Terminal tab names no longer collapse under status badges**: tabs size to their content instead of shrinking into unreadable labels. When they exceed the available width, the tab strip scrolls horizontally via trackpad or mouse wheel, and the active tab automatically scrolls into view.
+
+**Security / Hardened**
+- Claude Code OAuth login tokens are restricted to Anthropic's official endpoint. Custom API hosts must provide their own `ANTHROPIC_AUTH_TOKEN`, and usage caches are isolated per endpoint so switching providers cannot surface data from the previous source.
+
+### 中文
+
+**修复**
+- **Claude 限流用量现会跟随 Claude Code 当前生效的 API 配置**：应用优先读取进程环境中的 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，再读取 `~/.claude/settings.json`。自定义基址会正确拼接 `/api/oauth/usage`（兼容末尾带 `/v1` 的配置）；未配置时仍使用 Anthropic 官方地址和 Claude Code OAuth 登录。
+- **终端标签名不再被状态徽标挤没**：标签按内容自适应宽度，不再缩成无法辨认的短标签。一屏放不下时可通过触控板或鼠标滚轮横向滚动，激活标签会自动滚入可视区。
+
+**安全 / 加固**
+- Claude Code OAuth 登录 token 只允许发往 Anthropic 官方地址；自定义 API 地址必须提供配套的 `ANTHROPIC_AUTH_TOKEN`。用量缓存也按 API 地址隔离，切换服务源后不会误显示上一地址的数据。
+
 ## v1.2.8
 
 ### English

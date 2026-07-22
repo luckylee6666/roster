@@ -7,7 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -293,10 +295,68 @@ pub fn has_npx() -> bool {
 }
 
 // ============================================================================
-// OAuth 用量（限流窗口）：和 Claude Code 的 /usage 同一数据源
-// （GET api.anthropic.com/api/oauth/usage），给出 5h / 7d 的使用百分比 + 重置时间。
-// 比 ccusage 快得多（一次 https 调用），并带 60s 文件缓存。token 从钥匙串读。
+// OAuth 用量（限流窗口）：和 Claude Code 的 /usage 同一数据源。
+// API 基址与认证优先跟随 Claude Code 配置（进程环境变量或 ~/.claude/settings.json
+// 的 env），未配置时回退 Anthropic 官方地址和 Claude Code OAuth 登录凭据。
+// 比 ccusage 快得多（一次 https 调用），并带 60s 文件缓存。
 // ============================================================================
+
+const OFFICIAL_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+
+/// 读取 Claude Code 生效的 ANTHROPIC_* 配置。GUI 从访达/启动台启动时通常拿不到
+/// shell 环境变量，因此还要读取 Claude Code 用户配置里的 env。
+fn claude_env_value(key: &str) -> Option<String> {
+    let non_empty = |value: String| {
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    };
+    if let Ok(value) = std::env::var(key) {
+        if let Some(value) = non_empty(value) {
+            return Some(value);
+        }
+    }
+
+    let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .and_then(non_empty)
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))?;
+    let json = std::fs::read_to_string(config_dir.join("settings.json")).ok()?;
+    let settings: Value = serde_json::from_str(&json).ok()?;
+    settings
+        .pointer(&format!("/env/{key}"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .and_then(non_empty)
+}
+
+/// ANTHROPIC_BASE_URL 通常是主机根地址；兼容用户误带尾部 `/v1` 或直接填写
+/// 完整 usage 地址。只允许 HTTP(S)，避免把配置值解释成 curl 的其他协议。
+fn oauth_usage_endpoint(base_url: &str) -> Result<String, String> {
+    let mut base = base_url.trim().trim_end_matches('/');
+    if !(base.starts_with("https://") || base.starts_with("http://")) {
+        return Err("Claude API 地址必须以 http:// 或 https:// 开头".to_string());
+    }
+    if base.ends_with("/api/oauth/usage") {
+        return Ok(base.to_string());
+    }
+    if let Some(without_v1) = base.strip_suffix("/v1") {
+        base = without_v1.trim_end_matches('/');
+    }
+    Ok(format!("{base}/api/oauth/usage"))
+}
+
+fn configured_oauth_endpoint() -> Result<(String, bool), String> {
+    let official = oauth_usage_endpoint(OFFICIAL_ANTHROPIC_BASE_URL)?;
+    match claude_env_value("ANTHROPIC_BASE_URL") {
+        Some(base_url) => {
+            let endpoint = oauth_usage_endpoint(&base_url)?;
+            let is_custom = endpoint != official;
+            Ok((endpoint, is_custom))
+        }
+        None => Ok((official, false)),
+    }
+}
 
 /// 一个限流窗口（5 小时 / 7 天）。
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -336,8 +396,10 @@ fn cache_file(name: &str) -> PathBuf {
         .join("vibe-coding-manage")
         .join(name)
 }
-fn oauth_cache_path() -> PathBuf {
-    cache_file("oauth-usage-cache.json")
+fn oauth_cache_path(endpoint: &str) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    endpoint.hash(&mut hasher);
+    cache_file(&format!("oauth-usage-cache-{:016x}.json", hasher.finish()))
 }
 
 /// 通用文件缓存：读。ttl_ms 内算新鲜；传 u64::MAX 表示不限期。
@@ -421,9 +483,9 @@ pub fn fetch_agent_weekly_cached(agent: &str) -> AgentWeekly {
     w
 }
 
-/// 读 Claude 登录 token：优先 macOS 钥匙串（首用会弹一次授权框），
-/// 兜底读 ~/.claude/.credentials.json（Linux/Windows 或文件存储）。
-fn read_oauth_token() -> Option<String> {
+/// 读 Claude OAuth 登录凭据（仅供 Anthropic 官方地址使用）：macOS 钥匙串优先，
+/// 文件存储兜底。自定义 API 地址必须配置自己的 ANTHROPIC_AUTH_TOKEN，不能转发此 token。
+fn read_claude_oauth_token() -> Option<String> {
     let pick = |v: &Value| -> Option<String> {
         v.pointer("/claudeAiOauth/accessToken")
             .and_then(|x| x.as_str())
@@ -473,7 +535,7 @@ fn curl_bin() -> &'static str {
 
 /// 调用 oauth/usage 接口。token 走 curl 的 stdin 配置（-K -），不进 argv（避免 ps 泄露）。
 /// 出错时尽量带出真实原因（curl stderr / HTTP 状态码 / 响应片段），便于定位"静默不更新"。
-fn fetch_oauth_usage_raw(token: &str) -> Result<String, String> {
+fn fetch_oauth_usage_raw(endpoint: &str, token: &str) -> Result<String, String> {
     use std::io::Write;
     use std::process::Stdio;
     let bin = curl_bin();
@@ -486,7 +548,7 @@ fn fetch_oauth_usage_raw(token: &str) -> Result<String, String> {
             "\n%{http_code}", // 末行追加 HTTP 状态码，用于区分 200 / 401 / 5xx
             "-K",
             "-",
-            "https://api.anthropic.com/api/oauth/usage",
+            endpoint,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -563,46 +625,66 @@ fn parse_oauth_usage(json: &str) -> Result<OAuthUsage, String> {
 }
 
 /// 读 OAuth 缓存并返回 (数据, 年龄毫秒)。年龄用于判断新鲜度 + 显示"X 分钟前更新"。
-fn read_oauth_cache_with_age() -> Option<(OAuthUsage, u64)> {
-    let s = std::fs::read_to_string(oauth_cache_path()).ok()?;
+fn read_oauth_cache_with_age(endpoint: &str) -> Option<(OAuthUsage, u64)> {
+    let s = std::fs::read_to_string(oauth_cache_path(endpoint)).ok()?;
     let v: Value = serde_json::from_str(&s).ok()?;
     let ts = v.get("ts").and_then(|x| x.as_u64())?;
     let data: OAuthUsage = serde_json::from_value(v.get("data")?.clone()).ok()?;
     Some((data, now_ms().saturating_sub(ts)))
 }
-fn write_oauth_cache(u: &OAuthUsage) {
-    cache_write(&oauth_cache_path(), u);
+fn write_oauth_cache(endpoint: &str, usage: &OAuthUsage) {
+    cache_write(&oauth_cache_path(endpoint), usage);
 }
 
 /// 拉 OAuth 用量。60s 文件缓存命中则秒返；否则读 token → 调 API → 写缓存。
-/// 失败时回退到任意旧缓存，并**带上真实失败原因 + 数据年龄**（标 stale），
+/// 失败时回退到当前 API 地址的旧缓存，并**带上真实失败原因 + 数据年龄**（标 stale），
 /// 避免把几小时前的旧值当现值静默显示。
 pub fn fetch_oauth_usage() -> OAuthUsage {
+    let (endpoint, is_custom_endpoint) = match configured_oauth_endpoint() {
+        Ok(config) => config,
+        Err(error) => {
+            return OAuthUsage {
+                ok: false,
+                error: Some(error),
+                ..Default::default()
+            };
+        }
+    };
     // 60s 内的缓存视为新鲜，直接返回（附上年龄）。
-    if let Some((mut c, age)) = read_oauth_cache_with_age() {
+    if let Some((mut c, age)) = read_oauth_cache_with_age(&endpoint) {
         if age <= 60_000 {
             c.stale = false;
             c.age_secs = age / 1000;
             return c;
         }
     }
-    let token = match read_oauth_token() {
-        Some(t) => t,
+    let token = if is_custom_endpoint {
+        claude_env_value("ANTHROPIC_AUTH_TOKEN")
+    } else {
+        claude_env_value("ANTHROPIC_AUTH_TOKEN").or_else(read_claude_oauth_token)
+    };
+    let token = match token {
+        Some(token) => token,
         None => {
-            crate::log_warn!("oauth 用量：未读到登录凭据（钥匙串/凭据文件均无），无法刷新");
+            let error = if is_custom_endpoint {
+                "自定义 Claude API 地址缺少 ANTHROPIC_AUTH_TOKEN"
+            } else {
+                "未找到 Claude 登录凭据（需用 Claude Code 登录过；首次读取钥匙串会弹授权）"
+            };
+            crate::log_warn!("oauth 用量：{error}，无法刷新");
             return OAuthUsage {
                 ok: false,
-                error: Some("未找到 Claude 登录凭据（需用 Claude Code 登录过；首次读取钥匙串会弹授权）".to_string()),
+                error: Some(error.to_string()),
                 ..Default::default()
-            }
+            };
         }
     };
-    match fetch_oauth_usage_raw(&token).and_then(|j| parse_oauth_usage(&j)) {
+    match fetch_oauth_usage_raw(&endpoint, &token).and_then(|j| parse_oauth_usage(&j)) {
         Ok(mut u) => {
             u.stale = false;
             u.age_secs = 0;
             // 只在数值变化时记 INFO（先读旧缓存再写），避免每分钟一条例行成功淹没日志
-            let prev = read_oauth_cache_with_age().map(|(c, _)| {
+            let prev = read_oauth_cache_with_age(&endpoint).map(|(c, _)| {
                 (
                     c.five_hour.utilization.round() as i64,
                     c.seven_day.utilization.round() as i64,
@@ -615,13 +697,13 @@ pub fn fetch_oauth_usage() -> OAuthUsage {
             if prev != Some(now) {
                 crate::log_info!("oauth 用量刷新：5h {}% · 周 {}%", now.0, now.1);
             }
-            write_oauth_cache(&u);
+            write_oauth_cache(&endpoint, &u);
             u
         }
         Err(e) => {
             // 记真实失败原因，便于排查"为何不更新"
             crate::log_warn!("oauth 用量刷新失败，回退旧缓存：{e}");
-            if let Some((mut c, age)) = read_oauth_cache_with_age() {
+            if let Some((mut c, age)) = read_oauth_cache_with_age(&endpoint) {
                 c.stale = true;
                 c.age_secs = age / 1000;
                 c.error = Some(e); // 携带真实原因供面板显示
@@ -648,6 +730,23 @@ mod tests {
             Some("boom".to_string())
         );
         assert_eq!(recent_failure("never-failed-agent"), None);
+    }
+
+    #[test]
+    fn oauth_endpoint_follows_configured_base_url() {
+        assert_eq!(
+            oauth_usage_endpoint("https://proxy.example.com").unwrap(),
+            "https://proxy.example.com/api/oauth/usage"
+        );
+        assert_eq!(
+            oauth_usage_endpoint("https://proxy.example.com/v1/").unwrap(),
+            "https://proxy.example.com/api/oauth/usage"
+        );
+        assert_eq!(
+            oauth_usage_endpoint("https://proxy.example.com/api/oauth/usage").unwrap(),
+            "https://proxy.example.com/api/oauth/usage"
+        );
+        assert!(oauth_usage_endpoint("file:///tmp/api").is_err());
     }
 
     #[test]
