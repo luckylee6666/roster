@@ -296,8 +296,9 @@ pub fn has_npx() -> bool {
 
 // ============================================================================
 // OAuth 用量（限流窗口）：和 Claude Code 的 /usage 同一数据源。
-// API 基址与认证优先跟随 Claude Code 配置（进程环境变量或 ~/.claude/settings.json
-// 的 env），未配置时回退 Anthropic 官方地址和 Claude Code OAuth 登录凭据。
+// 只有 Anthropic 官方地址调用标准 oauth/usage 接口；检测到自定义 API 地址时直接跳过，
+// 不向未知第三方探测或发送 token。官方地址的认证优先跟随 Claude Code 配置（进程环境变量
+// 或 ~/.claude/settings.json 的 env），未配置时回退 Claude Code OAuth 登录凭据。
 // 比 ccusage 快得多（一次 https 调用），并带 60s 文件缓存。
 // ============================================================================
 
@@ -650,6 +651,13 @@ pub fn fetch_oauth_usage() -> OAuthUsage {
             };
         }
     };
+    if is_custom_endpoint {
+        return OAuthUsage {
+            ok: false,
+            error: Some("当前是第三方 Claude API 地址，未调用用量接口（第三方未声明支持）".to_string()),
+            ..Default::default()
+        };
+    }
     // 60s 内的缓存视为新鲜，直接返回（附上年龄）。
     if let Some((mut c, age)) = read_oauth_cache_with_age(&endpoint) {
         if age <= 60_000 {

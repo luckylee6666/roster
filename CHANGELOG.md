@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.10
+
+### English
+
+**Fixed**
+- **Third-party Claude API providers are no longer probed for usage support**: when `ANTHROPIC_BASE_URL` points away from Anthropic's official API, the app skips the usage request before reading credentials or starting `curl` and explains that the provider has not declared usage support.
+
+### 中文
+
+**修复**
+- **不再探测第三方 Claude API 是否支持用量接口**：当 `ANTHROPIC_BASE_URL` 指向 Anthropic 官方地址之外时，应用会在读取凭据和启动 `curl` 之前直接跳过用量请求，并提示该服务未声明支持用量查询。
+
 ## v1.2.9
 
 ### English
