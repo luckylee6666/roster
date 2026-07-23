@@ -1440,7 +1440,6 @@ fn detect_context_window(s: &str) -> Option<u64> {
         let head = lower[..idx].trim_end();
         let Some(slash) = head.rfind('/') else { continue };
         let candidate = head[slash + 1..]
-            .trim()
             .split_whitespace()
             .next()
             .unwrap_or("");
