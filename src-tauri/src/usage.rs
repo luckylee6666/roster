@@ -304,31 +304,35 @@ pub fn has_npx() -> bool {
 
 const OFFICIAL_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 
-/// 读取 Claude Code 生效的 ANTHROPIC_* 配置。GUI 从访达/启动台启动时通常拿不到
-/// shell 环境变量，因此还要读取 Claude Code 用户配置里的 env。
-fn claude_env_value(key: &str) -> Option<String> {
-    let non_empty = |value: String| {
-        let value = value.trim().to_string();
-        (!value.is_empty()).then_some(value)
-    };
-    if let Ok(value) = std::env::var(key) {
-        if let Some(value) = non_empty(value) {
-            return Some(value);
-        }
-    }
+fn non_empty_config_value(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
 
+/// 读取 Claude Code 用户 settings.json 的 env 值，不含当前进程环境变量。
+pub(crate) fn claude_user_env_value(key: &str) -> Option<String> {
     let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
         .ok()
-        .and_then(non_empty)
+        .and_then(non_empty_config_value)
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))?;
     let json = std::fs::read_to_string(config_dir.join("settings.json")).ok()?;
     let settings: Value = serde_json::from_str(&json).ok()?;
     settings
-        .pointer(&format!("/env/{key}"))
-        .and_then(Value::as_str)
+        .get("env")?
+        .get(key)?
+        .as_str()
         .map(str::to_string)
-        .and_then(non_empty)
+        .and_then(non_empty_config_value)
+}
+
+/// 读取 Claude Code 生效的 ANTHROPIC_* 配置。GUI 从访达/启动台启动时通常拿不到
+/// shell 环境变量，因此还要读取 Claude Code 用户配置里的 env。
+fn claude_env_value(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .and_then(non_empty_config_value)
+        .or_else(|| claude_user_env_value(key))
 }
 
 /// ANTHROPIC_BASE_URL 通常是主机根地址；兼容用户误带尾部 `/v1` 或直接填写

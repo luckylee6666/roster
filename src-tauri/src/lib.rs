@@ -1274,15 +1274,62 @@ struct ContextUsage {
     limit: u64,
 }
 
-/// 上下文窗口上限的「兜底」估算——仅在没能从启动横幅探到窗口时用。
-/// 横幅没写 "(1M context)" 即默认标准 200k 窗口（1M 会话一定会在横幅标注，且我们会在
-/// 会话刚起时趁横幅还在抓并缓存）。只有实测用量已超 200k 才说明窗口更大，抬到 1M。
-fn context_limit_for(_model: &str, tokens: u64) -> u64 {
-    if tokens > 200_000 {
-        1_000_000
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+const CONTEXT_WINDOW_ENV: &str = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
+
+fn parse_context_window_value(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    let value = if trimmed.contains([',', '_']) {
+        std::borrow::Cow::Owned(trimmed.replace([',', '_'], ""))
     } else {
-        200_000
+        std::borrow::Cow::Borrowed(trimmed)
+    };
+    let (number, multiplier) = match value.as_bytes().last()?.to_ascii_lowercase() {
+        b'k' => (&value[..value.len() - 1], 1_000_f64),
+        b'm' => (&value[..value.len() - 1], 1_000_000_f64),
+        b'0'..=b'9' => (value.as_ref(), 1_f64),
+        _ => return None,
+    };
+    let parsed = number.parse::<f64>().ok()?;
+    (parsed.is_finite() && parsed > 0.0)
+        .then(|| (parsed * multiplier).round() as u64)
+        .filter(|&n| n > 0)
+}
+
+fn context_window_from_settings_json(json: &str) -> Option<u64> {
+    let settings: serde_json::Value = serde_json::from_str(json).ok()?;
+    let value = settings.get("env")?.get(CONTEXT_WINDOW_ENV)?;
+    match value {
+        serde_json::Value::String(s) => parse_context_window_value(s),
+        serde_json::Value::Number(n) => n.as_u64().filter(|&v| v > 0),
+        _ => None,
     }
+}
+
+fn context_window_from_settings(path: &std::path::Path) -> Option<u64> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|json| context_window_from_settings_json(&json))
+}
+
+/// 读取 Claude Code 当前配置的上下文窗口。进程环境优先；项目本地/共享设置随后；
+/// 最后读取用户设置。只读配置，不注入或覆盖用户已有的 statusLine。
+fn configured_context_window(cwd: &str) -> Option<u64> {
+    if let Ok(value) = std::env::var(CONTEXT_WINDOW_ENV) {
+        if let Some(limit) = parse_context_window_value(&value) {
+            return Some(limit);
+        }
+    }
+
+    let project = PathBuf::from(cwd).join(".claude");
+    for name in ["settings.local.json", "settings.json"] {
+        if let Some(limit) = context_window_from_settings(&project.join(name)) {
+            return Some(limit);
+        }
+    }
+
+    usage::claude_user_env_value(CONTEXT_WINDOW_ENV)
+        .and_then(|value| parse_context_window_value(&value))
 }
 
 /// Claude Code 把项目路径编码成 ~/.claude/projects 下的目录名：`/` 和 `.` 都替换为 `-`。
@@ -1337,35 +1384,96 @@ fn newest_jsonl(dir: &std::path::Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// 从 claude 启动横幅探上下文窗口大小，如 "Opus 4.8 (1M context)" → 1_000_000、
-/// "(200K context)" → 200_000。横幅是 Claude Code 自带（非插件），每个会话都会打印。
-/// 没有 "(… context)" 标注 = 默认 200k 窗口。
+fn strip_terminal_sequences(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.as_bytes().contains(&0x1b) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        match bytes.get(i).copied() {
+            Some(b'[') => {
+                i += 1;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    i += 1;
+                    if (0x40..=0x7e).contains(&b) {
+                        break;
+                    }
+                }
+            }
+            Some(b']') => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            Some(_) => i += 1,
+            None => break,
+        }
+    }
+    std::borrow::Cow::Owned(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// 从 Claude Code 的终端输出探上下文窗口。兼容启动横幅的 `(1M context)`、
+/// 新版的 `353k context`，以及 `/context` 的 `225.8k/353k tokens`。
 fn detect_context_window(s: &str) -> Option<u64> {
-    let lower = s.to_lowercase();
-    let idx = lower.find(" context)")?;
-    let head = lower[..idx].as_bytes();
-    let mut end = head.len();
-    while end > 0 && head[end - 1] == b' ' {
-        end -= 1;
+    let lower = strip_terminal_sequences(s).to_ascii_lowercase();
+
+    // `/context` 的分母最明确，优先取最后一次完整的 `已用/上限 tokens`。
+    for (idx, _) in lower.rmatch_indices(" token") {
+        let head = lower[..idx].trim_end();
+        let Some(slash) = head.rfind('/') else { continue };
+        let candidate = head[slash + 1..]
+            .trim()
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if let Some(limit) = parse_context_window_value(candidate) {
+            return Some(limit);
+        }
     }
-    if end == 0 {
-        return None;
+
+    // 启动横幅。括号只是 UI 样式，不参与协议判断。
+    for marker in [" context", " window"] {
+        for (idx, _) in lower.rmatch_indices(marker) {
+            let head = lower[..idx].trim_end();
+            let candidate = head
+                .rsplit(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | ',' | '_' | 'k' | 'm')))
+                .next()
+                .unwrap_or("");
+            if let Some(limit) = parse_context_window_value(candidate) {
+                return Some(limit);
+            }
+        }
     }
-    let mult: u64 = match head[end - 1] {
-        b'm' => 1_000_000,
-        b'k' => 1_000,
-        _ => return None,
-    };
-    let mut start = end - 1;
-    while start > 0 && head[start - 1].is_ascii_digit() {
-        start -= 1;
-    }
-    let num: u64 = lower[start..end - 1].parse().ok()?;
-    Some(num * mult)
+    None
 }
 
 /// 读文件尾部至多 max 字节；从尾部第一个换行之后返回，避免截断出半截行。
 /// 文件不超过 max 则整读。用于 transcript 这类「只关心最近记录」的大文件，免整读进内存。
+fn context_percent(tokens: u64, limit: u64) -> u32 {
+    if limit == 0 {
+        return 0;
+    }
+    ((tokens as f64 / limit as f64) * 100.0).round().min(100.0) as u32
+}
+
 fn read_file_tail(path: &PathBuf, max: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = fs::File::open(path).ok()?;
@@ -1384,8 +1492,7 @@ fn read_file_tail(path: &PathBuf, max: u64) -> Option<String> {
 }
 
 /// 估算某 Claude 会话的当前上下文占比。
-/// 分母（窗口大小）：优先从 claude 启动横幅 "(1M context)" 抓（最准、不依赖任何插件），
-///   按会话缓存；抓不到再按模型默认。
+/// 分母（窗口大小）：会话缓存 → Claude Code 当前生效配置 → 终端输出 → 标准 200k 兜底。
 /// 分子：读该项目最新 transcript 最后一条带 usage 的消息，
 ///   context ≈ input + cache_read + cache_creation tokens。
 #[tauri::command]
@@ -1395,28 +1502,41 @@ async fn context_usage(
     cwd: String,
     started_at: u64,
 ) -> Result<ContextUsage, String> {
-    // 1) 窗口大小：缓存 → 否则从 scrollback 横幅探测并缓存
-    let mut limit_override = state
+    // 只在持锁期间复制缓存，终端文本解析和配置文件 I/O 都放到阻塞线程。
+    let cached_limit = state
         .ctx_window
         .lock()
         .ok()
         .and_then(|m| m.get(&id).copied());
-    if limit_override.is_none() {
-        let detected = state.hub.scrollback.lock().ok().and_then(|sb| {
-            sb.get(&id)
-                .and_then(|buf| detect_context_window(&String::from_utf8_lossy(buf)))
+    let scrollback = if cached_limit.is_none() {
+        state
+            .hub
+            .scrollback
+            .lock()
+            .ok()
+            .and_then(|sb| sb.get(&id).cloned())
+    } else {
+        None
+    };
+    let ctx_window = state.ctx_window.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let resolved_limit = cached_limit.or_else(|| {
+            configured_context_window(&cwd).or_else(|| {
+                scrollback
+                    .as_deref()
+                    .and_then(|buf| detect_context_window(&String::from_utf8_lossy(buf)))
+            })
         });
-        if let Some(w) = detected {
-            limit_override = Some(w);
-            if let Ok(mut m) = state.ctx_window.lock() {
-                m.insert(id.clone(), w);
+        if cached_limit.is_none() {
+            if let Some(limit) = resolved_limit {
+                if let Ok(mut limits) = ctx_window.lock() {
+                    limits.insert(id, limit);
+                }
             }
         }
-    }
 
-    // 2) token 数 + 占比（读 transcript，放阻塞线程）
-    tauri::async_runtime::spawn_blocking(move || {
-        let fallback_limit = limit_override.unwrap_or(200_000);
+        let fallback_limit = resolved_limit.unwrap_or(DEFAULT_CONTEXT_WINDOW);
         let mut cu = ContextUsage { ok: false, percent: 0, tokens: 0, limit: fallback_limit };
         let Some(dir) = find_claude_project_dir(&cwd) else { return cu };
         let Some(jsonl) = newest_jsonl(&dir) else { return cu };
@@ -1435,7 +1555,7 @@ async fn context_usage(
         // transcript 可能达数十 MB；最近一条 usage 几乎总在文件尾部——先只读尾部 512KB 扫，
         // 命中就用；没命中（罕见：尾部恰好没有带 usage 的助手消息）再整读兜底，
         // 避免每次轮询都把整份文件读进内存。
-        let scan = |text: &str| -> Option<(u64, u64)> {
+        let scan = |text: &str| -> Option<u64> {
             for line in text.lines().rev() {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                 let Some(usage) = v.pointer("/message/usage") else { continue };
@@ -1443,16 +1563,9 @@ async fn context_usage(
                 let tokens = g("input_tokens")
                     + g("cache_read_input_tokens")
                     + g("cache_creation_input_tokens");
-                if tokens == 0 {
-                    continue;
+                if tokens > 0 {
+                    return Some(tokens);
                 }
-                let model = v
-                    .pointer("/message/model")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("");
-                // 横幅探到的窗口最准；否则按模型默认兜底
-                let limit = limit_override.unwrap_or_else(|| context_limit_for(model, tokens));
-                return Some((tokens, limit));
             }
             None
         };
@@ -1460,11 +1573,10 @@ async fn context_usage(
             .as_deref()
             .and_then(&scan)
             .or_else(|| fs::read_to_string(&jsonl).ok().and_then(|c| scan(&c)));
-        if let Some((tokens, limit)) = found {
+        if let Some(tokens) = found {
             cu.ok = true;
             cu.tokens = tokens;
-            cu.limit = limit;
-            cu.percent = ((tokens as f64 / limit as f64) * 100.0).round().min(100.0) as u32;
+            cu.percent = context_percent(tokens, fallback_limit);
         }
         cu
     })
@@ -1518,8 +1630,8 @@ struct TerminalState {
     hub: RemoteHub,
     /// 各会话输出活动追踪（reader 线程写、监控线程读）
     activity: ActivityMap,
-    /// 各会话探测到的上下文窗口大小（从 claude 启动横幅 "(1M context)" 抓，按会话缓存
-    /// 避免横幅被滚出 scrollback 后丢失）
+    /// 各会话探测到的上下文窗口大小（终端输出或 Claude Code 生效配置，按会话缓存，
+    /// 避免启动信息被滚出 scrollback 后丢失）
     ctx_window: Arc<Mutex<HashMap<String, u64>>>,
 }
 
@@ -2202,6 +2314,51 @@ mod tests {
         assert_eq!(loaded[0].name, "test");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_context_window_value() {
+        assert_eq!(parse_context_window_value("353000"), Some(353_000));
+        assert_eq!(parse_context_window_value("353k"), Some(353_000));
+        assert_eq!(parse_context_window_value("1M"), Some(1_000_000));
+        assert_eq!(parse_context_window_value("225.8k"), Some(225_800));
+        assert_eq!(parse_context_window_value("1,000,000"), Some(1_000_000));
+        assert_eq!(parse_context_window_value("0"), None);
+        assert_eq!(parse_context_window_value("unknown"), None);
+    }
+
+    #[test]
+    fn test_context_window_from_settings_json() {
+        let string_value = r#"{"env":{"CLAUDE_CODE_MAX_CONTEXT_TOKENS":"353000"}}"#;
+        assert_eq!(context_window_from_settings_json(string_value), Some(353_000));
+
+        let number_value = r#"{"env":{"CLAUDE_CODE_MAX_CONTEXT_TOKENS":353000}}"#;
+        assert_eq!(context_window_from_settings_json(number_value), Some(353_000));
+        assert_eq!(context_window_from_settings_json(r#"{"env":{}}"#), None);
+    }
+
+    #[test]
+    fn test_detect_context_window_from_terminal_output() {
+        assert_eq!(detect_context_window("Opus 4.8 (1M context)"), Some(1_000_000));
+        assert_eq!(detect_context_window("model · 200K context"), Some(200_000));
+        assert_eq!(detect_context_window("gpt-5.6-sol · 353k context"), Some(353_000));
+        assert_eq!(
+            detect_context_window("225.8k/353k tokens (64%)"),
+            Some(353_000)
+        );
+        assert_eq!(detect_context_window("30.4k / 353k tokens (9%)"), Some(353_000));
+        assert_eq!(
+            detect_context_window("\x1b[32m225.8k\x1b[0m/\x1b[36m353k\x1b[0m tokens (64%)"),
+            Some(353_000)
+        );
+        assert_eq!(detect_context_window("ordinary terminal output"), None);
+    }
+
+    #[test]
+    fn test_custom_context_percentage_rounds_correctly() {
+        assert_eq!(context_percent(230_375, 353_000), 65);
+        assert_eq!(context_percent(230_375, 1_000_000), 23);
+        assert_eq!(context_percent(1, 0), 0);
     }
 
     /// 验证 base64 对终端原始字节（含转义序列、UTF-8 多字节、控制字符）能无损往返。
