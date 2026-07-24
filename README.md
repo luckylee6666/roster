@@ -66,7 +66,8 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 - **Move to Trash** (recoverable; asks for confirmation first)
 
 **Color themes**
-- Toggle via the palette toolbar icon: **Default Dark** / **Homebrew** (black background, green text); your choice is remembered
+- Toggle via the palette toolbar icon: **Default Dark** / **Homebrew**, plus the pre-installed editable image themes **Sakura Twilight** and **Neon Rain**
+- Open **DIY Theme** to choose a built-in or local background, base palette, overlay tint/strength, and click effects; multiple themes can be saved, edited, or deleted
 
 **Font size**
 - `⌘/Ctrl +` to enlarge, `⌘/Ctrl -` to shrink, `⌘/Ctrl 0` to reset, or `⌘/Ctrl + wheel`

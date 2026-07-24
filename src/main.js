@@ -1362,6 +1362,14 @@ termEl.tabs.addEventListener('wheel', (ev) => {
   termEl.tabs.scrollLeft += ev.deltaY;
 }, { passive: false });
 
+// 主题资源路径集中定义，预设、DIY 和旧数据迁移共用，避免路径更新遗漏。
+const SAKURA_BACKGROUND = 'assets/term-bg-sakura-v2.png';
+const SAKURA_ICON = 'assets/theme-icon-sakura-v2.png';
+const NEON_RAIN_BACKGROUND = 'assets/term-bg-neon-rain.png';
+const NEON_RAIN_ICON = 'assets/theme-icon-neon-rain.png';
+const LEGACY_SAKURA_BACKGROUND = 'assets/term-bg-kawaii.png';
+const LEGACY_SAKURA_ICON = 'assets/theme-icon-sakura.png';
+
 // 终端配色方案
 const TERM_THEMES = {
   // 上一版原色（深蓝灰底）
@@ -1382,36 +1390,55 @@ const TERM_THEMES = {
       brightBlue: '#0000ff', brightMagenta: '#e500e5', brightCyan: '#00e5e5', brightWhite: '#e5e5e5',
     },
   },
-  // 卡哇伊·樱花：仅作 DIY 的粉彩 base 调色板保留（hidden：不在主题菜单单列，
-  // 招牌樱花改由 initTermTheme 预装成「可删的自定义主题」，见 SAKURA_PRESET）。
+  // 樱花暮色：仅作 DIY 的深梅紫 base 调色板保留（hidden：不在主题菜单单列，
+  // 招牌樱花主题由 initTermTheme 预装成「可删的自定义主题」，见 SAKURA_PRESET）。
   'sakura': {
-    name: '🌸 樱花',
-    icon: 'assets/theme-icon-sakura.png',
+    name: '🌸 樱花暮色',
     hidden: true,
+    ui: 'sakura',
+    solidBackground: '#2b1833',
     theme: {
       // 底色全透明：带图主题靠 DOM 渲染 + CSS 强制透明，让立绘透上来；文字对比靠 .terminal-bodies 暗化
-      background: 'rgba(40, 24, 44, 0)', foreground: '#ffe6f2', cursor: '#ff8fc4',
-      cursorAccent: '#2b1b2e', selectionBackground: 'rgba(255, 143, 196, 0.40)',
-      black: '#4a3442', red: '#ff8093', green: '#9be3c0', yellow: '#ffd9a0',
-      blue: '#b4a6ff', magenta: '#ff9ecf', cyan: '#a0e6e6', white: '#f4d9e6',
-      brightBlack: '#6b4f5f', brightRed: '#ff9db0', brightGreen: '#b6f0d6', brightYellow: '#ffe8c4',
-      brightBlue: '#cfc4ff', brightMagenta: '#ffbfe0', brightCyan: '#c4f0f0', brightWhite: '#fff2f9',
+      background: 'rgba(43, 24, 51, 0)', foreground: '#f7e7ef', cursor: '#f0a5c8',
+      cursorAccent: '#2b1833', selectionBackground: 'rgba(234, 162, 197, 0.34)',
+      black: '#34243d', red: '#f27f9d', green: '#99d6b9', yellow: '#e8c98c',
+      blue: '#9f9ae8', magenta: '#df8fc2', cyan: '#95d7d4', white: '#e7d8e3',
+      brightBlack: '#705a78', brightRed: '#f6a0b7', brightGreen: '#b4e4ca', brightYellow: '#f2dba8',
+      brightBlue: '#bbb5f2', brightMagenta: '#edaad2', brightCyan: '#b5e7e4', brightWhite: '#fff4f8',
     },
-    bg: { image: 'assets/term-bg-kawaii.png', dim: 0.30, tint: '120, 45, 95', base: '#3a2338' },
+    bg: { image: SAKURA_BACKGROUND, dim: 0.22, tint: '71, 31, 68', base: '#2b1833' },
     clickFx: true, // 点击迸出爱心/花瓣
+  },
+  // Image 2 生成的「霓虹雨夜」：和樱花一样只作为可编辑预装主题的配色 base，
+  // hidden 避免菜单同时出现一份不可编辑内置项和一份可编辑预装项。
+  'neon-rain': {
+    name: '🌧️ 霓虹雨夜',
+    hidden: true,
+    ui: 'neon-rain',
+    solidBackground: '#07111f',
+    theme: {
+      background: 'rgba(7, 17, 31, 0)', foreground: '#d7f5ff', cursor: '#40e0ff',
+      cursorAccent: '#07111f', selectionBackground: 'rgba(64, 224, 255, 0.26)',
+      black: '#07111f', red: '#ff6b8a', green: '#55e6b2', yellow: '#e8cf78',
+      blue: '#66a8ff', magenta: '#b18cff', cyan: '#40e0ff', white: '#c8d9ec',
+      brightBlack: '#53657d', brightRed: '#ff8ca2', brightGreen: '#79f2c5', brightYellow: '#f4df93',
+      brightBlue: '#8bc0ff', brightMagenta: '#c6a8ff', brightCyan: '#83efff', brightWhite: '#f0f8ff',
+    },
+    bg: { image: NEON_RAIN_BACKGROUND, dim: 0.18, tint: '7, 17, 31', base: '#07111f' },
+    clickFx: false,
   },
 };
 let currentTheme = localStorage.getItem('term-theme') || 'classic';
 
-// 应用终端背景（含卡哇伊立绘）：有 bg.image 铺图 + 暗化遮罩，否则纯色底。
-// 图铺在 .terminal-bodies 上，term-body/xterm 透明，靠 allowTransparency + 半透明主题底透上来。
+// 应用终端图片背景：有 bg.image 时铺图并叠加遮罩，否则使用纯色底。
+// 图铺在整个 dock 上，term-body/xterm 透明，靠 allowTransparency 让背景透上来。
 function applyTermBackground(def) {
   const dock = termEl.dock, b = termEl.bodies;
   if (!dock || !b) return;
   if (def && def.bg && def.bg.image) {
     const dim = def.bg.dim != null ? def.bg.dim : 0.3;
-    const tint = def.bg.tint || '20, 12, 20'; // 遮罩色调：卡哇伊用玫瑰粉而非深黑，避免发暗发灰
-    // 立绘铺满整个 dock（头栏+侧栏+终端共享一张连续背景）；头/侧栏做半透明面板浮其上
+    const tint = def.bg.tint || '20, 12, 20';
+    // 背景铺满整个 dock（头栏+侧栏+终端共享一张连续画面）；头/侧栏以半透明面板浮其上
     dock.style.backgroundColor = def.bg.base || '#1b1420';
     dock.style.backgroundImage =
       `linear-gradient(rgba(${tint}, ${dim}), rgba(${tint}, ${dim})), url("${def.bg.image}")`;
@@ -1419,7 +1446,7 @@ function applyTermBackground(def) {
     dock.style.backgroundPosition = 'center';
     dock.style.backgroundRepeat = 'no-repeat';
     dock.classList.add('has-bg');
-    b.classList.add('has-bg');       // 触发 CSS 强制 xterm 各层透明，让 dock 立绘透上来
+    b.classList.add('has-bg');       // 触发 CSS 强制 xterm 各层透明，让 dock 背景透上来
     b.style.background = 'transparent';
     b.style.backgroundImage = 'none';
   } else {
@@ -1451,14 +1478,24 @@ async function resolveThemeDef(key) {
 
 async function buildCustomDef(t) {
   const base = TERM_THEMES[t.base] || TERM_THEMES.classic;
-  const def = { name: t.name, theme: { ...base.theme }, clickFx: !!t.clickFx };
+  const def = {
+    name: t.name,
+    theme: { ...base.theme },
+    clickFx: !!t.clickFx,
+    ui: base.ui || '',
+  };
   const url = await resolveThemeImage(t.image);
   if (url) {
     def.theme.background = 'rgba(0, 0, 0, 0)'; // 带图必须全透底，立绘才透得上来
-    def.bg = { image: url, dim: t.dim != null ? t.dim : 0.3, tint: t.tint || '120, 45, 95', base: '#3a2338' };
+    def.bg = {
+      image: url,
+      dim: t.dim != null ? t.dim : 0.3,
+      tint: t.tint || '120, 45, 95',
+      base: (base.bg && base.bg.base) || base.solidBackground || '#1b1420',
+    };
   } else {
-    def.theme.background = base.theme.background; // 无图还原基础底色（樱花底本身是透明的）
-    if (t.base === 'sakura') def.theme.background = '#2b1b2e';
+    // 带图 base 的调色板背景本身是透明的；用户切到「无图」时必须补回实色。
+    def.theme.background = base.solidBackground || base.theme.background;
   }
   return def;
 }
@@ -1482,6 +1519,7 @@ async function resolveThemeImage(image) {
 function applyThemeDef(def) {
   currentThemeDef = def;
   clickFxEnabled = !!def.clickFx;
+  termEl.dock.dataset.themeUi = def.ui || '';
   const hasBg = !!def.bg;
   sessions.forEach(s => {
     s.term.options.theme = def.theme;
@@ -1493,29 +1531,78 @@ function applyThemeDef(def) {
   applyTermBackground(def);
 }
 
-// 预装「樱花」主题：招牌卡哇伊立绘,降级成可编辑可删除的自定义主题(不再硬编码内置)。
-// base 仍指向 TERM_THEMES.sakura 的粉彩调色板(hidden 保留),icon 用专属花朵图。
+// 预装「樱花暮色」主题：Image 2 立绘作为可编辑可删除的自定义主题。
+// base 仍指向 TERM_THEMES.sakura 的深梅紫调色板(hidden 保留),icon 用专属花朵图。
 const SAKURA_PRESET = {
-  id: 'sakura-default', name: '🌸 樱花', base: 'sakura',
-  image: 'builtin:assets/term-bg-kawaii.png', dim: 0.30, tint: '120, 45, 95',
-  clickFx: true, icon: 'assets/theme-icon-sakura.png', createdAt: '',
+  id: 'sakura-default', name: '🌸 樱花暮色', base: 'sakura',
+  image: `builtin:${SAKURA_BACKGROUND}`, dim: 0.22, tint: '71, 31, 68',
+  clickFx: true, icon: SAKURA_ICON, createdAt: '',
+};
+const NEON_RAIN_PRESET = {
+  id: 'neon-rain-default', name: '🌧️ 霓虹雨夜', base: 'neon-rain',
+  image: `builtin:${NEON_RAIN_BACKGROUND}`, dim: 0.18, tint: '7, 17, 31',
+  clickFx: false, icon: NEON_RAIN_ICON, createdAt: '',
 };
 
 // 启动：拉自定义主题表 + 恢复上次主题（可能是 custom:*）
 async function initTermTheme() {
   try { termCustomThemes = await invoke('get_term_themes'); } catch (_) { termCustomThemes = []; }
-  // 首次运行预装樱花(可删)。用持久标记判断而非"表为空"——否则用户删掉后每次启动又被种回来。
-  if (!localStorage.getItem('term-sakura-seeded')) {
-    localStorage.setItem('term-sakura-seeded', '1');
-    if (!termCustomThemes.some(t => t.id === SAKURA_PRESET.id)) {
-      termCustomThemes.push({ ...SAKURA_PRESET });
-      try { termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes }); } catch (_) {}
+  // 旧资源已从安装包移除：所有仍引用旧内置图的主题都换到 v2，避免自定义主题断图。
+  // 名称、遮罩和浓度只迁移默认樱花项，其他用户设置保持不动。
+  let themesDirty = false;
+  termCustomThemes.forEach(t => {
+    let migrated = false;
+    if (t.image === `builtin:${LEGACY_SAKURA_BACKGROUND}`) {
+      t.image = SAKURA_PRESET.image;
+      migrated = true;
     }
-    // 老用户此前选中的是内置樱花(已降级)——迁移到预装的自定义樱花,避免菜单里选中项消失
-    if (currentTheme === 'sakura') {
-      currentTheme = 'custom:' + SAKURA_PRESET.id;
-      localStorage.setItem('term-theme', currentTheme);
+    if (t.icon === LEGACY_SAKURA_ICON) {
+      t.icon = SAKURA_PRESET.icon;
+      migrated = true;
     }
+    if (t.id === SAKURA_PRESET.id && t.base === 'sakura') {
+      if (t.name === '🌸 樱花') { t.name = SAKURA_PRESET.name; migrated = true; }
+      if (t.dim === 0.30) { t.dim = SAKURA_PRESET.dim; migrated = true; }
+      if (t.tint === '120, 45, 95') { t.tint = SAKURA_PRESET.tint; migrated = true; }
+    }
+    themesDirty ||= migrated;
+  });
+
+  // 每个预装主题各有一次性标记：用户删掉后不复活；首次保存失败则不写标记，下次启动重试。
+  const pendingSeeds = [
+    ['term-sakura-seeded', SAKURA_PRESET],
+    ['term-neon-rain-seeded', NEON_RAIN_PRESET],
+  ].filter(([marker]) => !localStorage.getItem(marker));
+  pendingSeeds.forEach(([, preset]) => {
+    if (!termCustomThemes.some(t => t.id === preset.id)) {
+      termCustomThemes.push({ ...preset });
+      themesDirty = true;
+    }
+  });
+  let themesSaved = !themesDirty;
+  if (themesDirty) {
+    try {
+      termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes });
+      themesSaved = true;
+    } catch (e) {
+      appLog('error', '保存预装终端主题失败：' + e);
+    }
+  }
+  if (themesSaved) pendingSeeds.forEach(([marker]) => localStorage.setItem(marker, '1'));
+
+  // 老用户此前选中的是已降级的内置樱花时，迁移到可编辑预装项。
+  if (currentTheme === 'sakura') {
+    currentTheme = termCustomThemes.some(t => t.id === SAKURA_PRESET.id)
+      ? 'custom:' + SAKURA_PRESET.id
+      : 'classic';
+    localStorage.setItem('term-theme', currentTheme);
+  } else if (
+    String(currentTheme).startsWith('custom:') &&
+    !termCustomThemes.some(t => t.id === currentTheme.slice(7))
+  ) {
+    // JSON 被恢复/手动修改后，不能让 localStorage 永久指向不存在的主题。
+    currentTheme = 'classic';
+    localStorage.setItem('term-theme', currentTheme);
   }
   try { applyThemeDef(await resolveThemeDef(currentTheme)); } catch (_) {}
 }
@@ -1546,7 +1633,7 @@ function spawnClickFx(x, y) {
 termEl.dock.addEventListener('pointerdown', (e) => { if (clickFxEnabled) spawnClickFx(e.clientX, e.clientY); });
 
 // —— DIY 面板：所有控件改动实时预览，保存整表回写 term-themes.json ——
-const DIY_BASES = [['sakura', '樱花粉彩'], ['classic', '默认深色']];
+const DIY_BASES = [['sakura', '樱花暮色'], ['neon-rain', '霓虹雨夜'], ['classic', '默认深色']];
 const DIY_TINTS = [
   { name: '玫瑰粉', v: '120, 45, 95' },
   { name: '薰衣草', v: '96, 64, 160' },
@@ -1605,11 +1692,15 @@ function fillDiyForm() {
     c.onclick = () => { diyEditing.base = key; fillDiyForm(); diyPreview(); };
     baseBox.appendChild(c);
   });
-  // 背景图：无图 / 内置立绘 / 选本地图片（拷入 appdata，agy 出的图从这里换上）
+  // 背景图：无图 / 预装背景 / 选本地图片（拷入 appdata，生成的新图从这里换上）
   const imgBox = diyEl.querySelector('#diy-img');
   imgBox.innerHTML = '';
   const isFile = (diyEditing.image || '').startsWith('file:');
-  [['', '无图'], ['builtin:assets/term-bg-kawaii.png', '内置立绘']].forEach(([v, name]) => {
+  [
+    ['', '无图'],
+    [`builtin:${SAKURA_BACKGROUND}`, '樱花暮色'],
+    [`builtin:${NEON_RAIN_BACKGROUND}`, '霓虹雨夜'],
+  ].forEach(([v, name]) => {
     const c = document.createElement('span');
     c.className = 'term-diy-chip' + (diyEditing.image === v ? ' on' : '');
     c.textContent = name;
@@ -1644,7 +1735,10 @@ function openDiyPanel(theme) {
   diyPrevKey = currentTheme;
   diyEditing = theme
     ? { ...theme }
-    : { id: '', name: '', base: 'sakura', image: 'builtin:assets/term-bg-kawaii.png', dim: 0.30, tint: '120, 45, 95', clickFx: true, createdAt: '' };
+    : {
+        id: '', name: '', base: 'sakura', image: SAKURA_PRESET.image,
+        dim: SAKURA_PRESET.dim, tint: SAKURA_PRESET.tint, clickFx: true, createdAt: '',
+      };
   fillDiyForm();
   diyEl.classList.add('active');
   diyPreview();
@@ -1665,11 +1759,12 @@ async function diySave() {
   if (!diyEditing) return;
   if (!diyEditing.name.trim()) diyEditing.name = '我的主题';
   if (!diyEditing.id) diyEditing.id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const nextThemes = termCustomThemes.map(t => ({ ...t }));
   const i = termCustomThemes.findIndex(t => t.id === diyEditing.id);
-  if (i >= 0) termCustomThemes[i] = { ...diyEditing };
-  else termCustomThemes.push({ ...diyEditing });
+  if (i >= 0) nextThemes[i] = { ...diyEditing };
+  else nextThemes.push({ ...diyEditing });
   try {
-    termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes });
+    termCustomThemes = await invoke('save_term_themes', { themes: nextThemes });
   } catch (e) { msg('保存失败：' + e, 'error'); return; }
   const key = 'custom:' + diyEditing.id;
   diyEl.classList.remove('active');
@@ -1678,17 +1773,19 @@ async function diySave() {
   msg('主题已保存', 'success');
 }
 
-async function diyDelete() {
+function diyDelete() {
   if (!diyEditing || !diyEditing.id) return;
-  const deletedKey = 'custom:' + diyEditing.id;
-  termCustomThemes = termCustomThemes.filter(t => t.id !== diyEditing.id);
-  try {
-    termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes });
-  } catch (e) { msg('删除失败：' + e, 'error'); return; }
-  diyEl.classList.remove('active');
-  diyEditing = null;
-  await setTermTheme(diyPrevKey === deletedKey ? 'sakura' : diyPrevKey);
-  msg('主题已删除', 'success');
+  const deletedId = diyEditing.id;
+  const deletedKey = 'custom:' + deletedId;
+  const deletedName = diyEditing.name || '未命名主题';
+  askConfirm('主题', deletedName, async () => {
+    const nextThemes = termCustomThemes.filter(t => t.id !== deletedId);
+    termCustomThemes = await invoke('save_term_themes', { themes: nextThemes });
+    diyEl.classList.remove('active');
+    diyEditing = null;
+    await setTermTheme(diyPrevKey === deletedKey ? 'classic' : diyPrevKey);
+    msg('主题已删除', 'success');
+  });
 }
 
 // 终端字号（⌘+ / ⌘- / ⌘0 调整，⌘+滚轮缩放，持久化）
@@ -3167,7 +3264,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
     cursorBlink: true,
     scrollback: 5000,
-    allowTransparency: true, // 让半透明主题底透出背景立绘（卡哇伊主题）
+    allowTransparency: true, // 让半透明终端底透出图片主题背景
     theme: (currentThemeDef || TERM_THEMES.classic).theme,
     // 默认 4.5：会为对比度再生成一批变体字形，配上彩色中文把 WebGL 纹理图集塞爆
     // → 字形错位/残影。设 1 关掉对比度调整，大幅降低图集条目数（修中文花屏的关键）。
@@ -3178,7 +3275,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   term.open(bodyEl);
   // WebGL 渲染器：默认 DOM 渲染器在触控板滚动时选区会糊成一大块（ghosting），
   // 改用 GPU 渲染正确重绘选区/滚动。WebGL 不可用或上下文丢失时安全降级回默认渲染器。
-  // 但带背景立绘的主题（卡哇伊）必须走 DOM 渲染——WebGL 画布是像素级不透明，立绘透不上来。
+  // 图片主题必须走 DOM 渲染——WebGL 画布是像素级不透明，背景透不上来。
   let webgl = null;
   if (!(currentThemeDef && currentThemeDef.bg)) {
     webgl = attachWebgl(term);

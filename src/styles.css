@@ -1543,7 +1543,7 @@ body {
   background: linear-gradient(180deg, #232936, #1d222c);
   border-bottom: 1px solid #2b313d;
   flex-shrink: 0;
-  /* 抬高整个头栏的层叠上下文：卡哇伊模式的 backdrop-filter 会把主题菜单困在头栏层里，
+  /* 抬高整个头栏的层叠上下文：图片主题的 backdrop-filter 会把主题菜单困在头栏层里，
      被后面透明的终端区盖住（看得见点不着）——头栏整体压过 main 区的定位元素 */
   position: relative;
   z-index: 30;
@@ -2012,7 +2012,7 @@ body {
   background: #14171e;
 }
 
-/* 带背景立绘的主题（卡哇伊）：强制 xterm 各层透明，让 .terminal-bodies 上的立绘透上来。
+/* 图片主题强制 xterm 各层透明，让 dock 背景透上来。
    仅在 .has-bg 下生效，普通主题不受影响；配合 DOM 渲染（带图主题不挂 WebGL）。 */
 .terminal-bodies.has-bg .term-body .xterm,
 .terminal-bodies.has-bg .term-body .xterm-viewport,
@@ -2022,52 +2022,119 @@ body {
   background: transparent !important;
 }
 
-/* 卡哇伊主题：整张立绘横跨整个 dock（JS 把图铺到 .terminal-dock），头栏/侧栏做成
-   半透明莓紫面板浮在同一张图上 → 一个连续场景，而不是「深色侧栏 + 带图终端」。 */
+/* 图片主题共享一套半透明 dock chrome；未指定 UI 风格的 DIY 图片使用中性配色。 */
 .terminal-dock.has-bg {
-  border-top-color: #4d3044;
-  /* 卡哇伊：魔法少女变身棒光标（agy 绘制+绿幕抠图，32px WebKit 上限内，热点=星星尖 12,1）
-     + 圆体软萌字（chrome 用，终端仍等宽对齐） */
+  --image-border-top: #354052;
+  --image-divider: rgba(190, 205, 225, 0.15);
+  --image-head-bg: rgba(15, 19, 28, 0.66);
+  --image-tab: #aab5c6;
+  --image-hover-bg: rgba(255, 255, 255, 0.07);
+  --image-hover-text: #eef2f8;
+  --image-active-bg: rgba(22, 119, 255, 0.14);
+  --image-active-text: #fff;
+  --image-accent: #5a9cf8;
+  --image-scroll-thumb: #465267;
+  --image-tool: #9ba8ba;
+  --image-tool-active-bg: rgba(22, 119, 255, 0.18);
+  --image-tool-active-text: #cfe2ff;
+  --image-close-hover: rgba(255, 92, 113, 0.20);
+  --image-tree-bg: rgba(18, 22, 31, 0.58);
+  --image-tree-root: #c8d2df;
+  --image-tree-muted: #8f9caf;
+  --image-row: #aeb9c8;
+  --image-row-hover-bg: rgba(255, 255, 255, 0.07);
+  --image-row-hover-text: #fff;
+  border-top-color: var(--image-border-top);
+}
+
+/* Image 2「樱花暮色」专属莓紫 chrome、圆体和魔法棒光标。 */
+.terminal-dock.has-bg[data-theme-ui="sakura"] {
+  --image-border-top: #4d3044;
+  --image-divider: rgba(255, 143, 196, 0.20);
+  --image-head-bg: rgba(44, 25, 41, 0.55);
+  --image-tab: #d9b3cb;
+  --image-hover-bg: rgba(255, 143, 196, 0.10);
+  --image-hover-text: #ffe6f2;
+  --image-active-bg: rgba(255, 143, 196, 0.14);
+  --image-active-text: #fff2f9;
+  --image-accent: #ff8fc4;
+  --image-scroll-thumb: #5a3a50;
+  --image-tool: #c9a3ba;
+  --image-tool-active-bg: rgba(255, 143, 196, 0.18);
+  --image-tool-active-text: #ffdcef;
+  --image-close-hover: rgba(255, 143, 196, 0.22);
+  --image-tree-bg: rgba(30, 17, 28, 0.50);
+  --image-tree-root: #e0bcd2;
+  --image-tree-muted: #b98fa8;
+  --image-row: #d4aec6;
+  --image-row-hover-bg: rgba(255, 143, 196, 0.10);
+  --image-row-hover-text: #fff2f9;
   cursor: url("assets/cursor-wand.png") 12 1, auto;
   font-family: 'SF Pro Rounded', ui-rounded, 'Hiragino Maru Gothic ProN', 'Yuanti SC', 'PingFang SC', -apple-system, sans-serif;
 }
-/* xterm 自带 cursor:text 会盖掉容器光标，需 !important 压过 */
-.terminal-dock.has-bg .term-body,
-.terminal-dock.has-bg .terminal-bodies,
-.terminal-dock.has-bg .xterm,
-.terminal-dock.has-bg .xterm .xterm-screen {
+
+/* xterm 自带 cursor:text 会盖掉樱花光标，需 !important 压过。 */
+.terminal-dock.has-bg[data-theme-ui="sakura"] .term-body,
+.terminal-dock.has-bg[data-theme-ui="sakura"] .terminal-bodies,
+.terminal-dock.has-bg[data-theme-ui="sakura"] .xterm,
+.terminal-dock.has-bg[data-theme-ui="sakura"] .xterm .xterm-screen {
   cursor: url("assets/cursor-wand.png") 12 1, text !important;
 }
+
+/* Image 2「霓虹雨夜」专属冷色科技 chrome。 */
+.terminal-dock.has-bg[data-theme-ui="neon-rain"] {
+  --image-border-top: #203f68;
+  --image-divider: rgba(64, 224, 255, 0.16);
+  --image-head-bg: rgba(5, 14, 31, 0.66);
+  --image-tab: #91abc7;
+  --image-hover-bg: rgba(64, 224, 255, 0.08);
+  --image-hover-text: #d7f5ff;
+  --image-active-bg: rgba(64, 224, 255, 0.10);
+  --image-active-text: #effcff;
+  --image-accent: #40e0ff;
+  --image-scroll-thumb: #294a70;
+  --image-tool: #83a2c2;
+  --image-tool-active-bg: rgba(139, 92, 246, 0.18);
+  --image-tool-active-text: #d9ccff;
+  --image-close-hover: rgba(255, 107, 138, 0.20);
+  --image-tree-bg: rgba(4, 12, 28, 0.58);
+  --image-tree-root: #abc7e3;
+  --image-tree-muted: #7798ba;
+  --image-row: #9db7d0;
+  --image-row-hover-bg: rgba(139, 92, 246, 0.12);
+  --image-row-hover-text: #eefcff;
+}
+
 .terminal-dock.has-bg .terminal-head {
-  background: rgba(44, 25, 41, 0.55);
-  border-bottom-color: rgba(255, 143, 196, 0.20);
+  background: var(--image-head-bg);
+  border-bottom-color: var(--image-divider);
   backdrop-filter: blur(2px);
 }
 .terminal-dock.has-bg .terminal-main { background: transparent; }
 .terminal-dock.has-bg .terminal-content { background: transparent; }
-.terminal-dock.has-bg .term-tab { border-right-color: rgba(255, 143, 196, 0.16); color: #d9b3cb; }
-.terminal-dock.has-bg .term-tab:hover { background: rgba(255, 143, 196, 0.10); color: #ffe6f2; }
+.terminal-dock.has-bg .term-tab { border-right-color: var(--image-divider); color: var(--image-tab); }
+.terminal-dock.has-bg .term-tab:hover { background: var(--image-hover-bg); color: var(--image-hover-text); }
 .terminal-dock.has-bg .term-tab.active {
-  background: rgba(255, 143, 196, 0.14);
-  color: #fff2f9;
-  box-shadow: inset 0 2px 0 #ff8fc4;
+  background: var(--image-active-bg);
+  color: var(--image-active-text);
+  box-shadow: inset 0 2px 0 var(--image-accent);
 }
-.terminal-dock.has-bg .terminal-tabs::-webkit-scrollbar-thumb { background: #5a3a50; }
-.terminal-dock.has-bg .term-tool-btn { color: #c9a3ba; }
-.terminal-dock.has-bg .term-tool-btn:hover { background: rgba(255, 143, 196, 0.12); color: #ffe6f2; }
-.terminal-dock.has-bg .term-tool-btn.active { background: rgba(255, 143, 196, 0.18); color: #ffdcef; }
-.terminal-dock.has-bg .term-tab-close:hover { background: rgba(255, 143, 196, 0.22); color: #fff2f9; }
+.terminal-dock.has-bg .terminal-tabs::-webkit-scrollbar-thumb { background: var(--image-scroll-thumb); }
+.terminal-dock.has-bg .term-tool-btn { color: var(--image-tool); }
+.terminal-dock.has-bg .term-tool-btn:hover { background: var(--image-hover-bg); color: var(--image-hover-text); }
+.terminal-dock.has-bg .term-tool-btn.active { background: var(--image-tool-active-bg); color: var(--image-tool-active-text); }
+.terminal-dock.has-bg .term-tab-close:hover { background: var(--image-close-hover); color: var(--image-active-text); }
 .terminal-dock.has-bg .terminal-tree {
-  background: rgba(30, 17, 28, 0.50);
-  border-right-color: rgba(255, 143, 196, 0.20);
+  background: var(--image-tree-bg);
+  border-right-color: var(--image-divider);
   backdrop-filter: blur(2px);
 }
-.terminal-dock.has-bg .tree-head { border-bottom-color: rgba(255, 143, 196, 0.18); }
-.terminal-dock.has-bg .tree-root-name { color: #e0bcd2; }
-.terminal-dock.has-bg .tree-head-btn { color: #b98fa8; }
-.terminal-dock.has-bg .tree-head-btn:hover { background: rgba(255, 143, 196, 0.14); color: #fff2f9; }
-.terminal-dock.has-bg .tree-row { color: #d4aec6; }
-.terminal-dock.has-bg .tree-row:hover { background: rgba(255, 143, 196, 0.10); color: #fff2f9; }
+.terminal-dock.has-bg .tree-head { border-bottom-color: var(--image-divider); }
+.terminal-dock.has-bg .tree-root-name { color: var(--image-tree-root); }
+.terminal-dock.has-bg .tree-head-btn { color: var(--image-tree-muted); }
+.terminal-dock.has-bg .tree-head-btn:hover { background: var(--image-hover-bg); color: var(--image-hover-text); }
+.terminal-dock.has-bg .tree-row { color: var(--image-row); }
+.terminal-dock.has-bg .tree-row:hover { background: var(--image-row-hover-bg); color: var(--image-row-hover-text); }
 
 /* 片段快捷悬浮面板：浮在终端右下角，卡片单击即注入并回车 */
 .snippet-quick {

@@ -1,13 +1,21 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.10 / 本版更新
+## What's new in v1.2.11 / 本版更新
 
 **English**
-- **Third-party Claude API providers are no longer probed for usage support.** When `ANTHROPIC_BASE_URL` points away from Anthropic's official API, the app skips the usage request before reading credentials or starting `curl` and explains that the provider has not declared usage support. No OAuth token is sent to an unknown provider for capability detection.
+- **New Neon Rain terminal theme** — an editable Image 2 preset with cool cyan/purple colors, a right-aligned character, and a dark code-safe workspace.
+- **Sakura Twilight redesign** — new mature artwork, deep-plum palette, improved text contrast, and a new icon; the wand cursor and petal/heart effects remain.
+- **Accurate Claude context percentage** — detects configured and displayed `353k`, `1M`, and `/context` window sizes instead of assuming 200k.
+- **Safer theme management** — legacy Sakura references migrate automatically, failed saves do not corrupt in-memory state, missing themes fall back safely, and deletion asks for confirmation.
+- **Cleanup** — removed obsolete Sakura assets and unused starter files; image-theme UI styles are isolated so custom backgrounds no longer inherit Sakura styling.
 
 **中文**
-- **不再探测第三方 Claude API 是否支持用量接口。** 当 `ANTHROPIC_BASE_URL` 指向 Anthropic 官方地址之外时，应用会在读取凭据和启动 `curl` 之前直接跳过用量请求，并提示该服务未声明支持用量查询。不会为了探测能力而把 OAuth token 发给未知第三方。
+- **新增「霓虹雨夜」终端主题**：可编辑的 Image 2 预装主题，采用青紫冷色、人物右置和适合代码显示的深色留白。
+- **「樱花暮色」重设计**：更新成熟风格插画、深梅紫配色、文字对比和主题图标，同时保留魔法棒光标及花瓣/爱心特效。
+- **Claude 上下文占比更准确**：识别配置和界面显示的 `353k`、`1M`、`/context` 窗口长度，不再固定按 200k 估算。
+- **主题管理更安全**：旧樱花引用自动迁移；保存失败不会污染内存状态；主题缺失时安全回退；删除前增加确认。
+- **清理遗留内容**：移除旧樱花素材和无用模板文件；不同图片主题的界面样式彻底隔离，自定义背景不再继承樱花样式。
 
 ## Install / 安装
 

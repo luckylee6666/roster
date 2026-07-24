@@ -100,7 +100,7 @@ fn run_shell(script: &str, timeout_secs: u64) -> Result<String, String> {
 /// 从可能带 shell 启动噪声（交互式 zsh 的 .zshrc 偶尔往 stdout 打印 "Restored session:" 等）
 /// 的输出里截出 JSON 主体——从第一个 `{` 或 `[` 开始。
 fn slice_json(s: &str) -> &str {
-    match s.find(|c| c == '{' || c == '[') {
+    match s.find(['{', '[']) {
         Some(i) => &s[i..],
         None => s,
     }

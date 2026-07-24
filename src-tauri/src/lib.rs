@@ -251,6 +251,8 @@ fn get_projects(state: State<Mutex<AppState>>) -> Result<Vec<Project>, String> {
     Ok(state.projects.clone())
 }
 
+// Tauri IPC 直接按前端表单字段解包，保留具名参数可避免额外嵌套和协议变更。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn add_project(
     state: State<Mutex<AppState>>,
@@ -284,6 +286,8 @@ fn add_project(
     Ok(project)
 }
 
+// Tauri IPC 直接按前端表单字段解包，保留具名参数可避免额外嵌套和协议变更。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn update_project(
     state: State<Mutex<AppState>>,
@@ -511,6 +515,8 @@ fn add_server(
     Ok(server)
 }
 
+// Tauri IPC 直接按前端表单字段解包，保留具名参数可避免额外嵌套和协议变更。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn update_server(
     state: State<Mutex<AppState>>,
@@ -590,7 +596,7 @@ fn save_snippets(
 pub struct TermTheme {
     pub id: String,
     pub name: String,
-    /// 基础配色 key：sakura / cream / classic / homebrew（xterm 调色板来源）
+    /// 基础配色 key：sakura / neon-rain / classic / homebrew（xterm 调色板来源）
     pub base: String,
     /// 背景图："" 无图；"builtin:<path>" 内置资源；"file:<name>" 用户上传（appdata/theme-images/）
     #[serde(default)]
@@ -604,7 +610,7 @@ pub struct TermTheme {
     /// 点击迸出爱心/花瓣特效
     #[serde(default)]
     pub click_fx: bool,
-    /// 菜单缩略图标路径（""=菜单用背景图缩略图兜底）。预装樱花靠它保留专属花朵图标。
+    /// 菜单缩略图标路径（""=菜单用背景图缩略图兜底）。预装主题用它保留专属图标。
     #[serde(default)]
     pub icon: String,
     #[serde(default)]
@@ -1706,6 +1712,8 @@ struct RemoteInfo {
 }
 
 /// 创建一个新的终端会话，在 `cwd` 起一个登录 shell，并把输出流式推到前端。
+// Tauri IPC 直接按终端创建参数解包，保留具名参数可避免前端协议变更。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn terminal_create(
     app: AppHandle,

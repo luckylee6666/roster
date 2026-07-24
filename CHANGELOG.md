@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.11
+
+### English
+
+**Added**
+- **Neon Rain terminal theme**: a new Image 2 background and icon with cool cyan/purple terminal colors, a right-aligned character, and a code-safe dark area. It ships as an editable/deletable preset and is also available in DIY themes.
+
+**Changed**
+- **Sakura is redesigned as Sakura Twilight**: a mature twilight illustration, deeper plum palette, improved text contrast, and a new icon replace the old bright-pink artwork while keeping the wand cursor and petal/heart click effects.
+- Image-theme chrome now uses isolated Sakura, Neon, and neutral DIY styles instead of making every custom background inherit Sakura's pink UI.
+
+**Fixed**
+- **Claude context percentage uses the real context window**: the app resolves `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, startup banners, `353k`/`1M` labels, and `/context` denominators before falling back to 200k.
+- Legacy Sakura references migrate to the new assets without overwriting custom names or overlay settings. Failed DIY saves no longer mutate in-memory state, missing themes fall back to Default Dark, and theme deletion now asks for confirmation.
+
+**Removed / Cleaned**
+- Removed the obsolete Sakura background/icon and three unreferenced Vite starter SVGs. Full Rust Clippy now passes with warnings denied.
+
+### 中文
+
+**新增**
+- **霓虹雨夜终端主题**：新增 Image 2 背景与图标，采用青紫冷色终端配色、人物右置和代码区深色留白；作为可编辑、可删除的预装主题提供，也可在 DIY 中选用。
+
+**变更**
+- **樱花主题重设计为「樱花暮色」**：用更成熟的暮色插画、深梅紫配色、更清晰的文字对比和新版图标替换旧高亮粉色素材，同时保留魔法棒光标及花瓣/爱心点击特效。
+- 图片主题界面样式拆分为樱花、霓虹和中性 DIY 三套，不再让所有自定义背景继承樱花粉色界面。
+
+**修复**
+- **Claude 上下文占比使用真实窗口长度**：依次解析 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`、启动横幅、`353k`/`1M` 标记和 `/context` 分母，最后才回退 200k。
+- 旧樱花引用会迁移到新版素材且不覆盖自定义名称或遮罩设置；DIY 保存失败不再提前改坏内存状态；主题记录丢失时回退默认深色；删除主题增加二次确认。
+
+**移除 / 清理**
+- 删除旧樱花背景/图标和三个无引用的 Vite 模板 SVG；Rust 全量 Clippy 已可在拒绝警告模式下通过。
+
 ## v1.2.10
 
 ### English
