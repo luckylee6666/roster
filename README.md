@@ -4,13 +4,15 @@
 
 A desktop app for managing your Vibe Coding projects, built with Tauri v2.
 
+Latest release: **v1.2.12** — edit code and configuration files directly from the terminal file tree, with format-preserving atomic saves and unsaved-change protection. See the [changelog](CHANGELOG.md) for details.
+
 ## Features
 
 - **Project management** — add, edit, delete projects
 - **Run target** — local machine / server
 - **Server management** — configure SSH servers (host, port, user, password/key login method)
 - **Grouping** — group projects, collapsible sidebar, click to locate, rename a group inline (hover → pencil; all projects in it move together)
-- **Built-in terminal** — in-app bottom-drawer tabbed terminal managing all sessions; file tree, file preview, color themes, font size, drag-to-insert path; closing a tab asks first and reminds you to let the AI update its memory (see [Using the terminal](#using-the-built-in-terminal))
+- **Built-in terminal** — in-app bottom-drawer tabbed terminal managing all sessions; file tree, file preview and editing, color themes, font size, drag-to-insert path; closing a tab asks first and reminds you to let the AI update its memory (see [Using the terminal](#using-the-built-in-terminal))
 - **Multi AI CLI launch** — start **Claude / Codex / opencode / Gemini / agy** in a project directory from the project card, with a tool badge on the tab
 - **Session attention awareness** — when a terminal session goes quiet after a burst of output (an AI CLI likely finished or is waiting for input), you get a desktop notification + chime + an amber pulsing dot on the tab; the session you're actively watching won't interrupt you, and a bell icon in the toolbar toggles it
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
@@ -49,16 +51,18 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 
 **File tree + preview** (left)
 - The tree is rooted at the active tab's project directory and follows tab switches; folders load lazily on click
-- **Single-click a file** → preview on the right; **double-click** → insert its path into the terminal
+- **Single-click a file** → preview on the right; use the pencil in the preview bar to edit code, config, and text (`⌘/Ctrl + S` saves); **double-click** → insert its path into the terminal
 - **Drag** a file/folder from the tree onto the terminal → inserts its path (handy for pointing an AI session at a directory)
 - Drag the middle splitter to resize the tree; the folder toolbar icon collapses/expands it
 
 **Supported preview formats**
-- **Code / config / text**: syntax highlighting (dozens of languages)
+- **Code / config / text**: syntax highlighting (dozens of languages) and direct editing while preserving UTF-8 BOM, LF/CRLF line endings, permissions, ACLs, extended attributes, and supported platform metadata
 - **Images**: png / jpg / gif / webp / svg / ico / avif (checkerboard transparency background)
 - **PDF**: inline rendering
 - **Markdown**: rendered as a formatted page, with a Source / Rendered toggle (XSS-sanitized, safe to preview from any source)
 - **CSV / TSV**: rendered as a table, switchable back to source
+
+The editor supports Tab/Shift+Tab indentation and warns before discarding unsaved changes, closing the window, or quitting from the tray. Saves use an atomic same-directory replacement and perform best-effort conflict checks before replacement; detected changes made by a terminal, Git, or another editor stop the save. An unavoidable extreme concurrent-write race can still exist, so keep important files under version control. Binary, non-UTF-8, read-only, mixed-line-ending, and files over 1 MB remain preview-only.
 
 **Right-click menu** (any file/folder in the tree)
 - **Open folder** (folder → open in system file manager; file → open its containing folder)
@@ -99,6 +103,13 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+## Test
+
+```bash
+pnpm test
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
 ## Tech stack
 
 - **Frontend**: HTML/CSS/JavaScript (Vanilla)
@@ -106,7 +117,7 @@ pnpm tauri build
 - **Storage**: JSON files
 - **Excel export**: rust_xlsxwriter
 - **Built-in terminal**: portable-pty (real PTY, cross-platform; ConPTY/PowerShell on Windows) + xterm.js (vendored)
-- **File preview**: highlight.js (highlighting) / marked (Markdown) / DOMPurify (sanitizing), all vendored, no CDN dependency
+- **File preview/editing**: highlight.js (highlighting) / marked (Markdown) / DOMPurify (sanitizing), all vendored with no CDN dependency; the Rust backend handles conflict detection and atomic saves
 
 ## Data location
 

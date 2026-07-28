@@ -1,6 +1,6 @@
 [package]
 name = "vibe-coding-manage"
-version = "1.2.11"
+version = "1.2.12"
 description = "Vibe Coding Project Manager"
 authors = ["you"]
 edition = "2021"
@@ -27,8 +27,16 @@ opener = "0.7"
 portable-pty = "0.8"
 base64 = "0.22"
 trash = "5"
+tempfile = "3.27"
 # 内嵌远程服务（手机端局域网控制终端）
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
 local-ip-address = "0.6"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }  # 仅 SVG，不拉 image 依赖
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+xattr = "1.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

@@ -1,3 +1,9 @@
+import {
+  editorChangedDuringSave,
+  editorTextFromFile,
+  fileTextFromEditor,
+} from './file-editor-utils.js';
+
 let invoke;
 try {
   invoke = window.__TAURI__.core.invoke;
@@ -103,6 +109,11 @@ const el = {
 async function init() {
   await load();
   bind();
+  try {
+    await setupEditorExitGuard();
+  } catch (e) {
+    appLog('error', `注册未保存退出保护失败：${e.message || e}`);
+  }
   await initTermTheme(); // 自定义主题表 + 恢复上次主题（可能是 custom:*），先于会话还原
   bindUsageEvents();
   maybeRestoreSessions();
@@ -583,7 +594,11 @@ function bind() {
   termEl.treeRefreshBtn.onclick = () => renderTree(treeRoot);
   termEl.previewInsert.onclick = () => insertPathToTerminal(termEl.previewInsert.dataset.path || '');
   termEl.previewToggle.onclick = togglePreviewMode;
-  termEl.previewClose.onclick = closePreview;
+  termEl.previewEdit.onclick = beginFileEdit;
+  termEl.previewSave.onclick = saveFileEdit;
+  termEl.previewCancel.onclick = requestCancelFileEdit;
+  termEl.previewClose.onclick = () => closePreview();
+  setupFileEditor();
   // 渲染视图里的链接走系统浏览器，别让主 webview 导航走
   termEl.previewRich.addEventListener('click', (e) => {
     const a = e.target.closest('a[href]');
@@ -615,7 +630,7 @@ function bind() {
         askConfirm(ctx.entry.isDir ? '文件夹' : '文件', ctx.entry.name, async () => {
           try {
             await invoke('trash_path', { path: ctx.entry.path });
-            if (ctx.row === treeActiveRow) closePreview();
+            if (ctx.row === treeActiveRow) closePreview(true);
             const next = ctx.row.nextElementSibling;
             if (next && next.classList.contains('tree-children')) next.remove();
             ctx.row.remove();
@@ -699,6 +714,7 @@ function del(id, name) {
 function closeDel() {
   el.confirm.classList.remove('active');
   pendingConfirm = null;
+  exitPromptPending = false;
 }
 
 async function browse() {
@@ -1349,9 +1365,17 @@ const termEl = {
   previewRich: $('file-preview-rich'),
   previewPdf: $('file-preview-pdf'),
   previewToggle: $('file-preview-toggle'),
+  previewEdit: $('file-preview-edit'),
+  previewSave: $('file-preview-save'),
+  previewCancel: $('file-preview-cancel'),
+  previewStatus: $('file-preview-status'),
   previewBody: $('file-preview-body'),
   previewInsert: $('file-preview-insert'),
   previewClose: $('file-preview-close'),
+  editor: $('file-editor'),
+  editorInput: $('file-editor-input'),
+  editorMeta: $('file-editor-meta'),
+  editorPosition: $('file-editor-position'),
 };
 
 // 标签一屏放不下时横向滚动查看；触控板本来能横滑，这里让鼠标竖向滚轮也能滚
@@ -2705,9 +2729,13 @@ const HLJS_EXT = {
   ts: 'typescript', tsx: 'typescript', go: 'go', rs: 'rust', py: 'python',
   rb: 'ruby', java: 'java', kt: 'kotlin', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp',
   cs: 'csharp', php: 'php', swift: 'swift', sh: 'bash', bash: 'bash', zsh: 'bash',
-  lua: 'lua', sql: 'sql', html: 'xml', xml: 'xml', vue: 'xml', css: 'css',
+  fish: 'shell', ps1: 'powershell', bat: 'dos', cmd: 'dos', lua: 'lua', sql: 'sql',
+  dart: 'dart', r: 'r', scala: 'scala', groovy: 'groovy', gradle: 'gradle',
+  proto: 'protobuf', graphql: 'graphql', gql: 'graphql', diff: 'diff', patch: 'diff',
+  html: 'xml', htm: 'xml', xml: 'xml', svg: 'xml', plist: 'xml', vue: 'xml', css: 'css',
   scss: 'scss', less: 'less', json: 'json', yaml: 'yaml', yml: 'yaml',
-  toml: 'ini', ini: 'ini', conf: 'ini', md: 'markdown', markdown: 'markdown',
+  jsonc: 'json', json5: 'json', toml: 'ini', ini: 'ini', conf: 'ini', cfg: 'ini',
+  properties: 'properties', env: 'bash', md: 'markdown', markdown: 'markdown',
   dockerfile: 'dockerfile', makefile: 'makefile',
 };
 function hljsLangFor(name) {
@@ -2719,8 +2747,8 @@ function hljsLangFor(name) {
 
 function fileIconKey(name) {
   const ext = (name.split('.').pop() || '').toLowerCase();
-  if (/^(js|mjs|cjs|ts|tsx|jsx|vue|go|rs|py|rb|java|kt|c|h|hpp|cpp|cc|cs|php|swift|sh|bash|zsh|lua|sql|html|css|scss)$/.test(ext)) return 'code';
-  if (/^(json|ya?ml|toml|ini|env|conf|cfg|lock|xml|gradle|properties)$/.test(ext)) return 'config';
+  if (/^(js|mjs|cjs|ts|tsx|jsx|vue|go|rs|py|rb|java|kt|c|h|hpp|cpp|cc|cs|php|swift|sh|bash|zsh|fish|ps1|bat|cmd|lua|sql|dart|r|scala|groovy|proto|graphql|gql|html?|css|scss|less)$/.test(ext)) return 'code';
+  if (/^(json5?|jsonc|ya?ml|toml|ini|env|conf|cfg|lock|xml|plist|gradle|properties)$/.test(ext)) return 'config';
   if (/^(md|markdown|txt|rst|adoc|log|pdf|csv|tsv)$/.test(ext)) return 'doc';
   if (/^(png|jpe?g|gif|webp|bmp|ico|svg|avif)$/.test(ext)) return 'image';
   return 'file';
@@ -2746,10 +2774,7 @@ function makeTreeRow(entry, depth) {
       if (clickTimer) return;
       clickTimer = setTimeout(() => {
         clickTimer = null;
-        if (treeActiveRow) treeActiveRow.classList.remove('active');
-        treeActiveRow = row;
-        row.classList.add('active');
-        openPreview(entry.path, entry.name);
+        requestOpenPreview(entry.path, entry.name, row);
       }, 220);
     };
     row.ondblclick = () => {
@@ -2819,13 +2844,81 @@ function isCsvFile(name) { return /\.(csv|tsv)$/i.test(name); }
 
 let previewPdfUrl = null;            // 当前 PDF 的 object URL（需手动 revoke）
 let previewRichState = null;         // { kind:'md'|'csv', content, name } 供源码/渲染切换
+let previewTextState = null;         // 当前可作为文本查看/编辑的文件状态
+let previewLoadSeq = 0;              // 连点不同文件时忽略过期的异步读取结果
+let fileEditorSaving = false;
+let currentAppWindow = null;
+let allowWindowClose = false;
+let exitPromptPending = false;
+let queuedEditorDirty = false;
+let editorDirtySync = Promise.resolve();
 
-// 在四个视图(pre/image/rich/pdf)间切换显示
+function hasUnsavedFileChanges() {
+  return fileEditorSaving || isFileEditorDirty();
+}
+
+// 串行同步，避免快速输入/撤销时 IPC 乱序，导致后端记住过期的 dirty 状态。
+function syncEditorDirtyState(forceValue) {
+  const dirty = forceValue ?? hasUnsavedFileChanges();
+  if (dirty === queuedEditorDirty) return editorDirtySync;
+  queuedEditorDirty = dirty;
+  editorDirtySync = editorDirtySync
+    .catch(() => {})
+    .then(() => invoke('set_editor_dirty', { dirty }));
+  return editorDirtySync;
+}
+
+async function discardChangesAndExit(kind) {
+  try {
+    await syncEditorDirtyState(false);
+    if (kind === 'window') {
+      allowWindowClose = true;
+      await currentAppWindow?.close();
+    } else {
+      await invoke('confirm_app_exit');
+    }
+  } catch (e) {
+    allowWindowClose = false;
+    syncEditorDirtyState();
+    msg('退出失败: ' + (e.message || e), 'error');
+  }
+}
+
+function requestDiscardChangesAndExit(kind) {
+  if (exitPromptPending || el.confirm.classList.contains('active')) return;
+  exitPromptPending = true;
+  showConfirm({
+    title: '文件修改尚未保存',
+    message: fileEditorSaving
+      ? '文件仍在保存中。现在退出可能丢失本次修改，确定退出吗？'
+      : `对 ${previewTextState?.name || '当前文件'} 的修改尚未保存，确定退出吗？`,
+    confirmText: '放弃修改并退出',
+    danger: true,
+    onConfirm: () => discardChangesAndExit(kind),
+  });
+}
+
+async function setupEditorExitGuard() {
+  const tauri = window.__TAURI__;
+  currentAppWindow = tauri.window.getCurrentWindow();
+  await currentAppWindow.onCloseRequested(async event => {
+    if (allowWindowClose || !hasUnsavedFileChanges()) return;
+    event.preventDefault();
+    requestDiscardChangesAndExit('window');
+  });
+  await tauri.event.listen('app-quit-requested', () => {
+    requestDiscardChangesAndExit('app');
+  });
+}
+
+// 在五个视图(pre/image/rich/pdf/editor)间切换显示
 function showPreviewView(which) {
   termEl.previewPre.style.display = which === 'text' ? '' : 'none';
   termEl.previewImage.classList.toggle('active', which === 'image');
   termEl.previewRich.classList.toggle('active', which === 'rich');
   termEl.previewPdf.classList.toggle('active', which === 'pdf');
+  termEl.editor.classList.toggle('active', which === 'editor');
+  termEl.previewBody.classList.toggle('editor-active', which === 'editor');
 }
 
 function revokePreviewPdf() {
@@ -2834,6 +2927,7 @@ function revokePreviewPdf() {
 }
 
 function renderTextPreview(content, name, truncatedNote) {
+  termEl.preview.querySelector('.file-preview-truncated')?.remove();
   showPreviewView('text');
   termEl.previewCode.className = 'hljs';
   termEl.previewCode.removeAttribute('data-highlighted');
@@ -2847,6 +2941,66 @@ function renderTextPreview(content, name, truncatedNote) {
     note.textContent = truncatedNote;
     termEl.preview.appendChild(note);
   }
+}
+
+function isFileEditorOpen() {
+  return termEl.editor.classList.contains('active') && !!previewTextState;
+}
+
+function isFileEditorDirty() {
+  return isFileEditorOpen()
+    && termEl.editorInput.value !== editorTextFromFile(previewTextState.content);
+}
+
+function lineEndingLabel(lineEnding) {
+  if (lineEnding === 'crlf') return 'CRLF';
+  if (lineEnding === 'cr') return 'CR';
+  if (lineEnding === 'mixed') return 'MIXED';
+  return 'LF';
+}
+
+function updateFileEditorPosition() {
+  if (!isFileEditorOpen()) return;
+  const value = termEl.editorInput.value;
+  const before = value.slice(0, termEl.editorInput.selectionStart);
+  const line = before.split('\n').length;
+  const lastBreak = before.lastIndexOf('\n');
+  const column = before.length - lastBreak;
+  const lines = value.length ? value.split('\n').length : 1;
+  const encoding = previewTextState.utf8Bom ? 'UTF-8 BOM' : 'UTF-8';
+  termEl.editorMeta.textContent =
+    `${encoding} · ${lineEndingLabel(previewTextState.lineEnding)} · ${lines} 行`;
+  termEl.editorPosition.textContent = `第 ${line} 行，第 ${column} 列`;
+}
+
+function updateFileEditorActions() {
+  const editing = isFileEditorOpen();
+  const hasText = !!previewTextState;
+  termEl.previewEdit.style.display = hasText && !editing ? '' : 'none';
+  termEl.previewEdit.disabled = hasText && !previewTextState.editable;
+  termEl.previewEdit.title = hasText && !previewTextState.editable
+    ? (previewTextState.editReason || '此文件只能预览')
+    : '编辑文件';
+  termEl.previewSave.style.display = editing ? '' : 'none';
+  termEl.previewCancel.style.display = editing ? '' : 'none';
+  termEl.previewCancel.disabled = fileEditorSaving;
+  termEl.previewToggle.style.display = !editing && previewRichState ? '' : 'none';
+
+  termEl.previewStatus.classList.toggle('active', editing || (hasText && !previewTextState.editable));
+  if (editing) {
+    const dirty = isFileEditorDirty();
+    termEl.previewStatus.textContent = fileEditorSaving ? '保存中…' : (dirty ? '未保存' : '编辑中');
+    termEl.previewStatus.title = dirty ? '当前修改尚未保存' : '';
+    termEl.previewSave.disabled = fileEditorSaving || !dirty;
+  } else if (hasText && !previewTextState.editable) {
+    termEl.previewStatus.textContent = '只读';
+    termEl.previewStatus.title = previewTextState.editReason || '';
+  } else {
+    termEl.previewStatus.textContent = '';
+    termEl.previewStatus.title = '';
+  }
+  updateFileEditorPosition();
+  syncEditorDirtyState();
 }
 
 // CSV/TSV 解析（处理引号包裹的字段）
@@ -2898,6 +3052,7 @@ function renderRich() {
 }
 
 async function openPreview(path, name) {
+  const loadSeq = ++previewLoadSeq;
   termEl.preview.querySelector('.file-preview-truncated')?.remove();
   termEl.previewName.textContent = name;
   termEl.previewName.title = path;
@@ -2905,8 +3060,11 @@ async function openPreview(path, name) {
   termEl.preview.classList.add('active');
   revokePreviewPdf();
   previewRichState = null;
+  previewTextState = null;
   termEl.previewToggle.style.display = 'none';
   termEl.previewToggle.classList.remove('active');
+  showPreviewView('text');
+  updateFileEditorActions();
 
   // 图片
   if (isImageFile(name)) {
@@ -2914,9 +3072,13 @@ async function openPreview(path, name) {
     termEl.previewImg.removeAttribute('src');
     termEl.previewImg.alt = '加载中…';
     try {
-      termEl.previewImg.src = await invoke('read_image', { path });
+      const src = await invoke('read_image', { path });
+      if (loadSeq !== previewLoadSeq) return;
+      termEl.previewImg.src = src;
       termEl.previewImg.alt = name;
-    } catch (e) { renderTextPreview(String(e), name); }
+    } catch (e) {
+      if (loadSeq === previewLoadSeq) renderTextPreview(String(e), name);
+    }
     return;
   }
 
@@ -2925,10 +3087,13 @@ async function openPreview(path, name) {
     showPreviewView('pdf');
     try {
       const b64 = await invoke('read_binary_base64', { path });
+      if (loadSeq !== previewLoadSeq) return;
       const blob = new Blob([b64ToBytes(b64)], { type: 'application/pdf' });
       previewPdfUrl = URL.createObjectURL(blob);
       termEl.previewPdf.src = previewPdfUrl;
-    } catch (e) { renderTextPreview(String(e), name); }
+    } catch (e) {
+      if (loadSeq === previewLoadSeq) renderTextPreview(String(e), name);
+    }
     return;
   }
 
@@ -2936,38 +3101,244 @@ async function openPreview(path, name) {
   if (isMarkdownFile(name) || isCsvFile(name)) {
     try {
       const res = await invoke('read_file', { path });
+      if (loadSeq !== previewLoadSeq) return;
+      previewTextState = { path, name, ...res };
       previewRichState = { kind: isMarkdownFile(name) ? 'md' : 'csv', content: res.content, name };
-      termEl.previewToggle.style.display = '';
       termEl.previewToggle.classList.add('active'); // active=渲染态
       renderRich();
+      updateFileEditorActions();
       return;
-    } catch (e) { renderTextPreview(String(e), name); return; }
+    } catch (e) {
+      if (loadSeq === previewLoadSeq) renderTextPreview(String(e), name);
+      return;
+    }
   }
 
   // 普通文本
   try {
     const res = await invoke('read_file', { path });
+    if (loadSeq !== previewLoadSeq) return;
+    previewTextState = { path, name, ...res };
     renderTextPreview(
       res.content, name,
       res.truncated ? `文件超过 1MB，仅显示前 1MB（共 ${(res.size / 1048576).toFixed(1)} MB）` : null,
     );
-  } catch (e) { renderTextPreview(String(e), name); }
+    updateFileEditorActions();
+  } catch (e) {
+    if (loadSeq === previewLoadSeq) renderTextPreview(String(e), name);
+  }
 }
 
 // 源码 / 渲染切换（仅 md/csv）
 function togglePreviewMode() {
-  if (!previewRichState) return;
+  if (!previewRichState || isFileEditorOpen()) return;
   const toRich = !termEl.previewToggle.classList.contains('active');
   termEl.previewToggle.classList.toggle('active', toRich);
   if (toRich) renderRich();
   else renderTextPreview(previewRichState.content, previewRichState.name, null);
 }
 
-function closePreview() {
+function renderCurrentTextFile() {
+  if (!previewTextState) return;
+  if (previewRichState) {
+    termEl.previewToggle.classList.add('active');
+    renderRich();
+  } else {
+    renderTextPreview(
+      previewTextState.content,
+      previewTextState.name,
+      previewTextState.truncated
+        ? `文件超过 1MB，仅显示前 1MB（共 ${(previewTextState.size / 1048576).toFixed(1)} MB）`
+        : null,
+    );
+  }
+  updateFileEditorActions();
+}
+
+function beginFileEdit() {
+  if (!previewTextState) return;
+  if (!previewTextState.editable) {
+    msg(previewTextState.editReason || '此文件只能预览，不能编辑', 'error');
+    return;
+  }
+  termEl.editorInput.value = editorTextFromFile(previewTextState.content);
+  showPreviewView('editor');
+  updateFileEditorActions();
+  termEl.editorInput.focus();
+}
+
+function finishFileEdit() {
+  fileEditorSaving = false;
+  renderCurrentTextFile();
+}
+
+function requestCancelFileEdit() {
+  if (!isFileEditorOpen()) return;
+  if (fileEditorSaving) {
+    msg('文件正在保存，请稍候', 'info');
+    return;
+  }
+  if (!isFileEditorDirty()) {
+    finishFileEdit();
+    return;
+  }
+  showConfirm({
+    title: '放弃未保存修改？',
+    message: `对 ${previewTextState.name} 的修改尚未保存，确定放弃吗？`,
+    confirmText: '放弃修改',
+    danger: true,
+    onConfirm: finishFileEdit,
+  });
+}
+
+async function saveFileEdit() {
+  if (!isFileEditorOpen() || fileEditorSaving || !isFileEditorDirty()) return;
+  const editorValueAtSave = termEl.editorInput.value;
+  fileEditorSaving = true;
+  updateFileEditorActions();
+  const stateAtSave = previewTextState;
+  const content = fileTextFromEditor(editorValueAtSave, stateAtSave.lineEnding);
+  try {
+    const res = await invoke('write_file', {
+      path: stateAtSave.path,
+      content,
+      expectedContent: stateAtSave.content,
+      utf8Bom: !!stateAtSave.utf8Bom,
+    });
+    if (previewTextState !== stateAtSave) {
+      fileEditorSaving = false;
+      updateFileEditorActions();
+      return;
+    }
+    previewTextState = { path: stateAtSave.path, name: stateAtSave.name, ...res };
+    if (previewRichState) {
+      previewRichState.content = res.content;
+      previewRichState.name = stateAtSave.name;
+    }
+    if (!editorChangedDuringSave(editorValueAtSave, termEl.editorInput.value)) {
+      finishFileEdit();
+      msg(`${stateAtSave.name} 已保存`, 'success');
+    } else {
+      fileEditorSaving = false;
+      updateFileEditorActions();
+      msg('已保存提交时的内容；保存期间的新修改仍未保存', 'info');
+    }
+  } catch (e) {
+    fileEditorSaving = false;
+    updateFileEditorActions();
+    msg('保存失败: ' + (e.message || e), 'error');
+  }
+}
+
+function detectEditorIndent() {
+  const lines = editorTextFromFile(previewTextState?.content || '').split('\n');
+  for (const line of lines) {
+    const leading = line.match(/^(\t+| +)\S/);
+    if (!leading) continue;
+    if (leading[1][0] === '\t') return '\t';
+    return ' '.repeat(leading[1].length >= 4 ? 4 : 2);
+  }
+  return '  ';
+}
+
+function handleEditorTab(e) {
+  e.preventDefault();
+  const input = termEl.editorInput;
+  const indent = detectEditorIndent();
+  const value = input.value;
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+
+  if (start === end) {
+    if (!e.shiftKey) {
+      input.setRangeText(indent, start, end, 'end');
+    } else {
+      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+      const prefix = value.slice(lineStart, start);
+      const removable = prefix.match(new RegExp(`^(?:\\t| {1,${indent.length}})`))?.[0] || '';
+      if (removable) {
+        input.setRangeText('', lineStart, lineStart + removable.length, 'end');
+        input.setSelectionRange(start - removable.length, start - removable.length);
+      }
+    }
+  } else {
+    const blockStart = value.lastIndexOf('\n', start - 1) + 1;
+    const nextBreak = value.indexOf('\n', end);
+    const blockEnd = nextBreak < 0 ? value.length : nextBreak;
+    const block = value.slice(blockStart, blockEnd);
+    const changed = e.shiftKey
+      ? block.replace(new RegExp(`^(?:\\t| {1,${indent.length}})`, 'gm'), '')
+      : block.replace(/^/gm, indent);
+    input.setRangeText(changed, blockStart, blockEnd, 'select');
+  }
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function setupFileEditor() {
+  termEl.editorInput.addEventListener('input', updateFileEditorActions);
+  ['click', 'keyup', 'select'].forEach(type => {
+    termEl.editorInput.addEventListener(type, updateFileEditorPosition);
+  });
+  termEl.editorInput.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      saveFileEdit();
+    } else if (e.key === 'Tab') {
+      handleEditorTab(e);
+    }
+  });
+}
+
+function requestOpenPreview(path, name, row) {
+  if (fileEditorSaving) {
+    msg('文件正在保存，请稍候', 'info');
+    return;
+  }
+  const open = () => {
+    if (treeActiveRow) treeActiveRow.classList.remove('active');
+    treeActiveRow = row;
+    row.classList.add('active');
+    openPreview(path, name);
+  };
+  if (previewTextState?.path === path && isFileEditorOpen()) return;
+  if (!isFileEditorDirty()) {
+    open();
+    return;
+  }
+  showConfirm({
+    title: '放弃未保存修改？',
+    message: `对 ${previewTextState.name} 的修改尚未保存，打开其他文件会丢失这些修改。`,
+    confirmText: '放弃并打开',
+    danger: true,
+    onConfirm: open,
+  });
+}
+
+function closePreview(force = false) {
+  if (!force && fileEditorSaving) {
+    msg('文件正在保存，请稍候', 'info');
+    return false;
+  }
+  if (!force && isFileEditorDirty()) {
+    showConfirm({
+      title: '放弃未保存修改？',
+      message: `对 ${previewTextState.name} 的修改尚未保存，确定关闭吗？`,
+      confirmText: '放弃并关闭',
+      danger: true,
+      onConfirm: () => closePreview(true),
+    });
+    return false;
+  }
+  previewLoadSeq++;
   termEl.preview.classList.remove('active');
   revokePreviewPdf();
   previewRichState = null;
+  previewTextState = null;
+  fileEditorSaving = false;
+  showPreviewView('text');
+  updateFileEditorActions();
   if (treeActiveRow) { treeActiveRow.classList.remove('active'); treeActiveRow = null; }
+  return true;
 }
 
 function toggleTree() {
@@ -3173,9 +3544,23 @@ function fitSession(id) {
   } catch (e) {}
 }
 
-function activateSession(id) {
+function activateSession(id, force = false) {
   const s = sessions.get(id);
   if (!s) return;
+  if (!force && fileEditorSaving) {
+    msg('文件正在保存，请稍候', 'info');
+    return;
+  }
+  if (!force && isFileEditorDirty()) {
+    showConfirm({
+      title: '放弃未保存修改？',
+      message: `对 ${previewTextState.name} 的修改尚未保存，返回终端会丢失这些修改。`,
+      confirmText: '放弃并切换',
+      danger: true,
+      onConfirm: () => activateSession(id, true),
+    });
+    return;
+  }
   const rootChanged = s.cwd !== treeRoot;
   activeSession = id;
   sessions.forEach((other, oid) => {
@@ -3183,7 +3568,7 @@ function activateSession(id) {
     other.tabEl.classList.toggle('active', on);
     other.bodyEl.classList.toggle('active', on);
   });
-  closePreview();
+  closePreview(true);
   if (rootChanged) renderTree(s.cwd);
   // 标签栏可横向滚动：激活的标签可能在可视区外，滚进来
   s.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -3197,16 +3582,23 @@ function activateSession(id) {
 function confirmCloseSession(id) {
   const s = sessions.get(id);
   if (!s) return;
+  if (activeSession === id && fileEditorSaving) {
+    msg('文件正在保存，请稍候再关闭终端', 'info');
+    return;
+  }
   const running = s.status !== 'exited';
   const aiHint = s.tool
     ? `\n如果刚跟 ${s.tool} 聊过，建议先让它「更新记忆」再关，否则上下文会丢。`
     : '';
   showConfirm({
     title: '关闭终端',
-    message: `确定关闭「${s.name}」吗？${running ? '\n关闭后该会话立即结束。' : ''}${aiHint}`,
+    message: `确定关闭「${s.name}」吗？${running ? '\n关闭后该会话立即结束。' : ''}${activeSession === id && isFileEditorDirty() ? '\n当前文件中未保存的修改也会丢失。' : ''}${aiHint}`,
     confirmText: '关闭',
     danger: true,
-    onConfirm: () => closeSession(id),
+    onConfirm: () => {
+      if (activeSession === id) closePreview(true);
+      closeSession(id);
+    },
   });
 }
 

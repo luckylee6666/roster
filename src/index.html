@@ -387,8 +387,18 @@
           <div class="file-preview" id="file-preview">
             <div class="file-preview-head">
               <span class="file-preview-name" id="file-preview-name"></span>
+              <span class="file-preview-status" id="file-preview-status"></span>
               <button class="term-tool-btn" id="file-preview-toggle" title="源码 / 渲染" style="display:none;">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 9l-3 3 3 3M16 9l3 3-3 3M13 6l-2 12"/></svg>
+              </button>
+              <button class="term-tool-btn" id="file-preview-edit" title="编辑文件" style="display:none;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16.5 4.5l3 3M4 20l1-4L16.5 4.5l3 3L8 19l-4 1z"/></svg>
+              </button>
+              <button class="term-tool-btn file-save-btn" id="file-preview-save" title="保存（⌘/Ctrl + S）" style="display:none;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></svg>
+              </button>
+              <button class="term-tool-btn" id="file-preview-cancel" title="取消编辑" style="display:none;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
               <button class="term-tool-btn" id="file-preview-insert" title="把路径插入终端">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5 5 5-5M12 14V3"/></svg>
@@ -402,6 +412,21 @@
               <div class="file-preview-image" id="file-preview-image"><img id="file-preview-img" alt="" /></div>
               <div class="file-preview-rich markdown-body" id="file-preview-rich"></div>
               <iframe class="file-preview-pdf" id="file-preview-pdf" title="PDF 预览"></iframe>
+              <div class="file-editor" id="file-editor">
+                <textarea
+                  class="file-editor-input"
+                  id="file-editor-input"
+                  aria-label="文件内容编辑器"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  wrap="off"
+                ></textarea>
+                <div class="file-editor-footer">
+                  <span id="file-editor-meta">UTF-8</span>
+                  <span id="file-editor-position">第 1 行，第 1 列</span>
+                </div>
+              </div>
             </div>
           </div>
           <!-- 片段快捷悬浮面板：卡片单击 = 注入并回车 -->

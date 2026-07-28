@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.12
+
+### English
+
+**Added**
+- **Built-in file editing**: code, configuration, Markdown, CSV, and ordinary UTF-8 text files can now be edited directly from the terminal file preview. The editor includes syntax-aware preview, Tab/Shift+Tab indentation, position and encoding metadata, and `⌘/Ctrl + S` saving.
+
+**Changed**
+- Saves preserve UTF-8 BOM, LF/CRLF/CR line endings, permissions, ACLs, extended attributes, and supported platform metadata. Mixed-line-ending files remain preview-only to avoid rewriting their format.
+
+**Fixed / Hardened**
+- Typing while a save is in flight no longer loses newer edits. Unsaved changes now block file/session switches, window close, system quit, and tray quit until explicitly discarded.
+- Text reads are bounded to 1 MB and scan the full loaded content for NUL bytes. Binary, invalid UTF-8, read-only, mixed-line-ending, and oversized files are handled safely.
+- Same-directory atomic replacement and best-effort external-change checks reduce partial writes and accidental overwrites; the limitation of the unavoidable final concurrent-write window is documented.
+
+**Tests**
+- Added frontend save-state/line-ending tests and backend coverage for BOM/line endings, conflicts, late NUL bytes, oversized and invalid UTF-8 files, and extended-attribute preservation.
+
+### 中文
+
+**新增**
+- **内置文件编辑**：终端文件预览现可直接编辑代码、配置、Markdown、CSV 和普通 UTF-8 文本；支持语法高亮预览、Tab/Shift+Tab 缩进、位置与编码状态，以及 `⌘/Ctrl + S` 保存。
+
+**变更**
+- 保存时保留 UTF-8 BOM、LF/CRLF/CR 换行、文件权限、ACL、扩展属性及平台支持的元数据。混合换行文件保持只读预览，避免整文件格式被重写。
+
+**修复 / 加固**
+- 保存请求进行中继续输入不再丢失新修改；未保存内容会拦截文件/会话切换、窗口关闭、系统退出和托盘退出，直到用户明确放弃。
+- 文本读取限制为 1MB，并对已加载内容完整检测 NUL 字节；二进制、无效 UTF-8、只读、混合换行和超大文件均安全处理。
+- 同目录原子替换与尽力外部冲突检测减少半截写入和误覆盖，并在文档中明确最终并发写入窗口无法完全消除。
+
+**测试**
+- 新增前端保存状态/换行测试，以及后端 BOM/换行、冲突、后置 NUL、超大文件、无效 UTF-8 和扩展属性保留测试。
+
 ## v1.2.11
 
 ### English

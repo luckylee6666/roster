@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
@@ -891,40 +892,311 @@ fn list_dir(path: String) -> Result<Vec<DirEntryInfo>, String> {
     Ok(result)
 }
 
+#[derive(Default)]
+struct EditorExitGuard {
+    dirty: AtomicBool,
+    allow_exit: AtomicBool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileContent {
     content: String,
     truncated: bool,
     size: u64,
+    editable: bool,
+    edit_reason: Option<String>,
+    line_ending: String,
+    utf8_bom: bool,
 }
 
-/// 读取文本文件内容预览：>1MB 截断，含 NUL 字节判为二进制拒绝。
-#[tauri::command]
-fn read_file(path: String) -> Result<FileContent, String> {
-    let p = std::path::Path::new(&path);
+const MAX_TEXT_FILE_SIZE: u64 = 1024 * 1024;
+
+fn split_utf8_bom(bytes: &[u8]) -> (bool, &[u8]) {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        (true, &bytes[3..])
+    } else {
+        (false, bytes)
+    }
+}
+
+fn detect_line_ending(text: &str) -> String {
+    let crlf = text.matches("\r\n").count();
+    let lf = text.matches('\n').count().saturating_sub(crlf);
+    let cr = text.matches('\r').count().saturating_sub(crlf);
+    let kinds = usize::from(crlf > 0) + usize::from(lf > 0) + usize::from(cr > 0);
+    if kinds > 1 {
+        "mixed"
+    } else if crlf > 0 {
+        "crlf"
+    } else if cr > 0 {
+        "cr"
+    } else {
+        "lf"
+    }
+    .to_string()
+}
+
+/// 从同一个已打开的文件句柄读取，最多保留 `limit` 字节；额外读取 1 字节用来
+/// 捕获“检查大小后文件又增长”的竞争，避免对变化中的文件进行无界分配。
+fn read_file_bounded(p: &Path, limit: u64) -> Result<(Vec<u8>, u64, bool), String> {
+    let file = fs::File::open(p).map_err(|e| e.to_string())?;
+    let metadata_size = file.metadata().map_err(|e| e.to_string())?.len();
+    let mut bytes = Vec::with_capacity((metadata_size.min(limit) as usize).saturating_add(1));
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let observed_size = metadata_size.max(bytes.len() as u64);
+    let truncated = observed_size > limit || bytes.len() as u64 > limit;
+    if bytes.len() as u64 > limit {
+        bytes.truncate(limit as usize);
+    }
+    Ok((bytes, observed_size, truncated))
+}
+
+fn read_text_file(p: &Path) -> Result<FileContent, String> {
     if !p.is_file() {
         return Err("不是文件".to_string());
     }
-    const MAX: u64 = 1024 * 1024; // 1MB
-    let size = fs::metadata(p).map_err(|e| e.to_string())?.len();
-    // 只读到上限，避免把超大文件整个读进内存
-    let mut bytes = Vec::new();
-    fs::File::open(p)
-        .map_err(|e| e.to_string())?
-        .take(MAX)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    let probe = &bytes[..bytes.len().min(8000)];
-    if probe.contains(&0) {
+    let (bytes, size, truncated) = read_file_bounded(p, MAX_TEXT_FILE_SIZE)?;
+    if bytes.contains(&0) {
         return Err("二进制文件，无法预览".to_string());
     }
-    let truncated = size > MAX;
+    let (utf8_bom, text_bytes) = split_utf8_bom(&bytes);
+    let utf8 = std::str::from_utf8(text_bytes);
+    let read_only = fs::metadata(p)
+        .map_err(|e| e.to_string())?
+        .permissions()
+        .readonly();
+    let content = String::from_utf8_lossy(text_bytes).to_string();
+    let line_ending = detect_line_ending(&content);
+    let edit_reason = if truncated {
+        Some("文件超过 1MB，只能预览前 1MB".to_string())
+    } else if utf8.is_err() {
+        Some("文件不是 UTF-8 编码，为避免损坏仅支持预览".to_string())
+    } else if line_ending == "mixed" {
+        Some("文件包含混合换行符，为避免整文件换行格式被改写，仅支持预览".to_string())
+    } else if read_only {
+        Some("文件为只读，无法保存修改".to_string())
+    } else {
+        None
+    };
     Ok(FileContent {
-        content: String::from_utf8_lossy(&bytes).to_string(),
+        line_ending,
+        content,
         truncated,
         size,
+        editable: edit_reason.is_none(),
+        edit_reason,
+        utf8_bom,
     })
+}
+
+/// 读取文本文件内容预览：>1MB 截断，含 NUL 字节判为二进制拒绝。
+/// 可编辑性、换行符和 UTF-8 BOM 一并返回，前端保存时据此保持原格式。
+#[tauri::command]
+fn read_file(path: String) -> Result<FileContent, String> {
+    let p = fs::canonicalize(Path::new(&path)).map_err(|e| e.to_string())?;
+    read_text_file(&p)
+}
+
+#[cfg(target_os = "macos")]
+fn copy_file_metadata(path: &Path, temp: &tempfile::NamedTempFile) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+
+    let source = fs::File::open(path).map_err(|e| e.to_string())?;
+    // COPYFILE_METADATA 包含 stat、ACL 与扩展属性；随后写入正文会自然刷新 mtime。
+    let result = unsafe {
+        libc::fcopyfile(
+            source.as_raw_fd(),
+            temp.as_file().as_raw_fd(),
+            std::ptr::null_mut(),
+            libc::COPYFILE_METADATA,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "无法保留文件元数据，已停止保存: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn copy_file_metadata(path: &Path, temp: &tempfile::NamedTempFile) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    use xattr::FileExt;
+
+    let source = fs::File::open(path).map_err(|e| e.to_string())?;
+    let metadata = source.metadata().map_err(|e| e.to_string())?;
+    let result =
+        unsafe { libc::fchown(temp.as_file().as_raw_fd(), metadata.uid(), metadata.gid()) };
+    if result != 0 {
+        return Err(format!(
+            "无法保留文件所有者或用户组，已停止保存: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // fchown 可能清除 setuid/setgid 位，因此所有者复制后再恢复完整权限。
+    temp.as_file()
+        .set_permissions(metadata.permissions())
+        .map_err(|e| format!("无法保留文件权限，已停止保存: {e}"))?;
+    for name in source
+        .list_xattr()
+        .map_err(|e| format!("无法读取文件扩展属性，已停止保存: {e}"))?
+    {
+        if let Some(value) = source
+            .get_xattr(&name)
+            .map_err(|e| format!("无法读取文件扩展属性，已停止保存: {e}"))?
+        {
+            temp.as_file()
+                .set_xattr(&name, &value)
+                .map_err(|e| format!("无法保留文件扩展属性，已停止保存: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_file_metadata(_path: &Path, _temp: &tempfile::NamedTempFile) -> Result<(), String> {
+    // ReplaceFileW 会在最终替换时继承目标文件的 ACL、属性和命名流。
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn copy_file_metadata(path: &Path, temp: &tempfile::NamedTempFile) -> Result<(), String> {
+    let permissions = fs::metadata(path).map_err(|e| e.to_string())?.permissions();
+    temp.as_file()
+        .set_permissions(permissions)
+        .map_err(|e| format!("无法保留文件权限，已停止保存: {e}"))
+}
+
+#[cfg(windows)]
+fn persist_temp_file(temp: tempfile::NamedTempFile, path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    let temp_path = temp.into_temp_path();
+    let target_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let temp_wide: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            temp_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if result == 0 {
+        Err(format!("替换文件失败: {}", std::io::Error::last_os_error()))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn persist_temp_file(temp: tempfile::NamedTempFile, path: &Path) -> Result<(), String> {
+    temp.persist(path).map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
+/// 同目录临时文件落盘后再替换目标：避免崩溃时只留下半截内容，并尽可能完整
+/// 保留原文件的权限、所有者、ACL、扩展属性及平台元数据。
+fn atomic_replace_file(path: &Path, data: &[u8], expected_current: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法确定文件所在目录".to_string())?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(".vcm-edit-")
+        .tempfile_in(parent)
+        .map_err(|e| e.to_string())?;
+    copy_file_metadata(path, &temp)?;
+    temp.as_file_mut()
+        .write_all(data)
+        .map_err(|e| e.to_string())?;
+    temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    // 临时文件准备期间目标仍可能被外部改动，替换前再核对一次以缩小竞争窗口。
+    let (latest, _, latest_truncated) = read_file_bounded(path, MAX_TEXT_FILE_SIZE)?;
+    if latest_truncated || latest != expected_current {
+        return Err("文件已被其他程序修改；为避免覆盖，请取消编辑后重新打开".to_string());
+    }
+    persist_temp_file(temp, path)?;
+    // Unix 上再同步目录项；不支持目录 fsync 的平台无需阻止正常保存。
+    #[cfg(unix)]
+    {
+        let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+    }
+    Ok(())
+}
+
+/// 保存 UTF-8 文本文件。保存前和原子替换前逐字节核对打开时的内容，尽力检测
+/// 终端、Git 或其他编辑器在此期间写入的新版本。
+#[tauri::command]
+fn write_file(
+    path: String,
+    content: String,
+    expected_content: String,
+    utf8_bom: bool,
+) -> Result<FileContent, String> {
+    let target = fs::canonicalize(Path::new(&path)).map_err(|e| e.to_string())?;
+    if !target.is_file() {
+        return Err("不是文件".to_string());
+    }
+    let metadata = fs::metadata(&target).map_err(|e| e.to_string())?;
+    if metadata.len() > MAX_TEXT_FILE_SIZE {
+        return Err("文件超过 1MB，不能在应用内编辑".to_string());
+    }
+    if metadata.permissions().readonly() {
+        return Err("文件为只读，无法保存修改".to_string());
+    }
+
+    let (current_bytes, _, current_truncated) = read_file_bounded(&target, MAX_TEXT_FILE_SIZE)?;
+    if current_truncated {
+        return Err("文件超过 1MB，不能在应用内编辑".to_string());
+    }
+    if current_bytes.contains(&0) {
+        return Err("二进制文件不能作为文本保存".to_string());
+    }
+    let (current_bom, current_text_bytes) = split_utf8_bom(&current_bytes);
+    let current_text = std::str::from_utf8(current_text_bytes)
+        .map_err(|_| "文件已变为非 UTF-8 编码，已停止保存".to_string())?;
+    if current_bom != utf8_bom || current_text != expected_content {
+        return Err("文件已被其他程序修改；为避免覆盖，请取消编辑后重新打开".to_string());
+    }
+    if content.as_bytes().contains(&0) {
+        return Err("文本内容不能包含 NUL 字节".to_string());
+    }
+
+    let mut encoded = Vec::with_capacity(content.len() + usize::from(utf8_bom) * 3);
+    if utf8_bom {
+        encoded.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    encoded.extend_from_slice(content.as_bytes());
+    if encoded.len() as u64 > MAX_TEXT_FILE_SIZE {
+        return Err("编辑后的文件超过 1MB，未保存".to_string());
+    }
+
+    atomic_replace_file(&target, &encoded, &current_bytes)?;
+    read_text_file(&target)
+}
+
+#[tauri::command]
+fn set_editor_dirty(dirty: bool, state: State<'_, EditorExitGuard>) {
+    state.dirty.store(dirty, Ordering::SeqCst);
+    if dirty {
+        state.allow_exit.store(false, Ordering::SeqCst);
+    }
+}
+
+#[tauri::command]
+fn confirm_app_exit(app: AppHandle, state: State<'_, EditorExitGuard>) {
+    state.allow_exit.store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 /// 读取图片文件 → base64 data URL（供 <img> 直接显示）。>16MB 拒绝。
@@ -2118,6 +2390,24 @@ fn update_tray_usage(app: &AppHandle) {
     }
 }
 
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn should_block_for_unsaved_editor(app: &AppHandle) -> bool {
+    let state = app.state::<EditorExitGuard>();
+    state.dirty.load(Ordering::SeqCst) && !state.allow_exit.load(Ordering::SeqCst)
+}
+
+fn request_app_quit_confirmation(app: &AppHandle) {
+    show_main_window(app);
+    let _ = app.emit("app-quit-requested", ());
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log_info!(
@@ -2135,6 +2425,7 @@ pub fn run() {
         .manage(state)
         .manage(term_state)
         .manage(TermThemeLock(Mutex::new(())))
+        .manage(EditorExitGuard::default())
         .setup(move |app| {
             // 会话状态感知：监控线程扫描"活跃后静默"的终端，emit terminal-attention
             let mon_app = app.handle().clone();
@@ -2147,7 +2438,13 @@ pub fn run() {
                 ));
             }
             // 菜单栏托盘：常驻显示 5h / 周限流用量，菜单可打开主窗/刷新/退出
-            let show_i = MenuItem::with_id(app, "tray_show", "打开 Vibe Coding Manager", true, None::<&str>)?;
+            let show_i = MenuItem::with_id(
+                app,
+                "tray_show",
+                "打开 Vibe Coding Manager",
+                true,
+                None::<&str>,
+            )?;
             let refresh_i = MenuItem::with_id(app, "tray_refresh", "刷新用量", true, None::<&str>)?;
             let log_i = MenuItem::with_id(app, "tray_log", "打开日志", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
@@ -2178,7 +2475,13 @@ pub fn run() {
                             log_warn!("打开日志失败：{e}");
                         }
                     }
-                    "tray_quit" => app.exit(0),
+                    "tray_quit" => {
+                        if should_block_for_unsaved_editor(app) {
+                            request_app_quit_confirmation(app);
+                        } else {
+                            app.exit(0);
+                        }
+                    }
                     _ => {}
                 });
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -2214,6 +2517,9 @@ pub fn run() {
             open_pick_directory,
             list_dir,
             read_file,
+            write_file,
+            set_editor_dirty,
+            confirm_app_exit,
             read_image,
             read_binary_base64,
             trash_path,
@@ -2243,8 +2549,16 @@ pub fn run() {
             open_log,
             app_log
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if should_block_for_unsaved_editor(app) {
+                    api.prevent_exit();
+                    request_app_quit_confirmation(app);
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2321,6 +2635,155 @@ mod tests {
         assert_eq!(loaded[0].name, "test");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_text_file_reports_format_and_editability() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env.test");
+        fs::write(
+            &path,
+            b"\xEF\xBB\xBFAPI_URL=http://localhost\r\nDEBUG=true\r\n",
+        )
+        .unwrap();
+
+        let file = read_text_file(&path).unwrap();
+        assert_eq!(file.content, "API_URL=http://localhost\r\nDEBUG=true\r\n");
+        assert_eq!(file.line_ending, "crlf");
+        assert!(file.utf8_bom);
+        assert!(file.editable);
+        assert!(file.edit_reason.is_none());
+        assert!(!file.truncated);
+    }
+
+    #[test]
+    fn test_write_file_preserves_format_and_rejects_external_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"\xEF\xBB\xBFname = \"old\"\r\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o754)).unwrap();
+        }
+
+        let saved = write_file(
+            path.to_string_lossy().to_string(),
+            "name = \"new\"\r\n".to_string(),
+            "name = \"old\"\r\n".to_string(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(saved.content, "name = \"new\"\r\n");
+        assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFname = \"new\"\r\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o754
+            );
+        }
+
+        fs::write(&path, b"\xEF\xBB\xBFname = \"external\"\r\n").unwrap();
+        let error = write_file(
+            path.to_string_lossy().to_string(),
+            "name = \"mine\"\r\n".to_string(),
+            "name = \"new\"\r\n".to_string(),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("其他程序修改"));
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"\xEF\xBB\xBFname = \"external\"\r\n"
+        );
+    }
+
+    #[test]
+    fn test_mixed_line_endings_are_preview_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.txt");
+        fs::write(&path, b"one\r\ntwo\nthree\r").unwrap();
+
+        let file = read_text_file(&path).unwrap();
+        assert_eq!(file.line_ending, "mixed");
+        assert!(!file.editable);
+        assert!(file.edit_reason.unwrap().contains("混合换行符"));
+    }
+
+    #[test]
+    fn test_nul_after_initial_probe_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.dat");
+        let mut bytes = vec![b'a'; 9000];
+        bytes[8500] = 0;
+        fs::write(&path, bytes).unwrap();
+
+        assert!(read_text_file(&path).unwrap_err().contains("二进制"));
+    }
+
+    #[test]
+    fn test_oversized_file_is_bounded_and_cannot_be_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.log");
+        fs::write(&path, vec![b'a'; MAX_TEXT_FILE_SIZE as usize + 1]).unwrap();
+
+        let file = read_text_file(&path).unwrap();
+        assert!(file.truncated);
+        assert!(!file.editable);
+        assert_eq!(file.content.len(), MAX_TEXT_FILE_SIZE as usize);
+
+        let error = write_file(
+            path.to_string_lossy().to_string(),
+            String::new(),
+            file.content,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("超过 1MB"));
+    }
+
+    #[test]
+    fn test_invalid_utf8_is_preview_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.conf");
+        fs::write(&path, [0xff, b'a', b'\n']).unwrap();
+
+        let file = read_text_file(&path).unwrap();
+        assert!(!file.editable);
+        assert!(file.edit_reason.unwrap().contains("不是 UTF-8"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_file_preserves_extended_attributes() {
+        use xattr::FileExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.txt");
+        fs::write(&path, b"old\n").unwrap();
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        #[cfg(target_os = "macos")]
+        let attribute = "com.vibe-coding-manager.test";
+        #[cfg(not(target_os = "macos"))]
+        let attribute = "user.vibe-coding-manager.test";
+        file.set_xattr(attribute, b"kept").unwrap();
+
+        write_file(
+            path.to_string_lossy().to_string(),
+            "new\n".to_string(),
+            "old\n".to_string(),
+            false,
+        )
+        .unwrap();
+
+        let saved = fs::File::open(&path).unwrap();
+        assert_eq!(saved.get_xattr(attribute).unwrap(), Some(b"kept".to_vec()));
     }
 
     #[test]
