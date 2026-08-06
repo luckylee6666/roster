@@ -597,7 +597,7 @@ fn save_snippets(
 pub struct TermTheme {
     pub id: String,
     pub name: String,
-    /// 基础配色 key：sakura / neon-rain / classic / homebrew（xterm 调色板来源）
+    /// 基础配色 key：guofeng / sakura / neon-rain / classic / homebrew（xterm 调色板来源）
     pub base: String,
     /// 背景图："" 无图；"builtin:<path>" 内置资源；"file:<name>" 用户上传（appdata/theme-images/）
     #[serde(default)]
@@ -608,7 +608,7 @@ pub struct TermTheme {
     /// 遮罩色 "r, g, b"
     #[serde(default)]
     pub tint: String,
-    /// 点击迸出爱心/花瓣特效
+    /// 是否启用与 base 对应的主题点击粒子特效
     #[serde(default)]
     pub click_fx: bool,
     /// 菜单缩略图标路径（""=菜单用背景图缩略图兜底）。预装主题用它保留专属图标。
@@ -1984,6 +1984,13 @@ struct RemoteInfo {
 }
 
 /// 创建一个新的终端会话，在 `cwd` 起一个登录 shell，并把输出流式推到前端。
+fn validate_terminal_cwd(cwd: &str) -> Result<(), String> {
+    if cwd.is_empty() || std::path::Path::new(cwd).is_dir() {
+        return Ok(());
+    }
+    Err(format!("终端工作目录不存在或不可访问：{cwd}"))
+}
+
 // Tauri IPC 直接按终端创建参数解包，保留具名参数可避免前端协议变更。
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -1997,6 +2004,9 @@ fn terminal_create(
     name: Option<String>,
     tool: Option<String>,
 ) -> Result<(), String> {
+    // 不允许无效项目路径静默回退到应用默认目录，否则 `codex resume --last`
+    // 可能按错误 cwd 接入另一个项目的最近会话。
+    validate_terminal_cwd(&cwd)?;
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -2018,7 +2028,7 @@ fn terminal_create(
     #[cfg(target_os = "windows")]
     let mut cmd = CommandBuilder::new("powershell.exe");
 
-    if !cwd.is_empty() && std::path::Path::new(&cwd).is_dir() {
+    if !cwd.is_empty() {
         cmd.cwd(&cwd);
     }
     cmd.env("TERM", "xterm-256color");
@@ -2408,6 +2418,35 @@ fn request_app_quit_confirmation(app: &AppHandle) {
     let _ = app.emit("app-quit-requested", ());
 }
 
+const COMPANION_WEBVIEW_LABEL: &str = "companion-webview";
+
+/// The companion WebView may follow normal HTTPS redirects, but it must never
+/// navigate its top-level document to file/data/javascript or public HTTP URLs.
+/// Other application WebViews keep their existing navigation behavior.
+fn companion_navigation_policy<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::<R>::new("companion_navigation_policy")
+        .on_navigation(|webview, url| {
+            if webview.label() != COMPANION_WEBVIEW_LABEL {
+                return true;
+            }
+
+            if !url.username().is_empty() || url.password().is_some() {
+                return false;
+            }
+            if url.scheme() == "https" {
+                return true;
+            }
+            if url.scheme() != "http" {
+                return false;
+            }
+            matches!(
+                url.host_str().map(|host| host.trim_end_matches('.')),
+                Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+            )
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log_info!(
@@ -2420,6 +2459,7 @@ pub fn run() {
     let activity_for_monitor = term_state.activity.clone();
 
     tauri::Builder::default()
+        .plugin(companion_navigation_policy())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .manage(state)
@@ -2564,6 +2604,24 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_terminal_cwd_allows_default_and_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_terminal_cwd("").is_ok());
+        assert!(validate_terminal_cwd(dir.path().to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn test_terminal_cwd_rejects_missing_directory_and_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, b"not a directory").unwrap();
+
+        assert!(validate_terminal_cwd(missing.to_str().unwrap()).is_err());
+        assert!(validate_terminal_cwd(file.to_str().unwrap()).is_err());
+    }
 
     #[test]
     fn test_project_serde_roundtrip() {

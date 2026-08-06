@@ -13,7 +13,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# `unstable` is scoped to Tauri's native child-WebView API used by Relax mode.
+# Cargo.lock pins the verified Tauri 2.11.x implementation for reproducible builds.
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }

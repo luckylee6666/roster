@@ -9,14 +9,14 @@ Latest release: **v1.2.12** — edit code and configuration files directly from 
 ## Features
 
 - **Project management** — add, edit, delete projects
-- **Run target** — local machine / server
+- **Run target (optional)** — local machine / server, or leave it unset
 - **Server management** — configure SSH servers (host, port, user, password/key login method)
 - **Grouping** — group projects, collapsible sidebar, click to locate, rename a group inline (hover → pencil; all projects in it move together)
 - **Built-in terminal** — in-app bottom-drawer tabbed terminal managing all sessions; file tree, file preview and editing, color themes, font size, drag-to-insert path; closing a tab asks first and reminds you to let the AI update its memory (see [Using the terminal](#using-the-built-in-terminal))
 - **Multi AI CLI launch** — start **Claude / Codex / opencode / Gemini / agy** in a project directory from the project card, with a tool badge on the tab
 - **Session attention awareness** — when a terminal session goes quiet after a burst of output (an AI CLI likely finished or is waiting for input), you get a desktop notification + chime + an amber pulsing dot on the tab; the session you're actively watching won't interrupt you, and a bell icon in the toolbar toggles it
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
-- **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude tabs come back with `--continue`
+- **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude uses `--continue`, while Codex uses `resume --last` in the saved project directory
 - **Prompt/snippet library** — a toolbar bookmark icon holds reusable prompts/commands; click one to inject it into the current terminal (text only, no auto-Enter, so you can review before sending); add/edit/delete via a management dialog, stored in `snippets.json`
 - **Restore context** — a history icon on each project card opens a one-glance snapshot to resume work: git overview + recent commits + changed files + CLAUDE.md summary + the CLI you last launched there; footer buttons jump back in (open terminal / Claude)
 - **Rate-limit usage (no dependencies)** — the Claude usage panel shows your real 5-hour / 7-day limit utilization (% + reset countdown), same source as Claude Code's `/usage` (reads the Keychain token and calls the official endpoint; first read prompts a Keychain authorization); cached 60s, near-instant, **no Node required**
@@ -35,13 +35,19 @@ Latest release: **v1.2.12** — edit code and configuration files directly from 
 - Local path
 - Remote repository URL
 - Group
-- Run target (local / server)
+- Run target (optional: local / server)
 - Server association
 - Description
 
 ## Using the built-in terminal
 
 A bottom-drawer terminal — open it from a project card's terminal icon or the floating button at the bottom-right.
+
+**Workspace modes**
+- **Normal**: use the full terminal workspace
+- **Relax**: add and manage your own web pages on the right; only HTTPS URLs and HTTP URLs on localhost are allowed. There are no preset sites, so no third-party site loads automatically
+- **Entertainment**: choose Tetris or 2048 on the right; Tetris is selected by default the first time, and your last selection is remembered. Click **Terminal** in the right-side bar to return to the Coding area
+- Workspace modes and color themes are independent: themes can be switched in any mode, and their backgrounds and character effects apply to the left Coding area
 
 **Launch an AI CLI**
 - Click the terminal icon on a project card → a menu pops up: **Open Claude / Open Codex / Open opencode / Open Gemini / Open agy**
@@ -70,7 +76,9 @@ The editor supports Tab/Shift+Tab indentation and warns before discarding unsave
 - **Move to Trash** (recoverable; asks for confirmation first)
 
 **Color themes**
-- Toggle via the palette toolbar icon: **Default Dark** / **Homebrew**, plus the pre-installed editable image themes **Sakura Twilight** and **Neon Rain**
+- Toggle via the palette toolbar icon: **Default Dark** / **Homebrew**, plus the pre-installed editable image themes **Sakura Twilight**, **Neon Rain**, and the Chinese-inspired **Moonlit Brocade**
+- Image themes have matching animated pointers, trails, and click particles; resize handles keep their native cursors, and reduced-motion preferences disable decorative motion
+- **Moonlit Brocade** uses state-aware Retina 2D layers: while no task is running, the 3584×2240 portrait remains pixel-locked and only source-aligned eyelids, fabric light, jewelry glints, and particles animate. Terminal output fades in the same woman seated at a rosewood desk, typing on a visible keyboard; repeated output keeps that Coding scene alive across short pauses, and a second hands-and-keys frame supplies the local typing loop. No idle video, mesh deformation, or whole-image transform is used, so the face, hands, and brocade cannot be replaced or softened between frames; asset failures or reduced-motion preferences keep the static Retina artwork
 - Open **DIY Theme** to choose a built-in or local background, base palette, overlay tint/strength, and click effects; multiple themes can be saved, edited, or deleted
 
 **Font size**
@@ -109,6 +117,8 @@ pnpm tauri build
 pnpm test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+For manual layered-character QA, run `python3 -m http.server 4174 --bind 127.0.0.1` from the repository root and open `http://127.0.0.1:4174/tests/terminal-theme-character-fixture.html`. The fixture loads the production controller and assets, exposes character states and a static/dynamic toggle, and supports `?compact=1` for the collapsed-height layout. It is a manual visual harness and is not counted by `pnpm test`.
 
 ## Tech stack
 

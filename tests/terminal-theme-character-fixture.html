@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>黛月华裳分层动态人物验收</title>
+  <link rel="stylesheet" href="../src/styles.css?v=20260804-pixel-locked-idle" />
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #071014; }
+    .fixture-dock {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      height: 100vh !important;
+      transform: none !important;
+      background-color: #0e1a1c;
+    }
+    .fixture-dock .terminal-theme-backdrop {
+      background-size: cover;
+      background-position: center 14%;
+      background-repeat: no-repeat;
+    }
+    .fixture-dock.fixture-compact { top: auto; height: 320px !important; }
+    .fixture-dock .terminal-main { position: absolute; inset: 0; background: transparent; }
+    .fixture-dock .terminal-content { position: absolute; inset: 0; background: transparent; }
+    .fixture-dock .terminal-bodies { background: transparent; pointer-events: none; }
+    .fixture-copy {
+      position: absolute;
+      z-index: 2;
+      top: 3.5%;
+      left: 2.3%;
+      margin: 0;
+      color: rgba(232, 224, 207, 0.88);
+      font: 21px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+      white-space: pre-wrap;
+      pointer-events: none;
+    }
+    .fixture-badge {
+      position: fixed;
+      z-index: 1601;
+      right: 18px;
+      bottom: 16px;
+      padding: 7px 11px;
+      border: 1px solid rgba(216, 170, 83, 0.35);
+      border-radius: 999px;
+      color: #e8e0cf;
+      background: rgba(7, 16, 20, 0.74);
+      font: 12px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .fixture-controls {
+      position: fixed;
+      z-index: 1602;
+      left: 22px;
+      bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid rgba(216, 170, 83, 0.24);
+      border-radius: 12px;
+      background: rgba(7, 16, 20, 0.76);
+      backdrop-filter: blur(12px);
+    }
+    .fixture-controls button {
+      border: 1px solid rgba(159, 209, 202, 0.24);
+      border-radius: 8px;
+      padding: 7px 10px;
+      color: #e8e0cf;
+      background: rgba(31, 77, 75, 0.42);
+      cursor: pointer;
+    }
+    .fixture-controls button:hover,
+    .fixture-controls button:focus-visible {
+      border-color: rgba(216, 170, 83, 0.72);
+      outline: none;
+      background: rgba(55, 133, 126, 0.52);
+    }
+    .terminal-character-stage[data-preview-blink="true"] .terminal-character-eye-layer {
+      opacity: 1 !important;
+      animation: none !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="terminal-dock fixture-dock has-bg active maximized" id="terminal-dock">
+    <div class="terminal-theme-backdrop" id="terminal-theme-backdrop" aria-hidden="true"></div>
+    <div class="terminal-character-stage" id="terminal-character-stage" aria-hidden="true"></div>
+    <div class="terminal-main">
+      <div class="terminal-content">
+        <div class="terminal-bodies has-bg" id="terminal-bodies"></div>
+        <pre class="fixture-copy">lucky@MacBook-Pro vibe-coding-manage % codex
+
+› 正在检查当前任务…
+
+  待机时保持原画清晰，衣纹与饰品轻动；Coding 时，她会坐在书案前敲击键盘。</pre>
+      </div>
+    </div>
+  </div>
+  <div class="fixture-controls" aria-label="人物状态预览">
+    <button type="button" data-character-state="idle">待机原画</button>
+    <button type="button" data-character-state="thinking">Coding 中</button>
+    <button type="button" data-character-state="success">成功</button>
+    <button type="button" data-character-state="error">错误</button>
+    <button type="button" data-character-state="greeting">问候</button>
+    <button type="button" data-fixture-action="blink">闭眼定格</button>
+    <button type="button" data-fixture-action="toggle">静态 / 动态</button>
+  </div>
+  <div class="fixture-badge" id="fixture-status">正在加载原画分层人物…</div>
+  <script type="module">
+    import { installTerminalCharacterTheme } from '../src/terminal-theme-character.js';
+
+    const dock = document.getElementById('terminal-dock');
+    const backdrop = document.getElementById('terminal-theme-backdrop');
+    const stage = document.getElementById('terminal-character-stage');
+    const status = document.getElementById('fixture-status');
+    if (new URLSearchParams(location.search).has('compact')) dock.classList.add('fixture-compact');
+    backdrop.style.backgroundImage = 'linear-gradient(rgba(14, 27, 29, 0.22), rgba(14, 27, 29, 0.22)), url("../src/assets/term-bg-guofeng-beauty-retina.png")';
+
+    const controller = installTerminalCharacterTheme(stage, dock, {
+      onAvailabilityChange: ready => {
+        status.textContent = ready ? '原画保真分层 · Retina 原画与局部流光' : '静态原画模式';
+      },
+      onError: error => {
+        status.textContent = `加载失败：${error?.message || String(error)}`;
+        console.error(error);
+      },
+    });
+    controller.setDockOpen(true);
+    controller.applyTheme('guofeng-beauty');
+    document.querySelectorAll('[data-character-state]').forEach(button => {
+      button.addEventListener('click', () => {
+        const nextState = button.dataset.characterState;
+        if (nextState === 'thinking') {
+          controller.handleTerminalEvent('output');
+          status.textContent = '原画分层人物 · 坐姿 Coding 状态';
+          return;
+        }
+        controller.setState(nextState, nextState === 'idle' ? 0 : 5000);
+        status.textContent = `原画分层人物 · ${button.textContent}状态`;
+      });
+    });
+    document.querySelector('[data-fixture-action="toggle"]').addEventListener('click', () => {
+      const nextTheme = controller.isReady() ? '' : 'guofeng-beauty';
+      controller.applyTheme(nextTheme);
+      status.textContent = nextTheme ? '正在恢复分层人物…' : '静态原画模式';
+    });
+    document.querySelector('[data-fixture-action="blink"]').addEventListener('click', () => {
+      stage.dataset.previewBlink = stage.dataset.previewBlink === 'true' ? 'false' : 'true';
+      status.textContent = stage.dataset.previewBlink === 'true' ? '闭眼图层 · 定格检查' : '原画保真分层 · 运行中';
+    });
+    window.themeController = controller;
+  </script>
+</body>
+</html>

@@ -132,9 +132,9 @@
                 <datalist id="group-suggestions"></datalist>
               </div>
               <div class="form-item">
-                <label class="form-label required">运行环境</label>
-                <select class="form-select" id="project-machine" required>
-                  <option value="">请选择</option>
+                <label class="form-label">运行环境 <span class="form-optional">（可选）</span></label>
+                <select class="form-select" id="project-machine">
+                  <option value="">暂不设置</option>
                   <option value="local">本地电脑</option>
                   <option value="server">服务器</option>
                 </select>
@@ -338,6 +338,8 @@
 
     <!-- 内置终端：底部抽屉，多标签集中管理所有会话 -->
     <div class="terminal-dock" id="terminal-dock">
+      <div class="terminal-theme-backdrop" id="terminal-theme-backdrop" aria-hidden="true"></div>
+      <div class="terminal-character-stage" id="terminal-character-stage" aria-hidden="true"></div>
       <div class="terminal-resize" id="terminal-resize"></div>
       <div class="terminal-head">
         <div class="terminal-tabs" id="terminal-tabs"></div>
@@ -357,6 +359,31 @@
           <button class="term-tool-btn" id="terminal-snippet-btn" title="Prompt 片段库：一键注入常用指令">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><path d="M9 5a2 2 0 012-2h2a2 2 0 012 2v0a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/><path d="M9 12h6M9 16h4"/></svg>
           </button>
+          <div class="workspace-mode-wrap">
+            <button class="workspace-mode-btn" id="workspace-mode-btn" type="button"
+                    title="工作区模式" aria-haspopup="menu" aria-expanded="false">
+              <svg class="workspace-mode-current-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5h16v13H4z"/><path d="M8 9l2.5 2L8 13.5M13 14h3"/></svg>
+              <span id="workspace-mode-label">普通</span>
+              <svg class="workspace-mode-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 9.5l5 5 5-5"/></svg>
+            </button>
+            <div class="workspace-mode-menu" id="workspace-mode-menu" role="menu" aria-label="工作区模式">
+              <button class="workspace-mode-option" type="button" role="menuitemradio" data-mode="normal">
+                <span class="workspace-mode-option-icon">⌨</span>
+                <span><strong>普通模式</strong><small>完整终端与主题</small></span>
+                <svg class="workspace-mode-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
+              <button class="workspace-mode-option" type="button" role="menuitemradio" data-mode="relax">
+                <span class="workspace-mode-option-icon">☕</span>
+                <span><strong>轻松模式</strong><small>Coding + 网页</small></span>
+                <svg class="workspace-mode-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
+              <button class="workspace-mode-option" type="button" role="menuitemradio" data-mode="entertainment">
+                <span class="workspace-mode-option-icon">🎮</span>
+                <span><strong>娱乐模式</strong><small>Coding + 小游戏</small></span>
+                <svg class="workspace-mode-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
+            </div>
+          </div>
           <div class="term-theme-wrap">
             <button class="term-tool-btn" id="terminal-theme-btn" title="配色主题">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 100 18h1.6a2.4 2.4 0 002.4-2.4c0-.63-.25-1.2-.65-1.62a2.36 2.36 0 01-.65-1.6 2.4 2.4 0 012.4-2.38H19a3 3 0 003-3C22 6.13 17.97 3 12 3z"/><circle cx="7.5" cy="11.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="11" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16" cy="9" r="1.1" fill="currentColor" stroke="none"/></svg>
@@ -444,6 +471,82 @@
               <div class="snippet-quick-cards" id="snippet-quick-cards"></div>
             </div>
           </div>
+        </div>
+        <div class="companion-splitter" id="companion-splitter" role="separator"
+             aria-label="调整右侧区域宽度" aria-orientation="vertical" tabindex="0"></div>
+        <aside class="companion-panel" id="companion-panel" aria-label="右侧休闲区域">
+          <div class="companion-toolbar">
+            <div class="companion-toolbar-group companion-relax-tools" id="companion-relax-tools">
+              <span class="companion-live-dot" aria-hidden="true"></span>
+              <select class="companion-site-select" id="companion-site-select" aria-label="选择网页"></select>
+              <button class="companion-tool-btn" id="companion-add-site" type="button" title="添加网页" aria-label="添加网页">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <button class="companion-tool-btn" id="companion-remove-site" type="button" title="移除当前网页" aria-label="移除当前网页">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 7h14M9 7V4h6v3M8 10v8M12 10v8M16 10v8M7 7l1 14h8l1-14"/></svg>
+              </button>
+              <button class="companion-tool-btn" id="companion-refresh" type="button" title="重新加载" aria-label="重新加载当前网页">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+              </button>
+              <button class="companion-tool-btn" id="companion-open-browser" type="button" title="在浏览器中打开" aria-label="在系统浏览器中打开当前网页">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6H5V6h6"/></svg>
+              </button>
+            </div>
+            <div class="companion-toolbar-group companion-game-tools" id="companion-game-tools">
+              <select class="companion-game-select" id="companion-game-select" aria-label="选择游戏"></select>
+              <span class="companion-game-hint" id="companion-game-hint"></span>
+            </div>
+            <div class="companion-toolbar-actions">
+              <button class="companion-return-btn" id="companion-return-terminal" type="button" title="返回终端输入" aria-label="返回终端输入">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 6h14v12H5z"/><path d="M8 10l2 2-2 2M12 14h3"/></svg>
+                <span>终端</span>
+              </button>
+              <button class="companion-tool-btn" id="companion-close" type="button" title="返回普通模式" aria-label="关闭右侧区域并返回普通模式">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="companion-surface companion-web-surface" id="companion-web-surface">
+            <div class="companion-webview-slot" id="companion-webview-slot">
+              <div class="companion-web-placeholder" id="companion-web-placeholder">
+                <span class="companion-loader" aria-hidden="true"></span>
+                <strong id="companion-web-status" role="status" aria-live="polite" aria-atomic="true">准备打开网页</strong>
+                <small>外部网页运行在隔离的浏览器区域中</small>
+                <button class="companion-empty-add-site" id="companion-empty-add-site" type="button">添加网页</button>
+              </div>
+            </div>
+          </div>
+          <div class="companion-surface companion-game-surface" id="companion-game-surface"></div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- 轻松模式：添加网页 -->
+    <div class="modal-mask" id="companion-site-modal" role="dialog" aria-modal="true" aria-labelledby="companion-site-modal-title">
+      <div class="modal-wrap">
+        <div class="modal companion-site-dialog">
+          <div class="modal-header">
+            <span class="modal-title" id="companion-site-modal-title">添加到轻松模式</span>
+            <button class="modal-x" id="companion-site-modal-close" type="button" aria-label="关闭添加网页窗口">&times;</button>
+          </div>
+          <form id="companion-site-form">
+            <div class="modal-body">
+              <div class="form-item">
+                <label class="form-label" for="companion-site-name">名称</label>
+                <input class="form-input" id="companion-site-name" maxlength="64" placeholder="例如：抖音" />
+              </div>
+              <div class="form-item">
+                <label class="form-label" for="companion-site-url">网页地址</label>
+                <input class="form-input" id="companion-site-url" type="text" inputmode="url"
+                       autocomplete="url" required placeholder="douyin.com 或 https://www.example.com/" />
+                <div class="companion-site-help">可省略 https://；仅支持 HTTPS 网页。账号信息由网站自己的 WebView 存储。</div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-default" id="companion-site-cancel" type="button">取消</button>
+              <button class="btn btn-primary" id="companion-site-submit" type="submit">添加并打开</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>

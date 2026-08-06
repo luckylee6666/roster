@@ -1,0 +1,30 @@
+# 轻舞非对称完整循环时间轴
+#
+# 第一列为 8 秒、60fps 成片中的帧号，第二列为秒数。左右重心变化使用
+# 不同的进入和退出姿势，收势也不倒放前半段；相邻关键姿势由 RIFE
+# 4.25 MLX 插帧。深侧倾和循环首尾单独减速，其余手势保持连续速度。
+000 0.00 term-bg-guofeng-beauty-dance-a.png
+021 0.35 term-bg-guofeng-beauty-dance-body-left-entry.png
+045 0.75 term-bg-guofeng-beauty-dance-body-left.png
+069 1.15 term-bg-guofeng-beauty-dance-body-left-exit.png
+090 1.50 term-bg-guofeng-beauty-dance-a-a-mid-1-half.png
+111 1.85 term-bg-guofeng-beauty-dance-a-mid-1.png
+126 2.10 term-bg-guofeng-beauty-dance-a-mid-1-a-mid-2-quarter.png
+141 2.35 term-bg-guofeng-beauty-dance-a-mid-1-a-mid-2-half.png
+156 2.60 term-bg-guofeng-beauty-dance-a-mid-1-a-mid-2-three-quarter.png
+171 2.85 term-bg-guofeng-beauty-dance-a-mid-2.png
+189 3.15 term-bg-guofeng-beauty-dance-a-mid-2-mid-half.png
+207 3.45 term-bg-guofeng-beauty-dance-mid.png
+222 3.70 term-bg-guofeng-beauty-dance-mid-mid-b-1-quarter.png
+237 3.95 term-bg-guofeng-beauty-dance-mid-mid-b-1-half.png
+258 4.30 term-bg-guofeng-beauty-dance-mid-b-1.png
+279 4.65 term-bg-guofeng-beauty-dance-mid-b-1-mid-b-2-half.png
+300 5.00 term-bg-guofeng-beauty-dance-mid-b-2.png
+315 5.25 term-bg-guofeng-beauty-dance-mid-b-2-b-half.png
+324 5.40 term-bg-guofeng-beauty-dance-b.png
+348 5.80 term-bg-guofeng-beauty-dance-body-right-entry.png
+375 6.25 term-bg-guofeng-beauty-dance-body-right.png
+405 6.75 term-bg-guofeng-beauty-dance-body-right-exit.png
+432 7.20 term-bg-guofeng-beauty-dance-organic-return-entry.png
+456 7.60 term-bg-guofeng-beauty-dance-organic-return.png
+480 8.00 term-bg-guofeng-beauty-dance-a.png

@@ -44,3 +44,12 @@ secrets*.json
 *.njsproj
 *.sln
 *.sw?
+
+# Generated Python bytecode and local-only 3D experiments.
+__pycache__/
+*.py[cod]
+/design/guofeng-3d/**/*.blend1
+/design/guofeng-3d/experimental-full-glb/
+/design/guofeng-3d/experimental-depth-relief/
+/design/guofeng-3d/previews/
+/design/guofeng-3d/full-frame-reference/

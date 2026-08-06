@@ -3,6 +3,21 @@ import {
   editorTextFromFile,
   fileTextFromEditor,
 } from './file-editor-utils.js';
+import {
+  clearImageTerminalCellBackgrounds,
+  scheduleImageTerminalCellBackgroundSync as scheduleCellBackgroundSync,
+  syncImageTerminalCellBackgrounds,
+} from './terminal-theme-utils.js';
+import { installThemePointer } from './terminal-theme-pointer.js';
+import { installTerminalCharacterTheme } from './terminal-theme-character.js';
+import { normalizeProjectMachine, projectMachineTag } from './project-form-utils.js';
+import { seedThemePresets } from './terminal-theme-presets.js';
+import {
+  cliToolName,
+  restoreSessionLayout,
+  sessionLayoutEntries,
+} from './session-restore-utils.js';
+import { installWorkspaceMode } from './workspace-mode.js';
 
 let invoke;
 try {
@@ -308,6 +323,11 @@ function getServerName(serverId) {
   return s ? s.name : '';
 }
 
+function machineTagHtml(machine) {
+  const tag = projectMachineTag(machine);
+  return tag ? `<span class="tag ${tag.className}">${tag.label}</span>` : '';
+}
+
 function render(list) {
   if (!list.length) {
     el.empty.style.display = 'flex';
@@ -337,7 +357,7 @@ function render(list) {
           </div>
           ${p.description ? `<div class="card-desc">${esc(p.description)}</div>` : ''}
           <div class="card-tags">
-            <span class="tag ${tagCls(p.machine)}">${tagLabel(p.machine)}</span>
+            ${machineTagHtml(p.machine)}
             ${p.machine === 'server' && p.serverId ? `<span class="tag tag-server">${esc(getServerName(p.serverId))}</span>` : ''}
             <span class="card-git" data-git-id="${p.id}"></span>
           </div>
@@ -547,10 +567,21 @@ function bind() {
   $('context-modal-overlay').onclick = e => { if (e.target === $('context-modal-overlay')) closeContextModal(); };
   $('context-open-terminal').onclick = () => { const p = contextProject; if (p) { closeContextModal(); openTerminal(p, ''); } };
   $('context-open-claude').onclick = () => { const p = contextProject; if (p) { closeContextModal(); openTerminal(p, 'claude'); } };
+  // WebKit 偶尔会在应用切出再切回后留下“看似聚焦、实际不收键盘”的 xterm textarea。
+  // 只在切出前焦点确实位于当前终端时恢复，避免抢走表单、弹窗和文件编辑器的焦点。
+  let restoreTerminalFocus = false;
+  window.addEventListener('blur', () => {
+    const session = activeSession ? sessions.get(activeSession) : null;
+    restoreTerminalFocus = !!(session && session.bodyEl.contains(document.activeElement));
+  });
   // 窗口重新获得焦点时，正在看的会话就别再亮"需要关注"了 + 刷新 git 状态
   let gitFocusTimer = null;
   window.addEventListener('focus', () => {
     if (activeSession && termEl.dock.classList.contains('active')) clearAttention(activeSession);
+    if (restoreTerminalFocus && activeSession && termEl.dock.classList.contains('active')) {
+      requestAnimationFrame(() => sessions.get(activeSession)?.term.focus());
+    }
+    restoreTerminalFocus = false;
     clearTimeout(gitFocusTimer);
     gitFocusTimer = setTimeout(refreshGitStatus, 400); // 防抖：回到窗口稍候再扫
   });
@@ -568,7 +599,7 @@ function bind() {
   $('usage-overlay').onclick = e => { if (e.target === $('usage-overlay')) closeUsage(); };
   termEl.themeBtn.onclick = (e) => {
     e.stopPropagation();
-    termEl.themeMenu.classList.contains('active') ? closeThemeMenu() : openThemeMenu();
+    (themeMenuOpening || termEl.themeMenu.classList.contains('active')) ? closeThemeMenu() : void openThemeMenu();
   };
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.term-theme-wrap')) closeThemeMenu();
@@ -589,6 +620,7 @@ function bind() {
   }, { passive: false });
   applyTermBackground(currentThemeDef || TERM_THEMES.classic); // custom:* 由 initTermTheme 异步精确应用
   setupTermResize();
+  setupWorkspaceMode();
   // 文件树 + 内容预览
   termEl.treeBtn.onclick = toggleTree;
   termEl.treeRefreshBtn.onclick = () => renderTree(treeRoot);
@@ -761,15 +793,14 @@ async function submit(e) {
     el.form.reportValidity();
     return;
   }
-  if (submitting) return; // 防止 invoke 在途时重复点「确定」产生重复项目
-  submitting = true;
 
+  const projectMachine = normalizeProjectMachine(el.machine.value, el.serverSelect.value);
   const data = {
     name: el.name.value.trim(),
     localPath: el.path.value.trim(),
     remoteUrl: el.url.value.trim(),
-    machine: el.machine.value,
-    serverId: el.machine.value === 'server' ? el.serverSelect.value : '',
+    machine: projectMachine.machine,
+    serverId: projectMachine.serverId,
     group: el.group.value.trim(),
     description: el.desc.value.trim(),
   };
@@ -779,6 +810,8 @@ async function submit(e) {
     msg('请选择服务器', 'error');
     return;
   }
+  if (submitting) return; // 防止 invoke 在途时重复点「确定」产生重复项目
+  submitting = true;
 
   try {
     if (currentEditId) {
@@ -1228,16 +1261,6 @@ function repo(url) {
   try { return url.split('/').pop().replace('.git', ''); } catch { return url; }
 }
 
-function tagCls(m) {
-  if (m === 'local') return 'tag-local';
-  if (m === 'server') return 'tag-ssh';
-  return 'tag-other';
-}
-
-function tagLabel(m) {
-  return { local: '本地电脑', server: '服务器' }[m] || m || '未知';
-}
-
 // ========== 扫描导入 ==========
 
 let scannedProjects = [];
@@ -1337,8 +1360,10 @@ async function importScanned() {
 
 const termEl = {
   dock: $('terminal-dock'),
+  backdrop: $('terminal-theme-backdrop'),
   tabs: $('terminal-tabs'),
   bodies: $('terminal-bodies'),
+  characterStage: $('terminal-character-stage'),
   resize: $('terminal-resize'),
   newBtn: $('terminal-new-btn'),
   treeBtn: $('terminal-tree-btn'),
@@ -1356,6 +1381,7 @@ const termEl = {
   treeRootName: $('tree-root-name'),
   treeRefreshBtn: $('tree-refresh-btn'),
   treeSplitter: $('tree-splitter'),
+  main: document.querySelector('.terminal-main'),
   preview: $('file-preview'),
   previewName: $('file-preview-name'),
   previewCode: $('file-preview-code'),
@@ -1377,6 +1403,15 @@ const termEl = {
   editorMeta: $('file-editor-meta'),
   editorPosition: $('file-editor-position'),
 };
+const themePointer = installThemePointer(termEl.dock);
+const characterTheme = installTerminalCharacterTheme(termEl.characterStage, termEl.dock, {
+  onAvailabilityChange: () => {
+    if (currentThemeDef && currentThemeDef.characterScene) applyTermBackground(currentThemeDef);
+  },
+  onError: error => appLog('warn', `国风分层人物已降级到静态原画：${error?.message || error}`),
+});
+let workspaceController = null;
+let workspaceAutoMaximized = false;
 
 // 标签一屏放不下时横向滚动查看；触控板本来能横滑，这里让鼠标竖向滚轮也能滚
 termEl.tabs.addEventListener('wheel', (ev) => {
@@ -1391,8 +1426,11 @@ const SAKURA_BACKGROUND = 'assets/term-bg-sakura-v2.png';
 const SAKURA_ICON = 'assets/theme-icon-sakura-v2.png';
 const NEON_RAIN_BACKGROUND = 'assets/term-bg-neon-rain.png';
 const NEON_RAIN_ICON = 'assets/theme-icon-neon-rain.png';
+const GUOFENG_BACKGROUND = 'assets/term-bg-guofeng-beauty-retina.png';
+const GUOFENG_ICON = 'assets/theme-icon-guofeng-beauty.png';
 const LEGACY_SAKURA_BACKGROUND = 'assets/term-bg-kawaii.png';
 const LEGACY_SAKURA_ICON = 'assets/theme-icon-sakura.png';
+const LEGACY_GUOFENG_BACKGROUND = 'assets/term-bg-guofeng-beauty.png';
 
 // 终端配色方案
 const TERM_THEMES = {
@@ -1431,6 +1469,7 @@ const TERM_THEMES = {
       brightBlue: '#bbb5f2', brightMagenta: '#edaad2', brightCyan: '#b5e7e4', brightWhite: '#fff4f8',
     },
     bg: { image: SAKURA_BACKGROUND, dim: 0.22, tint: '71, 31, 68', base: '#2b1833' },
+    cursorFx: 'sakura',
     clickFx: true, // 点击迸出爱心/花瓣
   },
   // Image 2 生成的「霓虹雨夜」：和樱花一样只作为可编辑预装主题的配色 base，
@@ -1449,26 +1488,57 @@ const TERM_THEMES = {
       brightBlue: '#8bc0ff', brightMagenta: '#c6a8ff', brightCyan: '#83efff', brightWhite: '#f0f8ff',
     },
     bg: { image: NEON_RAIN_BACKGROUND, dim: 0.18, tint: '7, 17, 31', base: '#07111f' },
+    cursorFx: 'neon-rain',
     clickFx: false,
+  },
+  // 黛月华裳：青黛、玉色与鎏金组成的国风配色；人物右置，左侧保留代码阅读区。
+  'guofeng': {
+    name: '🪷 黛月华裳',
+    hidden: true,
+    ui: 'guofeng',
+    cursorFx: 'guofeng',
+    // 图片主题的半透明输入区会放大块状光标的明暗切换；保持光标常亮，
+    // 避免看起来像整条输入框随 1s 光标动画闪动。
+    cursorBlink: false,
+    solidBackground: '#0e1a1c',
+    theme: {
+      background: 'rgba(14, 26, 28, 0)', foreground: '#e8e0cf', cursor: '#d8aa53',
+      cursorAccent: '#0e1a1c', selectionBackground: 'rgba(190, 70, 58, 0.32)',
+      black: '#152326', red: '#cf665b', green: '#7fab86', yellow: '#d4b36a',
+      blue: '#739ab3', magenta: '#ae7f98', cyan: '#72b3aa', white: '#d8d2c2',
+      brightBlack: '#657578', brightRed: '#eb897d', brightGreen: '#a4c5a8', brightYellow: '#e6cb85',
+      brightBlue: '#98b8cd', brightMagenta: '#c9a3b6', brightCyan: '#9fd1ca', brightWhite: '#fff7e6',
+    },
+    bg: {
+      image: GUOFENG_BACKGROUND,
+      dim: 0.22,
+      tint: '14, 27, 29',
+      base: '#0e1a1c',
+      position: 'center 14%',
+    },
+    characterScene: { id: 'guofeng-beauty' },
+    clickFx: true,
   },
 };
 let currentTheme = localStorage.getItem('term-theme') || 'classic';
 
-// 应用终端图片背景：有 bg.image 时铺图并叠加遮罩，否则使用纯色底。
-// 图铺在整个 dock 上，term-body/xterm 透明，靠 allowTransparency 让背景透上来。
+// 应用终端图片背景：有 bg.image 时在独立背景层铺图并叠加遮罩，否则使用纯色底。
+// 普通模式铺满 dock；并排模式由 CSS 收进左侧 Coding 区，xterm 保持透明。
 function applyTermBackground(def) {
-  const dock = termEl.dock, b = termEl.bodies;
-  if (!dock || !b) return;
+  const dock = termEl.dock, backdrop = termEl.backdrop, b = termEl.bodies;
+  if (!dock || !backdrop || !b) return;
   if (def && def.bg && def.bg.image) {
     const dim = def.bg.dim != null ? def.bg.dim : 0.3;
     const tint = def.bg.tint || '20, 12, 20';
-    // 背景铺满整个 dock（头栏+侧栏+终端共享一张连续画面）；头/侧栏以半透明面板浮其上
+    // 背景层在普通模式覆盖整个 dock；并排模式由 CSS 将它收进左侧 Coding 区，
+    // 使右置人物不会被网页/游戏面板盖住。头栏、侧栏和终端仍共享连续画面。
     dock.style.backgroundColor = def.bg.base || '#1b1420';
-    dock.style.backgroundImage =
+    dock.style.backgroundImage = 'none';
+    backdrop.style.backgroundImage =
       `linear-gradient(rgba(${tint}, ${dim}), rgba(${tint}, ${dim})), url("${def.bg.image}")`;
-    dock.style.backgroundSize = 'cover';
-    dock.style.backgroundPosition = 'center';
-    dock.style.backgroundRepeat = 'no-repeat';
+    backdrop.style.backgroundSize = 'cover';
+    backdrop.style.backgroundPosition = def.bg.position || 'center';
+    backdrop.style.backgroundRepeat = 'no-repeat';
     dock.classList.add('has-bg');
     b.classList.add('has-bg');       // 触发 CSS 强制 xterm 各层透明，让 dock 背景透上来
     b.style.background = 'transparent';
@@ -1478,6 +1548,10 @@ function applyTermBackground(def) {
     b.classList.remove('has-bg');
     dock.style.backgroundImage = 'none';
     dock.style.backgroundColor = '';   // 还原到 CSS 的 #1b1f27
+    backdrop.style.backgroundImage = 'none';
+    backdrop.style.backgroundSize = '';
+    backdrop.style.backgroundPosition = '';
+    backdrop.style.backgroundRepeat = '';
     b.style.backgroundImage = 'none';
     b.style.background = def.theme.background;
   }
@@ -1487,7 +1561,6 @@ if (!TERM_THEMES[currentTheme] && !String(currentTheme).startsWith('custom:')) c
 // ===== DIY 自定义主题：换背景图 / 遮罩调节 / 多套保存（term-themes.json）+ 点击特效 =====
 let termCustomThemes = [];       // 自定义主题表（get_term_themes 拉取）
 let currentThemeDef = TERM_THEMES[currentTheme] || TERM_THEMES.classic; // custom:* 启动先兜底，initTermTheme 精确应用
-let clickFxEnabled = !!currentThemeDef.clickFx;
 const themeImageCache = new Map(); // 'file:<name>' → data URL，避免重复 IPC 读图
 
 // 主题 key（内置 key 或 'custom:<id>'）→ 可应用的 def {name, theme, bg?, clickFx}
@@ -1507,6 +1580,11 @@ async function buildCustomDef(t) {
     theme: { ...base.theme },
     clickFx: !!t.clickFx,
     ui: base.ui || '',
+    cursorFx: base.cursorFx || '',
+    cursorBlink: base.cursorBlink !== false,
+    characterScene: base.characterScene && t.image === `builtin:${base.bg?.image}`
+      ? { ...base.characterScene }
+      : null,
   };
   const url = await resolveThemeImage(t.image);
   if (url) {
@@ -1516,6 +1594,7 @@ async function buildCustomDef(t) {
       dim: t.dim != null ? t.dim : 0.3,
       tint: t.tint || '120, 45, 95',
       base: (base.bg && base.bg.base) || base.solidBackground || '#1b1420',
+      position: base.bg && t.image === `builtin:${base.bg.image}` ? base.bg.position : 'center',
     };
   } else {
     // 带图 base 的调色板背景本身是透明的；用户切到「无图」时必须补回实色。
@@ -1542,16 +1621,25 @@ async function resolveThemeImage(image) {
 // 把解析好的 def 应用到所有会话与 dock（DIY 面板实时预览也走这里，不落盘）
 function applyThemeDef(def) {
   currentThemeDef = def;
-  clickFxEnabled = !!def.clickFx;
   termEl.dock.dataset.themeUi = def.ui || '';
   const hasBg = !!def.bg;
+  themePointer.applyTheme({
+    cursor: hasBg ? def.cursorFx : '',
+    clickFx: !!def.clickFx,
+    effect: def.cursorFx,
+  });
   sessions.forEach(s => {
+    clearImageTerminalCellBackgrounds(s.bodyEl);
     s.term.options.theme = def.theme;
+    // 仅明确关闭的主题使用常亮光标；切回其他主题时同步恢复闪烁。
+    s.term.options.cursorBlink = def.cursorBlink !== false;
     // 带图主题必须 DOM 渲染：拆掉 WebGL；切回无图主题再装回（恢复防 ghosting）
     if (hasBg && s.webgl) { try { s.webgl.dispose(); } catch (_) {} s.webgl = null; }
     else if (!hasBg && !s.webgl) { s.webgl = attachWebgl(s.term); }
     clearTermAtlas(s.term);
+    if (hasBg) scheduleImageCellBackgroundSync(s);
   });
+  characterTheme.applyTheme(def.characterScene?.id || '');
   applyTermBackground(def);
 }
 
@@ -1566,6 +1654,11 @@ const NEON_RAIN_PRESET = {
   id: 'neon-rain-default', name: '🌧️ 霓虹雨夜', base: 'neon-rain',
   image: `builtin:${NEON_RAIN_BACKGROUND}`, dim: 0.18, tint: '7, 17, 31',
   clickFx: false, icon: NEON_RAIN_ICON, createdAt: '',
+};
+const GUOFENG_PRESET = {
+  id: 'guofeng-beauty-default', name: '🪷 黛月华裳', base: 'guofeng',
+  image: `builtin:${GUOFENG_BACKGROUND}`, dim: 0.22, tint: '14, 27, 29',
+  clickFx: true, icon: GUOFENG_ICON, createdAt: '',
 };
 
 // 启动：拉自定义主题表 + 恢复上次主题（可能是 custom:*）
@@ -1584,6 +1677,10 @@ async function initTermTheme() {
       t.icon = SAKURA_PRESET.icon;
       migrated = true;
     }
+    if (t.image === `builtin:${LEGACY_GUOFENG_BACKGROUND}`) {
+      t.image = GUOFENG_PRESET.image;
+      migrated = true;
+    }
     if (t.id === SAKURA_PRESET.id && t.base === 'sakura') {
       if (t.name === '🌸 樱花') { t.name = SAKURA_PRESET.name; migrated = true; }
       if (t.dim === 0.30) { t.dim = SAKURA_PRESET.dim; migrated = true; }
@@ -1593,26 +1690,21 @@ async function initTermTheme() {
   });
 
   // 每个预装主题各有一次性标记：用户删掉后不复活；首次保存失败则不写标记，下次启动重试。
-  const pendingSeeds = [
+  const themeSeeds = [
     ['term-sakura-seeded', SAKURA_PRESET],
     ['term-neon-rain-seeded', NEON_RAIN_PRESET],
-  ].filter(([marker]) => !localStorage.getItem(marker));
-  pendingSeeds.forEach(([, preset]) => {
-    if (!termCustomThemes.some(t => t.id === preset.id)) {
-      termCustomThemes.push({ ...preset });
-      themesDirty = true;
-    }
+    ['term-guofeng-beauty-seeded', GUOFENG_PRESET],
+  ];
+  const seedResult = await seedThemePresets({
+    themes: termCustomThemes,
+    entries: themeSeeds,
+    hasMarker: marker => !!localStorage.getItem(marker),
+    markMarker: marker => localStorage.setItem(marker, '1'),
+    saveThemes: themes => invoke('save_term_themes', { themes }),
+    dirty: themesDirty,
   });
-  let themesSaved = !themesDirty;
-  if (themesDirty) {
-    try {
-      termCustomThemes = await invoke('save_term_themes', { themes: termCustomThemes });
-      themesSaved = true;
-    } catch (e) {
-      appLog('error', '保存预装终端主题失败：' + e);
-    }
-  }
-  if (themesSaved) pendingSeeds.forEach(([marker]) => localStorage.setItem(marker, '1'));
+  termCustomThemes = seedResult.themes;
+  if (seedResult.error) appLog('error', '保存预装终端主题失败：' + seedResult.error);
 
   // 老用户此前选中的是已降级的内置樱花时，迁移到可编辑预装项。
   if (currentTheme === 'sakura') {
@@ -1631,34 +1723,15 @@ async function initTermTheme() {
   try { applyThemeDef(await resolveThemeDef(currentTheme)); } catch (_) {}
 }
 
-// —— 点击特效：迸出爱心/花瓣/星星（主题可开关，仅终端 dock 内触发）——
-const FX_SHAPES = [
-  '<svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.9-9.8-9.2C.7 8.9 2.2 5.5 5.3 5c2-.3 3.6.7 4.7 2.2C11.1 5.7 12.7 4.7 14.7 5c3.1.5 4.6 3.9 3.1 6.8C15.5 16.1 12 21 12 21z" fill="#ff8fbf"/></svg>',
-  '<svg viewBox="0 0 24 24"><path d="M12 2.5c3 3.6 3 7.4 0 11-3-3.6-3-7.4 0-11z" fill="#ffc0de" transform="rotate(35 12 12)"/></svg>',
-  '<svg viewBox="0 0 24 24"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z" fill="#fff0f8"/></svg>',
-];
-function spawnClickFx(x, y) {
-  for (let i = 0; i < 5; i++) {
-    const el = document.createElement('span');
-    el.className = 'term-fx';
-    el.innerHTML = FX_SHAPES[(Math.random() * FX_SHAPES.length) | 0];
-    const a = Math.random() * Math.PI * 2;
-    const d = 24 + Math.random() * 36;
-    el.style.left = x + 'px';
-    el.style.top = y + 'px';
-    el.style.width = el.style.height = (10 + Math.random() * 8) + 'px';
-    el.style.setProperty('--dx', (Math.cos(a) * d) + 'px');
-    el.style.setProperty('--dy', (Math.sin(a) * d - 22) + 'px');
-    el.style.setProperty('--rot', (Math.random() * 140 - 70) + 'deg');
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 800);
-  }
-}
-termEl.dock.addEventListener('pointerdown', (e) => { if (clickFxEnabled) spawnClickFx(e.clientX, e.clientY); });
-
 // —— DIY 面板：所有控件改动实时预览，保存整表回写 term-themes.json ——
-const DIY_BASES = [['sakura', '樱花暮色'], ['neon-rain', '霓虹雨夜'], ['classic', '默认深色']];
+const DIY_BASES = [
+  ['guofeng', '黛月华裳'],
+  ['sakura', '樱花暮色'],
+  ['neon-rain', '霓虹雨夜'],
+  ['classic', '默认深色'],
+];
 const DIY_TINTS = [
+  { name: '青黛', v: '14, 27, 29' },
   { name: '玫瑰粉', v: '120, 45, 95' },
   { name: '薰衣草', v: '96, 64, 160' },
   { name: '薄荷', v: '30, 90, 75' },
@@ -1679,7 +1752,7 @@ function ensureDiyPanel() {
     `<div class="term-diy-row"><label>背景</label><div class="term-diy-chips" id="diy-img"></div></div>` +
     `<div class="term-diy-row"><label>遮罩</label><div class="term-diy-swatches" id="diy-tint"></div></div>` +
     `<div class="term-diy-row"><label>浓度</label><input type="range" id="diy-dim" min="0" max="0.7" step="0.02"><span class="term-diy-dimval" id="diy-dim-val"></span></div>` +
-    `<div class="term-diy-row"><label>特效</label><label class="term-diy-fx"><input type="checkbox" id="diy-fx"> 点击迸出爱心花瓣</label></div>` +
+    `<div class="term-diy-row"><label>特效</label><label class="term-diy-fx"><input type="checkbox" id="diy-fx"> 点击主题粒子</label></div>` +
     `<div class="term-diy-btns">` +
     `<button class="btn btn-danger btn-sm" id="diy-del" style="display:none;">删除</button>` +
     `<span class="term-diy-spacer"></span>` +
@@ -1722,6 +1795,7 @@ function fillDiyForm() {
   const isFile = (diyEditing.image || '').startsWith('file:');
   [
     ['', '无图'],
+    [`builtin:${GUOFENG_BACKGROUND}`, '黛月华裳'],
     [`builtin:${SAKURA_BACKGROUND}`, '樱花暮色'],
     [`builtin:${NEON_RAIN_BACKGROUND}`, '霓虹雨夜'],
   ].forEach(([v, name]) => {
@@ -1822,6 +1896,14 @@ let activeSession = null;
 let termSeq = 0;
 let termEventsBound = false;
 
+function scheduleImageCellBackgroundSync(session, renderRange = null) {
+  if (!session || !(currentThemeDef && currentThemeDef.bg)) return;
+  scheduleCellBackgroundSync(session, renderRange, range => {
+    if (!session.bodyEl.isConnected || !(currentThemeDef && currentThemeDef.bg)) return;
+    syncImageTerminalCellBackgrounds(session.bodyEl, range);
+  });
+}
+
 // ===== 会话状态感知：AI 跑完/在等你时提醒 =====
 let notifyEnabled = localStorage.getItem('term-notify') !== '0'; // 默认开
 function applyBellState() {
@@ -1878,10 +1960,9 @@ function clearAttention(id) {
 
 // ===== 会话恢复：记住上次的终端标签布局，重开应用一键还原 =====
 // PTY 进程随应用退出无法真正续命，恢复的是"布局"——同目录、同 CLI 重新拉起；
-// Claude 标签用 --continue 接上次对话。
+// Claude 用 --continue，Codex 用 resume --last 接回该项目目录最近的对话。
 function persistSessionLayout() {
-  const layout = [];
-  sessions.forEach(s => layout.push({ cwd: s.cwd || '', name: s.name || '', autoCmd: s.tool || '' }));
+  const layout = sessionLayoutEntries(sessions);
   try { localStorage.setItem('term-session-layout', JSON.stringify(layout)); } catch (_) {}
 }
 function maybeRestoreSessions() {
@@ -1891,27 +1972,22 @@ function maybeRestoreSessions() {
   // 问一次就把记录清掉：恢复会重新落盘最新布局，取消则不再纠缠
   localStorage.removeItem('term-session-layout');
   const cmds = layout.filter(it => it && typeof it.autoCmd === 'string' && it.autoCmd)
-    .map(it => it.autoCmd.trim().split(/\s+/)[0]);
+    .map(it => cliToolName(it.autoCmd));
   const hasClaude = cmds.includes('claude');
+  const hasCodex = cmds.includes('codex');
+  const resumeNotes = [];
+  if (hasClaude) resumeNotes.push('Claude 标签会用 --continue 接上次对话。');
+  if (hasCodex) resumeNotes.push('Codex 标签会按项目目录续接最近一次对话。');
   showConfirm({
     title: '恢复终端会话',
-    message: `上次有 ${layout.length} 个终端会话，要恢复吗？\n同目录重新拉起对应 CLI。${hasClaude ? '\nClaude 标签会用 --continue 接上次对话。' : ''}`,
+    message: `上次有 ${layout.length} 个终端会话，要恢复吗？\n同目录重新拉起对应 CLI。${resumeNotes.length ? '\n' + resumeNotes.join('\n') : ''}`,
     confirmText: '恢复',
     danger: false,
     onConfirm: () => restoreSessions(layout),
   });
 }
 async function restoreSessions(layout) {
-  for (const it of layout) {
-    if (!it || typeof it !== 'object') continue;
-    let cmd = (typeof it.autoCmd === 'string' ? it.autoCmd : '').trim();
-    const first = cmd.split(/\s+/)[0];
-    // claude 接上次对话；已带 continue/resume 就不重复加
-    if (first === 'claude' && !/(^|\s)(--continue|--resume|-c)(\s|$)/.test(cmd)) {
-      cmd = cmd + ' --continue';
-    }
-    try { await createSession({ cwd: it.cwd, name: it.name, autoCmd: cmd }); } catch (_) {}
-  }
+  await restoreSessionLayout(layout, createSession);
 }
 
 // ===== Prompt/Snippet 库：常用指令一键注入当前终端 =====
@@ -1926,9 +2002,20 @@ function snippetPreview(text) {
   return t.length > 44 ? t.slice(0, 44) + '…' : t;
 }
 
-function toggleSnippetMenu(anchorEl) {
+let snippetMenuRevision = 0;
+let snippetMenuOpening = false;
+
+async function openSnippetMenu(anchorEl) {
+  const revision = ++snippetMenuRevision;
+  snippetMenuOpening = true;
+  const webviewHidden = await workspaceController?.setFloatingUiOpen('snippet-menu', true);
+  if (revision !== snippetMenuRevision) return;
+  if (webviewHidden === false) {
+    snippetMenuOpening = false;
+    return;
+  }
+  snippetMenuOpening = false;
   const menu = $('snippet-menu');
-  if (menu.classList.contains('active')) { closeSnippetMenu(); return; }
   renderSnippetMenu();
   menu.classList.add('active'); // 先显示以测量尺寸
   const r = anchorEl.getBoundingClientRect();
@@ -1938,7 +2025,21 @@ function toggleSnippetMenu(anchorEl) {
   menu.style.left = left + 'px';
   menu.style.top = top + 'px';
 }
-function closeSnippetMenu() { $('snippet-menu').classList.remove('active'); }
+
+function toggleSnippetMenu(anchorEl) {
+  const menu = $('snippet-menu');
+  if (snippetMenuOpening || menu.classList.contains('active')) closeSnippetMenu();
+  else void openSnippetMenu(anchorEl);
+}
+
+function closeSnippetMenu() {
+  const menu = $('snippet-menu');
+  const wasOpen = snippetMenuOpening || menu.classList.contains('active');
+  snippetMenuRevision += 1;
+  snippetMenuOpening = false;
+  menu.classList.remove('active');
+  if (wasOpen) void workspaceController?.setFloatingUiOpen('snippet-menu', false);
+}
 
 function renderSnippetMenu() {
   const menu = $('snippet-menu');
@@ -2534,6 +2635,9 @@ async function bindTermEvents() {
     if (s) {
       s.term.write(b64ToBytes(e.payload.data));
       if (s.attention) clearAttention(e.payload.id); // 又有新输出 = 重新在干活，撤掉提醒
+      if (s.status !== 'exited' && activeSession === e.payload.id) {
+        characterTheme.handleTerminalEvent('output');
+      }
     }
   });
   await listen('terminal-exit', e => {
@@ -2542,6 +2646,7 @@ async function bindTermEvents() {
       s.status = 'exited';
       s.tabEl.classList.add('exited');
       s.term.write('\r\n\x1b[90m[会话已结束]\x1b[0m\r\n');
+      if (activeSession === e.payload) characterTheme.handleTerminalEvent('exit');
       if (shouldNotify(e.payload)) {
         beep();
         invoke('notify', { title: `${s.name || '终端'} 已结束`, body: '终端会话已退出' }).catch(() => {});
@@ -2554,6 +2659,7 @@ async function bindTermEvents() {
     const s = sessions.get(id);
     if (!s || s.status === 'exited') return;
     markAttention(id);
+    if (activeSession === id) characterTheme.handleTerminalEvent('attention');
     if (shouldNotify(id)) {
       beep();
       const label = name || s.name || '终端';
@@ -2684,8 +2790,30 @@ function renderThemeMenu() {
   termEl.themeMenu.appendChild(add);
 }
 
-function openThemeMenu() { renderThemeMenu(); termEl.themeMenu.classList.add('active'); }
-function closeThemeMenu() { termEl.themeMenu.classList.remove('active'); }
+let themeMenuRevision = 0;
+let themeMenuOpening = false;
+
+async function openThemeMenu() {
+  const revision = ++themeMenuRevision;
+  themeMenuOpening = true;
+  const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-theme-menu', true);
+  if (revision !== themeMenuRevision) return;
+  if (webviewHidden === false) {
+    themeMenuOpening = false;
+    return;
+  }
+  themeMenuOpening = false;
+  renderThemeMenu();
+  termEl.themeMenu.classList.add('active');
+}
+
+function closeThemeMenu() {
+  const wasOpen = themeMenuOpening || termEl.themeMenu.classList.contains('active');
+  themeMenuRevision += 1;
+  themeMenuOpening = false;
+  termEl.themeMenu.classList.remove('active');
+  if (wasOpen) void workspaceController?.setFloatingUiOpen('terminal-theme-menu', false);
+}
 
 // 调整终端字号：更新所有会话 + 重新 fit（行列数随字号变），并持久化
 function setTermFontSize(size) {
@@ -3359,15 +3487,20 @@ function setupTreeSplitter() {
   const onUp = () => {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onUp);
     document.body.style.userSelect = '';
+    termEl.dock.classList.remove('is-tree-resizing');
     localStorage.setItem('term-tree-width', String(termEl.tree.offsetWidth));
   };
   termEl.treeSplitter.addEventListener('mousedown', (e) => {
     startX = e.clientX;
     startW = termEl.tree.offsetWidth;
     document.body.style.userSelect = 'none';
+    termEl.dock.classList.add('is-tree-resizing');
+    themePointer.hide();
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', onUp, { once: true });
   });
 }
 
@@ -3454,21 +3587,77 @@ function closeTreeCtx() {
   treeCtx = null;
 }
 
+function focusActiveTerminal() {
+  if (!activeSession) return;
+  if (termEl.preview.classList.contains('active') && !closePreview()) return;
+  const session = sessions.get(activeSession);
+  if (!session) return;
+  requestAnimationFrame(() => session.term.focus());
+}
+
+function setupWorkspaceMode() {
+  if (workspaceController) return;
+  workspaceController = installWorkspaceMode({
+    dock: termEl.dock,
+    terminalMain: termEl.main,
+    onExpandedChange: expanded => {
+      if (expanded) {
+        openDock();
+        if (!termEl.dock.classList.contains('maximized')) {
+          workspaceAutoMaximized = true;
+          setDockMaximized(true);
+        }
+      } else if (workspaceAutoMaximized) {
+        workspaceAutoMaximized = false;
+        setDockMaximized(false);
+      }
+    },
+    onLayoutChange: () => {
+      if (activeSession) requestAnimationFrame(() => fitSession(activeSession));
+    },
+    onFocusTerminal: focusActiveTerminal,
+    openExternal: url => invoke('open_url', { url }).catch(error => {
+      msg('打开浏览器失败: ' + (error?.message || error), 'error');
+    }),
+    notify: msg,
+    onModeChange: () => {
+      // Workspace mode controls layout; the selected terminal theme remains
+      // active in the Coding area in normal, relax and entertainment modes.
+      characterTheme.setDockOpen(termEl.dock.classList.contains('active'));
+      if (activeSession) requestAnimationFrame(() => sessions.get(activeSession)?.term.focus());
+    },
+  });
+}
+
 function openDock() {
   termEl.dock.classList.add('active');
   termEl.fab.classList.add('hidden');
+  characterTheme.setDockOpen(true);
+  workspaceController?.setDockOpen(true);
   if (activeSession) requestAnimationFrame(() => fitSession(activeSession));
 }
 
 function collapseDock() {
+  // Native companion WebViews are hidden while a header dropdown is open.
+  // Close those dropdowns before docking so no stale hide reason survives reopen.
+  closeThemeMenu();
+  closeSnippetMenu();
   termEl.dock.classList.remove('active');
   termEl.fab.classList.remove('hidden');
+  characterTheme.setDockOpen(false);
+  workspaceController?.setDockOpen(false);
+  themePointer.hide();
 }
 
 // 最大化/还原终端抽屉，最大化时占满整个窗口高度、不留顶部白边
 let dockPrevHeight = null;
-function toggleDockMaximize() {
-  const maxed = termEl.dock.classList.toggle('maximized');
+function setDockMaximized(maxed) {
+  const wasMaxed = termEl.dock.classList.contains('maximized');
+  if (maxed === wasMaxed) {
+    if (maxed) termEl.dock.style.height = window.innerHeight + 'px';
+    return;
+  }
+  termEl.dock.classList.toggle('maximized', maxed);
   if (maxed) {
     dockPrevHeight = termEl.dock.offsetHeight;
     termEl.dock.style.height = window.innerHeight + 'px';
@@ -3477,7 +3666,13 @@ function toggleDockMaximize() {
     termEl.dock.style.height = (dockPrevHeight || 340) + 'px';
     termEl.maximizeBtn.title = '最大化';
   }
+  workspaceController?.scheduleBoundsSync();
   if (activeSession) requestAnimationFrame(() => fitSession(activeSession));
+}
+
+function toggleDockMaximize() {
+  workspaceAutoMaximized = false;
+  setDockMaximized(!termEl.dock.classList.contains('maximized'));
 }
 
 function updateFabBadge() {
@@ -3575,6 +3770,7 @@ function activateSession(id, force = false) {
   fitSession(id);
   s.term.focus();
   clearAttention(id);
+  characterTheme.setState(s.status === 'exited' ? 'rest' : 'idle');
   updateBranchBadges(); // 切到该标签时刷新分支（catch 终端里的 git checkout）
 }
 
@@ -3633,7 +3829,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   const tabEl = document.createElement('div');
   tabEl.className = 'term-tab';
   tabEl.dataset.id = id;
-  // 徽标只显示工具名（命令首词），不显示参数——否则恢复会话的 "claude --continue" 会整条塞进徽标
+  // 徽标只显示工具名（命令首词），不显示参数——否则恢复命令会整条塞进徽标
   const toolName = (autoCmd || '').trim().split(/\s+/)[0] || '';
   const toolBadge = toolName
     ? `<span class="term-tab-tool tool-${esc(toolName)}">${esc(toolName)}</span>`
@@ -3654,7 +3850,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   const term = new window.Terminal({
     fontSize: currentFontSize,
     fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
-    cursorBlink: true,
+    cursorBlink: (currentThemeDef || TERM_THEMES.classic).cursorBlink !== false,
     scrollback: 5000,
     allowTransparency: true, // 让半透明终端底透出图片主题背景
     theme: (currentThemeDef || TERM_THEMES.classic).theme,
@@ -3667,20 +3863,24 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   term.open(bodyEl);
   // WebGL 渲染器：默认 DOM 渲染器在触控板滚动时选区会糊成一大块（ghosting），
   // 改用 GPU 渲染正确重绘选区/滚动。WebGL 不可用或上下文丢失时安全降级回默认渲染器。
-  // 图片主题必须走 DOM 渲染——WebGL 画布是像素级不透明，背景透不上来。
+  // 图片主题的 xterm 必须走 DOM 渲染——xterm WebGL 画布是像素级不透明，背景透不上来。
   let webgl = null;
   if (!(currentThemeDef && currentThemeDef.bg)) {
     webgl = attachWebgl(term);
   }
   term.onData(d => invoke('terminal_write', { id, data: d }).catch(() => {}));
 
-  sessions.set(id, { term, fit, tabEl, bodyEl, webgl, name: label, status: 'running', cwd, tool: autoCmd, startedAt: Date.now() });
+  const session = {
+    term, fit, tabEl, bodyEl, webgl, name: label, status: 'running', cwd, tool: autoCmd,
+    startedAt: Date.now(), restorable: false,
+  };
+  sessions.set(id, session);
+  term.onRender(renderRange => scheduleImageCellBackgroundSync(session, renderRange));
 
   openDock();
   activateSession(id);
   requestAnimationFrame(() => fitSession(id));
   updateFabBadge();
-  persistSessionLayout();
   ensureCtxPoll();
   updateBranchBadges(); // 立即显示该会话的分支徽标
   // claude 会话起来后稍等再首刷一次上下文徽标（等它写出 transcript）
@@ -3692,11 +3892,19 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     // tool 只传工具名（命令首词，如 claude），不传整条命令——手机端用作标签/图标
     const tool = (autoCmd || '').trim().split(/\s+/)[0] || '';
     await invoke('terminal_create', { id, cwd, cols: term.cols || 80, rows: term.rows || 24, name: label, tool });
+    session.restorable = true;
+    characterTheme.setState('idle');
+    persistSessionLayout();
     fitSession(id);
     if (autoCmd) {
       setTimeout(() => invoke('terminal_write', { id, data: autoCmd + '\r' }).catch(() => {}), 400);
     }
   } catch (e) {
+    session.status = 'failed';
+    session.restorable = false;
+    tabEl.classList.add('failed');
+    characterTheme.handleTerminalEvent('failure');
+    persistSessionLayout();
     term.write(`\r\n\x1b[31m启动失败: ${e}\x1b[0m\r\n`);
   }
 
@@ -3714,14 +3922,19 @@ function setupTermResize() {
   const onUp = () => {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onUp);
     document.body.style.userSelect = '';
+    termEl.dock.classList.remove('is-resizing');
   };
   termEl.resize.addEventListener('mousedown', (e) => {
     startY = e.clientY;
     startH = termEl.dock.offsetHeight;
     document.body.style.userSelect = 'none';
+    termEl.dock.classList.add('is-resizing');
+    themePointer.hide();
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', onUp, { once: true });
   });
 }
 

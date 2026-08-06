@@ -773,6 +773,7 @@ body {
   margin-bottom: 8px;
   font-weight: 500;
 }
+.form-optional { color: var(--text-3); font-weight: 400; }
 
 .form-label.required::before {
   content: '*';
@@ -1498,6 +1499,17 @@ body {
   display: flex;
 }
 
+/* 图片主题使用独立背景层。普通模式覆盖整个 Dock；并排模式按右栏实际宽度
+   收进左侧 Coding 区，让右置主体重新在左侧区域内完成 cover 构图。 */
+.terminal-theme-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-color: transparent;
+}
+
 /* 最大化：占满整个窗口，顶到头不留白 */
 .terminal-dock.maximized {
   top: 0;
@@ -1609,6 +1621,11 @@ body {
 .term-tab.exited .term-tab-dot {
   background: #6b7280;
   box-shadow: none;
+}
+
+.term-tab.failed .term-tab-dot {
+  background: #ff4d4f;
+  box-shadow: 0 0 6px rgba(255, 77, 79, 0.55);
 }
 
 /* 会话状态感知：需要关注（AI 跑完/在等你） */
@@ -1768,6 +1785,545 @@ body {
   height: 16px;
 }
 
+/* 工作区模式：普通 / 轻松 / 娱乐 */
+.workspace-mode-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.workspace-mode-btn {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  color: #c5ccda;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.workspace-mode-btn:hover,
+.workspace-mode-btn[aria-expanded="true"] {
+  color: #fff;
+  border-color: rgba(93, 155, 255, 0.42);
+  background: rgba(22, 119, 255, 0.15);
+}
+
+.workspace-mode-current-icon { width: 15px; height: 15px; }
+.workspace-mode-chevron { width: 10px; height: 10px; opacity: 0.65; }
+
+.workspace-mode-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 45;
+  width: 238px;
+  padding: 5px;
+  display: none;
+  background: #232936;
+  border: 1px solid #343b49;
+  border-radius: 10px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.48);
+}
+
+.workspace-mode-menu.active { display: block; }
+
+.workspace-mode-option {
+  width: 100%;
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: #c3cad7;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-mode-option:hover,
+.workspace-mode-option.active {
+  color: #fff;
+  background: rgba(22, 119, 255, 0.14);
+}
+
+.workspace-mode-option-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.065);
+  font-size: 15px;
+}
+
+.workspace-mode-option strong,
+.workspace-mode-option small { display: block; }
+.workspace-mode-option strong { font-size: 12.5px; font-weight: 600; }
+.workspace-mode-option small { margin-top: 2px; color: #838d9e; font-size: 10.5px; }
+.workspace-mode-check { width: 16px; height: 16px; opacity: 0; color: #69a8ff; }
+.workspace-mode-option.active .workspace-mode-check { opacity: 1; }
+
+/* 右侧 Sidecar：网页和游戏共用同一套布局。 */
+.terminal-dock.has-companion {
+  --companion-panel-size: clamp(320px, var(--companion-width, 42%), 720px);
+}
+
+.companion-splitter,
+.companion-panel { display: none; }
+
+.terminal-dock.has-companion .terminal-theme-backdrop,
+.terminal-dock.has-companion .terminal-character-stage {
+  right: calc(var(--companion-panel-size) + 6px);
+}
+
+/* 黛月华裳的人物位于原画右侧。分屏后以 Coding 区右缘为构图锚点，
+   与人物贴片的 cover 坐标保持一致，避免人物再次被居中裁掉。 */
+.terminal-dock.has-companion.has-character-theme .terminal-theme-backdrop {
+  background-position: right 14% !important;
+}
+
+.terminal-dock.has-companion .companion-splitter {
+  display: block;
+  width: 6px;
+  flex: 0 0 6px;
+  cursor: ew-resize;
+  background: #111722;
+  border-left: 1px solid #303947;
+  border-right: 1px solid #303947;
+  transition: background 0.12s;
+  z-index: 5;
+}
+
+.terminal-dock.has-companion .companion-splitter:hover,
+.terminal-dock.is-companion-resizing .companion-splitter,
+.terminal-dock.has-companion .companion-splitter:focus-visible {
+  outline: none;
+  background: #2f72c8;
+}
+
+.terminal-dock.has-companion .companion-panel {
+  position: relative;
+  z-index: 5;
+  width: var(--companion-panel-size);
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #d8deea;
+  background: #10151d;
+}
+
+.companion-toolbar {
+  height: 38px;
+  flex: 0 0 38px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px;
+  background: linear-gradient(180deg, #202733, #181e28);
+  border-bottom: 1px solid #2c3441;
+}
+
+.companion-toolbar-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.companion-game-tools { display: none; }
+.terminal-dock[data-workspace-mode="entertainment"] .companion-relax-tools { display: none; }
+.terminal-dock[data-workspace-mode="entertainment"] .companion-game-tools { display: flex; }
+
+.companion-live-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: #41d685;
+  box-shadow: 0 0 7px rgba(65, 214, 133, 0.64);
+}
+
+.companion-site-select,
+.companion-game-select {
+  min-width: 0;
+  flex: 1;
+  height: 27px;
+  padding: 0 24px 0 8px;
+  border: 1px solid #353e4d;
+  border-radius: 6px;
+  outline: none;
+  color: #dce2ec;
+  background: #151b24;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+}
+
+.companion-site-select:focus,
+.companion-game-select:focus { border-color: #397fd8; box-shadow: 0 0 0 2px rgba(57, 127, 216, 0.28); }
+
+.companion-tool-btn,
+.companion-return-btn {
+  height: 27px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  color: #9da8b9;
+  background: transparent;
+  cursor: pointer;
+}
+
+.companion-tool-btn { width: 27px; }
+.companion-tool-btn svg,
+.companion-return-btn svg { width: 14px; height: 14px; }
+.companion-tool-btn:hover,
+.companion-return-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+.companion-tool-btn:disabled { opacity: 0.3; cursor: not-allowed; background: transparent; }
+
+.companion-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+
+.companion-return-btn {
+  gap: 4px;
+  padding: 0 7px;
+  font-size: 10.5px;
+  color: #9fb8da;
+}
+
+.companion-game-hint { color: #7f8998; font-size: 10.5px; }
+
+.companion-surface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: none;
+  overflow: hidden;
+}
+
+.terminal-dock[data-workspace-mode="relax"] .companion-web-surface,
+.terminal-dock[data-workspace-mode="entertainment"] .companion-game-surface { display: flex; }
+
+.companion-webview-slot {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #0c1118;
+}
+
+.companion-web-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: #9aa5b6;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(48, 115, 195, 0.14), transparent 34%),
+    #0c1118;
+}
+
+.companion-web-placeholder strong { color: #dce3ed; font-size: 13px; font-weight: 600; }
+.companion-web-placeholder small { color: #687486; font-size: 10.5px; }
+.companion-web-placeholder.web-error .companion-loader { display: none; }
+.companion-web-placeholder.web-ready .companion-loader { display: none; }
+.companion-web-placeholder.web-empty .companion-loader { display: none; }
+.companion-web-placeholder.web-error strong { color: #ff9b99; }
+
+.companion-empty-add-site {
+  display: none;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid #397fd8;
+  border-radius: 6px;
+  color: #e7f0ff;
+  background: rgba(57, 127, 216, 0.22);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.companion-web-placeholder.web-empty .companion-empty-add-site { display: inline-flex; align-items: center; }
+.companion-empty-add-site:hover { background: rgba(57, 127, 216, 0.38); }
+.companion-empty-add-site:focus-visible { outline: 2px solid #8fc1ff; outline-offset: 2px; }
+
+.companion-loader {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(94, 156, 238, 0.2);
+  border-top-color: #5e9cee;
+  border-radius: 50%;
+  animation: companion-spin 0.8s linear infinite;
+}
+
+@keyframes companion-spin { to { transform: rotate(360deg); } }
+
+.companion-game-surface {
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 20px;
+  background:
+    radial-gradient(circle at 25% 10%, rgba(61, 119, 195, 0.13), transparent 28%),
+    radial-gradient(circle at 85% 90%, rgba(181, 125, 54, 0.10), transparent 30%),
+    #0e141c;
+}
+
+.companion-game-host {
+  width: min(100%, 440px);
+  flex: 0 0 auto;
+  display: none;
+}
+
+.companion-game-host[data-active="true"] { display: block; }
+
+.companion-site-dialog { width: min(480px, calc(100vw - 32px)); }
+.companion-site-help { margin-top: 6px; color: #7f8997; font-size: 11px; line-height: 1.5; }
+
+/* 2048：本地游戏，无独立 WebView，切走模式时会暂停。 */
+.game-2048 {
+  width: 100%;
+  padding: 18px;
+  outline: none;
+  border: 1px solid rgba(160, 181, 207, 0.15);
+  border-radius: 18px;
+  background: rgba(20, 27, 37, 0.92);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  touch-action: none;
+}
+
+.game-2048:focus-visible { box-shadow: 0 0 0 2px #4b91e5, 0 24px 60px rgba(0, 0, 0, 0.35); }
+.game-2048__header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.game-2048__brand { color: #f3d8aa; font-size: clamp(30px, 5vw, 44px); font-weight: 800; letter-spacing: -0.04em; }
+.game-2048__scores { display: flex; gap: 7px; }
+.game-2048__score {
+  min-width: 64px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  color: #7f8b9d;
+  background: #0f151d;
+  text-align: center;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.game-2048__score strong { display: block; margin-top: 1px; color: #e9edf4; font-size: 15px; }
+.game-2048__actions { display: flex; justify-content: flex-end; margin: 9px 0; }
+.game-2048__restart {
+  padding: 6px 11px;
+  border: 1px solid rgba(232, 197, 139, 0.2);
+  border-radius: 7px;
+  color: #d9c29b;
+  background: rgba(221, 174, 94, 0.09);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.game-2048__restart:hover { color: #fff0d5; background: rgba(221, 174, 94, 0.16); }
+.game-2048__grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(5px, 1.1vw, 9px);
+  aspect-ratio: 1;
+  padding: clamp(6px, 1.2vw, 10px);
+  border-radius: 12px;
+  background: #090e14;
+}
+.game-2048__cell {
+  position: relative;
+  min-width: 0;
+  border-radius: 8px;
+  background: #171f2a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+.game-2048__tile {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  color: #e7edf5;
+  background: #29384a;
+  font-size: clamp(18px, 4vw, 34px);
+  font-weight: 800;
+  animation: game-2048-pop 0.13s ease-out;
+}
+.game-2048__tile--4 { background: #35506b; }
+.game-2048__tile--8 { color: #fff0d7; background: #956635; }
+.game-2048__tile--16 { color: #fff3df; background: #b56335; }
+.game-2048__tile--32 { color: #fff; background: #b54d3d; }
+.game-2048__tile--64 { color: #fff; background: #963844; }
+.game-2048__tile--128 { color: #17202b; background: #d4ae56; font-size: clamp(16px, 3.5vw, 29px); }
+.game-2048__tile--256 { color: #17202b; background: #e2bf5e; font-size: clamp(16px, 3.5vw, 29px); }
+.game-2048__tile--512 { color: #17202b; background: #ebcc69; font-size: clamp(16px, 3.5vw, 29px); }
+.game-2048__tile--1024,
+.game-2048__tile--2048 { color: #101720; background: #f0d879; font-size: clamp(13px, 3vw, 24px); }
+.game-2048__status { min-height: 18px; margin: 9px 0 0; color: #768293; font-size: 10.5px; text-align: center; }
+.game-2048--paused .game-2048__grid::after,
+.game-2048--over .game-2048__grid::after {
+  content: '已暂停';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  color: #f0dfc2;
+  background: rgba(8, 12, 17, 0.72);
+  backdrop-filter: blur(3px);
+  font-size: 18px;
+  font-weight: 700;
+}
+.game-2048--over .game-2048__grid::after { content: '游戏结束'; }
+@keyframes game-2048-pop { from { opacity: 0.45; transform: scale(0.82); } }
+
+/* 俄罗斯方块：本地游戏，通过适配器渲染引擎状态。 */
+.game-tetris {
+  width: min(100%, 390px);
+  padding: 14px;
+  outline: none;
+  border: 1px solid rgba(160, 181, 207, 0.15);
+  border-radius: 18px;
+  color: #e9edf4;
+  background: rgba(20, 27, 37, 0.92);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  user-select: none;
+}
+.game-tetris:focus-visible { box-shadow: 0 0 0 2px #4b91e5, 0 24px 60px rgba(0, 0, 0, 0.35); }
+.game-tetris__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.game-tetris__header > strong { color: #81d9ff; font-size: 18px; letter-spacing: 0.04em; }
+.game-tetris__stats { display: grid; grid-template-columns: repeat(2, auto); gap: 3px 9px; color: #7f8b9d; font-size: 9px; }
+.game-tetris__stats strong { color: #e9edf4; font-size: 11px; }
+.game-tetris__next { min-height: 18px; margin: 7px 0; color: #c5d1df; font-size: 10px; text-align: right; }
+.game-tetris__board {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  width: min(100%, 250px);
+  max-height: min(58vh, 500px);
+  aspect-ratio: 1 / 2;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(135, 161, 195, 0.18);
+  border-radius: 10px;
+  background: #090e14;
+}
+.game-tetris__cell { min-width: 0; border: 1px solid rgba(141, 163, 194, 0.055); background: rgba(24, 33, 45, 0.68); }
+.game-tetris__cell--I { background: #35c9ea; }
+.game-tetris__cell--J { background: #5374ef; }
+.game-tetris__cell--L { background: #e99a3c; }
+.game-tetris__cell--O { background: #e6ca45; }
+.game-tetris__cell--S { background: #68be70; }
+.game-tetris__cell--T { background: #ae68d7; }
+.game-tetris__cell--Z { background: #dd6265; }
+.game-tetris__cell--I,
+.game-tetris__cell--J,
+.game-tetris__cell--L,
+.game-tetris__cell--O,
+.game-tetris__cell--S,
+.game-tetris__cell--T,
+.game-tetris__cell--Z { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35); animation: game-tetris-settle 0.12s ease-out; }
+.game-tetris__controls { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 10px; }
+.game-tetris__controls button {
+  min-height: 30px;
+  padding: 5px;
+  border: 1px solid rgba(125, 161, 205, 0.24);
+  border-radius: 7px;
+  color: #d8e4f3;
+  background: #182330;
+  cursor: pointer;
+}
+.game-tetris__controls button:hover { color: #fff; border-color: rgba(104, 188, 239, 0.6); background: #223547; }
+.game-tetris__controls button:active { transform: translateY(1px); background: #2a465d; }
+.game-tetris__controls button:focus-visible { outline: 2px solid #62c8f4; outline-offset: 2px; }
+.game-tetris__controls .game-tetris__pause,
+.game-tetris__controls .game-tetris__restart { grid-column: span 2; font-size: 10px; }
+.game-tetris__controls .game-tetris__restart { color: #f1d6ab; }
+.game-tetris__controls button:disabled { cursor: not-allowed; opacity: 0.5; }
+.game-tetris__status { min-height: 16px; margin: 8px 0 0; color: #8492a4; font-size: 10px; text-align: center; }
+.game-tetris--paused .game-tetris__board::after,
+.game-tetris--over .game-tetris__board::after {
+  content: '已暂停';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f0dfc2;
+  background: rgba(8, 12, 17, 0.7);
+  backdrop-filter: blur(3px);
+  font-size: 18px;
+  font-weight: 700;
+}
+.game-tetris--over .game-tetris__board::after { content: '游戏结束'; }
+@keyframes game-tetris-settle { from { opacity: 0.45; transform: scale(0.82); } }
+
+.terminal-dock.has-bg .workspace-mode-btn {
+  color: var(--image-tool);
+  border-color: var(--image-divider);
+  background: rgba(10, 14, 20, 0.22);
+}
+.terminal-dock.has-bg .workspace-mode-btn:hover,
+.terminal-dock.has-bg .workspace-mode-btn[aria-expanded="true"] {
+  color: var(--image-hover-text);
+  background: var(--image-hover-bg);
+}
+
+@media (max-width: 1100px) {
+  .terminal-dock.has-companion {
+    --companion-panel-size: clamp(340px, var(--companion-width, 42%), 52vw);
+  }
+  .terminal-dock.has-companion .terminal-tree,
+  .terminal-dock.has-companion .terminal-tree + .tree-splitter { display: none; }
+  .workspace-mode-btn { padding-inline: 6px; }
+}
+
+@media (max-height: 680px) {
+  .companion-game-surface { padding: 10px; }
+  .game-2048 { max-width: min(360px, 100%); padding: 12px; }
+  .game-2048__brand { font-size: 28px; }
+  .game-2048__actions { margin: 5px 0; }
+  .game-tetris { padding: 10px; }
+  .game-tetris__next { margin: 4px 0; }
+  .game-tetris__controls { margin-top: 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .companion-loader,
+  .game-2048__tile { animation: none; }
+  .game-tetris__cell--I,
+  .game-tetris__cell--J,
+  .game-tetris__cell--L,
+  .game-tetris__cell--O,
+  .game-tetris__cell--S,
+  .game-tetris__cell--T,
+  .game-tetris__cell--Z { animation: none; }
+}
+
 /* 配色主题切换下拉 */
 .term-theme-wrap {
   position: relative;
@@ -1850,6 +2406,8 @@ body {
 
 /* 终端主体：左文件树 + 右内容 */
 .terminal-main {
+  position: relative;
+  z-index: 1;
   flex: 1;
   display: flex;
   flex-direction: row;
@@ -2008,18 +2566,178 @@ body {
 .terminal-bodies {
   position: absolute;
   inset: 0;
+  z-index: 1;
   overflow: hidden;
   background: #14171e;
 }
 
+/* 国风人物分层：待机主体始终使用 dock 上的 Retina 静态原画，只让
+   像素对齐的眼睑、衣纹流光与饰品微光活动；执行任务时淡入坐姿书案
+   场景，再局部交替双手与键盘帧。终端内容始终在上层。 */
+.terminal-character-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  contain: strict;
+  transition: opacity 0.24s ease;
+  --ornament-drift-x: 0px;
+  --ornament-drift-y: 0px;
+}
+.terminal-character-stage.active { opacity: 1; }
+.terminal-character-live2d,
+.terminal-character-layer,
+.terminal-character-decor {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.terminal-character-layer {
+  background-repeat: no-repeat;
+  opacity: 0;
+}
+.terminal-character-patch {
+  inset: auto;
+}
+.terminal-character-typing-hands-layer {
+  will-change: opacity;
+}
+.terminal-character-coding-scene {
+  transition: opacity 0.26s ease-out;
+}
+.terminal-character-stage[data-character-state="thinking"] .terminal-character-coding-scene {
+  opacity: 1;
+}
+/* greeting/success/error intentionally reveal the theme's static base portrait.
+   Its face is the pixel-locked source for the local eye and mouth overlays. */
+.terminal-character-stage[data-character-state="thinking"] .terminal-character-typing-hands-layer {
+  animation: terminal-character-coding-typing 1.28s ease-in-out infinite both;
+}
+.terminal-character-stage.is-blinking .terminal-character-eye-layer {
+  animation: terminal-character-blink 190ms ease-in-out both;
+}
+.terminal-character-stage[data-character-state="greeting"] .terminal-character-mouth-layer {
+  animation: terminal-character-greeting 1.65s ease-in-out both;
+}
+.terminal-character-stage[data-character-state="success"] .terminal-character-mouth-layer {
+  animation: terminal-character-greeting 1.65s ease-in-out both;
+}
+@keyframes terminal-character-blink {
+  0%, 100% { opacity: 0; }
+  34%, 66% { opacity: 0.84; }
+}
+@keyframes terminal-character-greeting {
+  0%, 100% { opacity: 0; }
+  18%, 46% { opacity: 0.66; }
+  62% { opacity: 0.48; }
+  82% { opacity: 0.64; }
+}
+@keyframes terminal-character-coding-typing {
+  0%, 100% { opacity: 0; }
+  12% { opacity: 0.28; }
+  30%, 47% { opacity: 0.86; }
+  65% { opacity: 0.34; }
+  84% { opacity: 0; }
+}
+.terminal-character-silk-light {
+  position: absolute;
+  left: 72%;
+  top: 39%;
+  width: 28%;
+  height: 58%;
+  opacity: 0.12;
+  background: linear-gradient(104deg, transparent 26%, rgba(211, 184, 116, 0.22) 48%, transparent 68%);
+  clip-path: polygon(15% 3%, 82% 4%, 100% 94%, 24% 100%, 0 50%);
+  mix-blend-mode: screen;
+  transform: translate3d(-3%, 0, 0);
+  animation: terminal-character-silk-breathe 7s ease-in-out infinite;
+}
+.terminal-character-stage[data-character-state="thinking"] .terminal-character-silk-light {
+  opacity: 0.22;
+  animation-duration: 3.8s;
+}
+@keyframes terminal-character-silk-breathe {
+  0%, 100% { transform: translate3d(-3%, 0, 0); opacity: 0.08; }
+  50% { transform: translate3d(3%, -0.35%, 0); opacity: 0.18; }
+}
+.terminal-character-glint {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  opacity: 0.34;
+  background: rgba(238, 205, 125, 0.96);
+  box-shadow: 0 0 8px rgba(216, 170, 83, 0.72);
+  transform: translate3d(var(--ornament-drift-x), var(--ornament-drift-y), 0);
+  animation: terminal-character-glint 4.6s ease-in-out infinite;
+}
+.terminal-character-glint.earring-left { left: 77.1%; top: 34.5%; animation-delay: -1.2s; }
+.terminal-character-glint.earring-right { left: 88.2%; top: 31.3%; animation-delay: -3.1s; }
+.terminal-character-glint.hairpin { left: 91.6%; top: 14.5%; animation-delay: -2.3s; }
+@keyframes terminal-character-glint {
+  0%, 82%, 100% { opacity: 0.18; transform: translate3d(var(--ornament-drift-x), var(--ornament-drift-y), 0) scale(0.65); }
+  90% { opacity: 0.82; transform: translate3d(var(--ornament-drift-x), var(--ornament-drift-y), 0) scale(1.35); }
+}
+.terminal-character-petals {
+  position: absolute;
+  left: 79%;
+  top: 37%;
+  width: 1px;
+  height: 1px;
+}
+.terminal-character-petals span {
+  position: absolute;
+  width: 7px;
+  height: 11px;
+  border-radius: 75% 25% 70% 30%;
+  opacity: 0;
+  background: linear-gradient(145deg, #f2dca1, #ad713b);
+  transform: rotate(var(--petal-angle)) translateY(0) scale(0.4);
+}
+.terminal-character-stage[data-character-state="success"] .terminal-character-petals span {
+  animation: terminal-character-petal-burst 1.55s calc(var(--petal-index) * 38ms) ease-out both;
+}
+.terminal-character-stage.is-animation-paused .terminal-character-eye-layer,
+.terminal-character-stage.is-animation-paused .terminal-character-mouth-layer,
+.terminal-character-stage.is-animation-paused .terminal-character-typing-hands-layer,
+.terminal-character-stage.is-animation-paused .terminal-character-silk-light,
+.terminal-character-stage.is-animation-paused .terminal-character-glint,
+.terminal-character-stage.is-animation-paused .terminal-character-petals span {
+  animation-play-state: paused !important;
+}
+.terminal-character-stage.is-animation-paused .terminal-character-coding-scene {
+  transition: none;
+}
+.terminal-character-stage.is-state-restarting .terminal-character-mouth-layer,
+.terminal-character-stage.is-state-restarting .terminal-character-petals span {
+  animation: none !important;
+}
+@keyframes terminal-character-petal-burst {
+  0% { opacity: 0; transform: rotate(var(--petal-angle)) translateY(0) scale(0.35); }
+  18% { opacity: 0.9; }
+  100% { opacity: 0; transform: rotate(var(--petal-angle)) translateY(calc(-1 * var(--petal-distance))) scale(0.85); }
+}
+.terminal-dock.has-character-theme {
+  isolation: isolate;
+}
+
 /* 图片主题强制 xterm 各层透明，让 dock 背景透上来。
-   仅在 .has-bg 下生效，普通主题不受影响；配合 DOM 渲染（带图主题不挂 WebGL）。 */
+   仅在 .has-bg 下生效，普通主题不受影响；配合 DOM 渲染（带图主题不挂 xterm WebGL）。 */
 .terminal-bodies.has-bg .term-body .xterm,
 .terminal-bodies.has-bg .term-body .xterm-viewport,
 .terminal-bodies.has-bg .term-body .xterm-screen,
 .terminal-bodies.has-bg .term-body .xterm .xterm-rows {
   background-color: transparent !important;
   background: transparent !important;
+}
+
+/* Codex 等全屏 TUI 会给输入框、diff、审批提示写入独立的 ANSI 背景色。
+   JS 保留其原始色相并计算半透明版本；这里只在图片主题下启用覆盖。 */
+.terminal-bodies.has-bg .term-body .xterm .xterm-rows .terminal-cell-bg-translucent {
+  background-color: var(--terminal-cell-background) !important;
 }
 
 /* 图片主题共享一套半透明 dock chrome；未指定 UI 风格的 DIY 图片使用中性配色。 */
@@ -2047,7 +2765,7 @@ body {
   border-top-color: var(--image-border-top);
 }
 
-/* Image 2「樱花暮色」专属莓紫 chrome、圆体和魔法棒光标。 */
+/* Image 2「樱花暮色」专属莓紫 chrome 与圆体。 */
 .terminal-dock.has-bg[data-theme-ui="sakura"] {
   --image-border-top: #4d3044;
   --image-divider: rgba(255, 143, 196, 0.20);
@@ -2069,16 +2787,7 @@ body {
   --image-row: #d4aec6;
   --image-row-hover-bg: rgba(255, 143, 196, 0.10);
   --image-row-hover-text: #fff2f9;
-  cursor: url("assets/cursor-wand.png") 12 1, auto;
   font-family: 'SF Pro Rounded', ui-rounded, 'Hiragino Maru Gothic ProN', 'Yuanti SC', 'PingFang SC', -apple-system, sans-serif;
-}
-
-/* xterm 自带 cursor:text 会盖掉樱花光标，需 !important 压过。 */
-.terminal-dock.has-bg[data-theme-ui="sakura"] .term-body,
-.terminal-dock.has-bg[data-theme-ui="sakura"] .terminal-bodies,
-.terminal-dock.has-bg[data-theme-ui="sakura"] .xterm,
-.terminal-dock.has-bg[data-theme-ui="sakura"] .xterm .xterm-screen {
-  cursor: url("assets/cursor-wand.png") 12 1, text !important;
 }
 
 /* Image 2「霓虹雨夜」专属冷色科技 chrome。 */
@@ -2104,6 +2813,37 @@ body {
   --image-row-hover-bg: rgba(139, 92, 246, 0.12);
   --image-row-hover-text: #eefcff;
 }
+
+/* 「黛月华裳」专属青黛、玉色与鎏金 chrome。 */
+.terminal-dock.has-bg[data-theme-ui="guofeng"] {
+  --image-border-top: #59482f;
+  --image-divider: rgba(216, 181, 108, 0.20);
+  --image-head-bg: rgba(11, 24, 26, 0.68);
+  --image-tab: #c5bba6;
+  --image-hover-bg: rgba(216, 170, 78, 0.10);
+  --image-hover-text: #fff5df;
+  --image-active-bg: rgba(166, 61, 49, 0.18);
+  --image-active-text: #fff7e8;
+  --image-accent: #d8aa53;
+  --image-scroll-thumb: #516264;
+  --image-tool: #b9ad94;
+  --image-tool-active-bg: rgba(216, 170, 78, 0.18);
+  --image-tool-active-text: #f5dfae;
+  --image-close-hover: rgba(196, 70, 59, 0.24);
+  --image-tree-bg: rgba(9, 22, 24, 0.60);
+  --image-tree-root: #d9ccae;
+  --image-tree-muted: #8e9e96;
+  --image-row: #bdc5b8;
+  --image-row-hover-bg: rgba(216, 170, 78, 0.10);
+  --image-row-hover-text: #fff8e8;
+  font-family: 'Songti SC', STSong, 'Source Han Serif SC', 'Noto Serif CJK SC', 'PingFang SC', serif;
+}
+
+.terminal-dock.has-bg[data-theme-ui="guofeng"] .term-theme-opt.active .term-theme-icon {
+  border-color: var(--image-accent);
+  box-shadow: 0 0 0 1px var(--image-accent), 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+.terminal-dock.has-bg[data-theme-ui="guofeng"] .term-theme-check { color: var(--image-accent); }
 
 .terminal-dock.has-bg .terminal-head {
   background: var(--image-head-bg);
@@ -2836,7 +3576,157 @@ body {
 .req-edit-row .form-select { width: 130px; flex-shrink: 0; }
 .req-edit-spacer { flex: 1; }
 
-/* ===== 点击特效：爱心/花瓣/星星迸出（clickFx 主题开启时） ===== */
+/* ===== 图片主题动态鼠标：每套主题独立造型与轨迹 ===== */
+@media (pointer: fine) {
+  .terminal-dock[data-cursor-fx].is-theme-pointer-active,
+  .terminal-dock[data-cursor-fx].is-theme-pointer-active * {
+    cursor: none !important;
+  }
+  .terminal-dock[data-cursor-fx].is-theme-pointer-active .terminal-resize {
+    cursor: ns-resize !important;
+  }
+  .terminal-dock[data-cursor-fx].is-theme-pointer-active .tree-splitter {
+    cursor: ew-resize !important;
+  }
+  .terminal-dock[data-cursor-fx].is-resizing,
+  .terminal-dock[data-cursor-fx].is-resizing * {
+    cursor: ns-resize !important;
+  }
+  .terminal-dock[data-cursor-fx].is-tree-resizing,
+  .terminal-dock[data-cursor-fx].is-tree-resizing * {
+    cursor: ew-resize !important;
+  }
+}
+
+.theme-pointer {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 4200;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(var(--theme-pointer-x, -80px), var(--theme-pointer-y, -80px), 0);
+  transition: opacity 0.12s ease;
+  will-change: transform;
+  contain: layout style paint;
+}
+.theme-pointer.is-visible { opacity: 1; }
+.theme-pointer-aura,
+.theme-pointer-glyph {
+  position: absolute;
+  left: -16px;
+  top: -16px;
+  width: 32px;
+  height: 32px;
+  transform-origin: center;
+}
+.theme-pointer-aura {
+  left: -14px;
+  top: -14px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+}
+.theme-pointer-glyph { display: none; overflow: visible; }
+.theme-pointer[data-theme="sakura"] .theme-pointer-sakura {
+  display: block;
+  filter: drop-shadow(0 0 4px rgba(255, 143, 196, 0.82));
+  animation: theme-pointer-sakura 1.3s ease-in-out infinite alternate;
+}
+.theme-pointer[data-theme="sakura"] .theme-pointer-aura {
+  border-color: rgba(255, 143, 196, 0.42);
+  box-shadow: 0 0 9px rgba(255, 143, 196, 0.22);
+  animation: theme-pointer-pulse 1.15s ease-out infinite;
+}
+.theme-pointer[data-theme="neon-rain"] .theme-pointer-neon {
+  display: block;
+  filter: drop-shadow(0 0 5px rgba(64, 224, 255, 0.9));
+  animation: theme-pointer-spin 2.8s linear infinite;
+}
+.theme-pointer[data-theme="neon-rain"] .theme-pointer-aura {
+  border-color: rgba(64, 224, 255, 0.50);
+  box-shadow: inset 0 0 7px rgba(139, 92, 246, 0.35), 0 0 10px rgba(64, 224, 255, 0.25);
+  animation: theme-pointer-neon-pulse 0.9s steps(2, end) infinite;
+}
+.theme-pointer[data-theme="guofeng"] .theme-pointer-guofeng {
+  display: block;
+  filter: drop-shadow(0 0 4px rgba(216, 170, 83, 0.65));
+  animation: theme-pointer-guofeng 1.8s ease-in-out infinite alternate;
+}
+.theme-pointer[data-theme="guofeng"] .theme-pointer-aura {
+  border-color: rgba(216, 170, 83, 0.48);
+  box-shadow: inset 0 0 8px rgba(114, 179, 170, 0.28), 0 0 8px rgba(216, 170, 83, 0.20);
+  animation: theme-pointer-ink-ring 1.6s ease-out infinite;
+}
+.theme-pointer.is-down .theme-pointer-glyph { filter: brightness(1.25) drop-shadow(0 0 7px currentColor); }
+
+@keyframes theme-pointer-sakura {
+  from { transform: rotate(-4deg) scale(0.94); }
+  to { transform: rotate(5deg) scale(1.05); }
+}
+@keyframes theme-pointer-spin { to { transform: rotate(360deg); } }
+@keyframes theme-pointer-guofeng {
+  from { transform: rotate(-3deg) translateY(1px); }
+  to { transform: rotate(3deg) translateY(-1px); }
+}
+@keyframes theme-pointer-pulse {
+  0% { opacity: 0.8; transform: scale(0.55); }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+@keyframes theme-pointer-neon-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.78); }
+  50% { opacity: 0.9; transform: scale(1.05); }
+}
+@keyframes theme-pointer-ink-ring {
+  0% { opacity: 0.72; transform: scale(0.65); }
+  80%, 100% { opacity: 0; transform: scale(1.25); }
+}
+
+.theme-pointer-trail {
+  position: fixed;
+  z-index: 4199;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  will-change: transform, opacity;
+}
+.theme-pointer-trail-sakura {
+  width: 7px;
+  height: 10px;
+  border-radius: 90% 10% 90% 10%;
+  background: linear-gradient(145deg, #fff1f8, #ff8fc4);
+  box-shadow: 0 0 5px rgba(255, 143, 196, 0.55);
+  animation: theme-trail-sakura 0.68s ease-out forwards;
+}
+.theme-pointer-trail-neon-rain {
+  width: 2px;
+  height: 13px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, rgba(64, 224, 255, 0), #40e0ff);
+  box-shadow: 0 0 5px #40e0ff;
+  animation: theme-trail-neon 0.58s ease-out forwards;
+}
+.theme-pointer-trail-guofeng {
+  width: 8px;
+  height: 8px;
+  border: 1px solid rgba(216, 170, 83, 0.78);
+  border-radius: 50%;
+  box-shadow: inset 0 0 4px rgba(114, 179, 170, 0.45), 0 0 5px rgba(216, 170, 83, 0.28);
+  animation: theme-trail-guofeng 0.7s ease-out forwards;
+}
+@keyframes theme-trail-sakura {
+  to { opacity: 0; transform: translate(calc(-50% + var(--trail-drift)), 18px) rotate(var(--trail-rotate)) scale(0.45); }
+}
+@keyframes theme-trail-neon {
+  to { opacity: 0; transform: translate(calc(-50% + var(--trail-drift)), 24px) scaleY(0.4); }
+}
+@keyframes theme-trail-guofeng {
+  to { opacity: 0; transform: translate(calc(-50% + var(--trail-drift)), -12px) rotate(var(--trail-rotate)) scale(1.8); }
+}
+
+/* 点击特效会沿用当前鼠标主题：樱花、霓虹或莲花金粉。 */
 .term-fx {
   position: fixed;
   z-index: 3200;
@@ -2849,6 +3739,18 @@ body {
   0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
   18% { opacity: 1; }
   100% { opacity: 0; transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1.05) rotate(var(--rot)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-character-stage { display: none !important; }
+  .theme-pointer,
+  .theme-pointer-aura,
+  .theme-pointer-glyph {
+    animation: none !important;
+    transition: none !important;
+  }
+  .theme-pointer-trail,
+  .term-fx { display: none !important; }
 }
 
 /* ===== DIY 主题面板：浮在终端 dock 右上，实时预览 ===== */
