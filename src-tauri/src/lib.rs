@@ -144,6 +144,122 @@ fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// 数据目录：优先用隐藏目录 ~/.vibe-coding-manage/，避免清理软件误删。
+/// 首次启动时自动从旧路径 ~/Library/Application Support/vibe-coding-manage/ 迁移。
+fn data_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".vibe-coding-manage")
+}
+
+/// 旧版数据目录（清理软件常扫的 ~/Library/Application Support/）。
+fn legacy_data_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("vibe-coding-manage"))
+}
+
+/// 从旧目录迁移数据到新隐藏目录（仅一次，成功后标记已迁移）。
+fn migrate_legacy_data() {
+    let marker = data_dir().join(".migrated-from-legacy");
+    if marker.exists() {
+        return;
+    }
+    if let Some(old) = legacy_data_dir() {
+        if old.exists() && old.is_dir() {
+            // 迁移关键文件：projects/servers/snippets/requirements/themes/日志
+            let files = [
+                "projects.json",
+                "servers.json",
+                "snippets.json",
+                "requirements.json",
+                "term-themes.json",
+            ];
+            let new = data_dir();
+            fs::create_dir_all(&new).ok();
+            for name in &files {
+                let src = old.join(name);
+                let dst = new.join(name);
+                if src.exists() && !dst.exists() {
+                    let _ = fs::copy(&src, &dst);
+                }
+            }
+            // 迁移主题图片目录
+            let img_src = old.join("theme-images");
+            let img_dst = new.join("theme-images");
+            if img_src.exists() && !img_dst.exists() {
+                let _ = fs::rename(&img_src, &img_dst);
+            }
+            // 迁移日志目录
+            let log_src = old.join("logs");
+            let log_dst = new.join("logs");
+            if log_src.exists() && !log_dst.exists() {
+                let _ = fs::rename(&log_src, &log_dst);
+            }
+            // 标记迁移完成
+            let _ = fs::write(&marker, b"ok");
+        }
+    }
+}
+
+/// 备份根目录：跟数据目录同级的 *独立* 目录。
+/// 故意放在数据目录外面——一旦数据目录整体被清理工具删除/误删，
+/// 备份仍然存活，可手动拷回恢复。
+fn backup_root_dir() -> PathBuf {
+    data_dir().with_file_name("vibe-coding-manage-backups")
+}
+
+/// 当前已存在的 4 个核心数据文件（仅返回磁盘上真实存在的）。
+fn existing_data_files() -> Vec<(PathBuf, String)> {
+    let f = |n: &str| data_dir().join(n);
+    let pairs = [
+        (f("projects.json"), "projects".to_string()),
+        (f("servers.json"), "servers".to_string()),
+        (f("snippets.json"), "snippets".to_string()),
+        (f("requirements.json"), "requirements".to_string()),
+    ];
+    pairs
+        .into_iter()
+        .filter(|(p, _)| p.exists())
+        .collect()
+}
+
+/// 快照当前全部数据文件到 `backups/<YYYY-MM-DD>/`，保留最近 30 天。
+/// 每天首次调用时才会真拷贝（同一天已有当日快照则跳过）。
+fn snapshot_data_files() {
+    let stamp = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let dir = backup_root_dir().join(&stamp);
+    if dir.is_dir() && existing_data_files().iter().all(|(_, name)| dir.join(format!("{name}.json")).exists()) {
+        return; // 今日已有完整快照
+    }
+    fs::create_dir_all(&dir).ok();
+    for (path, name) in existing_data_files() {
+        let dest = dir.join(format!("{name}.json"));
+        if !dest.exists() {
+            let _ = fs::copy(&path, &dest);
+        }
+    }
+    // 裁剪：只保留最近 30 天
+    if let Ok(read) = fs::read_dir(backup_root_dir()) {
+        let mut days: Vec<PathBuf> = read
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        days.sort();
+        while days.len() > 30 {
+            let oldest = days.remove(0);
+            let _ = fs::remove_dir_all(oldest);
+        }
+    }
+}
+
+/// 备份某数据文件（覆盖写之前调用）：把现有文件拷贝为 `<name>.prev.json`，
+/// 只保留最近一份，防止上一次「正常」的数据被空/坏数据盖掉后无法找回。
+fn backup_prev(path: &PathBuf, name: &str) {
+    if path.exists() {
+        let dest = data_dir().join(format!("{name}.prev.json"));
+        let _ = fs::copy(path, dest);
+    }
+}
+
 /// 加载 JSON 数据。解析失败时把损坏文件备份成 `*.bad`（避免随后的保存把它覆盖、
 /// 导致可恢复的数据彻底丢失），再返回默认空值。空文件视为默认值、不报错。
 fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path: &PathBuf) -> T {
@@ -179,10 +295,9 @@ fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path: &PathBuf)
 
 impl AppState {
     fn new() -> Self {
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("vibe-coding-manage");
-        
+        migrate_legacy_data();
+        let data_dir = data_dir();
+
         fs::create_dir_all(&data_dir).ok();
         
         let data_path = data_dir.join("projects.json");
@@ -619,10 +734,7 @@ pub struct TermTheme {
 }
 
 fn term_theme_path() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("vibe-coding-manage")
-        .join("term-themes.json")
+    data_dir().join("term-themes.json")
 }
 
 /// 主题表不在 AppState 里（那是项目/服务器数据），但整表读改写仍需互斥：
@@ -631,10 +743,7 @@ fn term_theme_path() -> PathBuf {
 struct TermThemeLock(Mutex<()>);
 
 fn theme_image_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("vibe-coding-manage")
-        .join("theme-images")
+    data_dir().join("theme-images")
 }
 
 #[tauri::command]

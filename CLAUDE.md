@@ -6,8 +6,9 @@
 - 前端入口：`src/index.html`、`src/main.js`、`src/styles.css`。
 - Rust 后端入口：`src-tauri/src/lib.rs`。
 - 当前版本：`v1.2.12`。
-- `main` 当前发布提交：`42f97d2`（文件预览编辑与安全保存）。
+- `main` 最近发布提交：`42f97d2`（文件预览编辑与安全保存）；其后已有未发布功能：`f8c6cf2`（工作区模式、游戏中心、国风终端主题）与 `6dcab5e`（OpenCode 会话续接），下次发布需走版本同步与发布文档流程。
 - Git 提交信息必须使用中文。
+- 项目记忆单文件维护于本文件；根目录 `AGENTS.md` 是给 Codex 与 OpenCode 的入口指针，`opencode.json` 的 `instructions` 也让 OpenCode 直接加载本文件，修改本文件后无需改动它们。
 
 ## 常用命令
 
@@ -52,6 +53,21 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targe
 - “运行环境”是可选字段；空值代表暂不设置，项目卡片不显示“未知”标签。
 - 从“服务器”改为“本地电脑”或“暂不设置”时必须清空旧 `serverId`，相关归一化逻辑位于 `src/project-form-utils.js`。
 
+## 工作区模式与轻松模式
+
+- 模式只有 `normal`/`relax`/`entertainment` 三值，其他输入一律回退 `normal`；纯函数与存储归一化位于 `src/workspace-mode-utils.js`，界面状态机位于 `src/workspace-mode.js`。
+- 远程网页只允许 HTTPS，HTTP 仅放行 localhost/127.0.0.1/::1；带用户名密码的 URL 直接拒绝。
+- 伴生网页是独立原生 child WebView（`src/companion-webview.js`），不是 iframe；`devtools: false`、`dragDropEnabled: false`，与主 WebView 的 IPC 能力隔离，`src-tauri/capabilities/default.json` 的 webview 权限只授予 `main`。Tauri Webview 句柄没有稳定的 JS 导航方法，切换站点按"关闭并重建"实现，不得复用旧句柄并发创建同名 label。
+- 站点 ID 必须匹配 `^[a-z][a-z0-9_-]{2,63}$` 且用 Web Crypto 生成（禁止 `Math.random`）；重复 ID 有限重试（32 次）后安全跳过，单个非法站点不得拖垮整表。
+- 设置以单一版本化 JSON 记录保存在 `workspace-mode-settings-v2`：v2 存在时忽略 v1 与旧独立键；v1 迁移只移除"精确匹配"的旧内置抖音（id `douyin` + 官方 URL），用户自建的同名或同 ID 不同网址站点必须保留。存储读写失败或 JSON 损坏一律回退安全默认值，不得抛错。
+- 伴生宽度按窗口百分比约束在 28–55，默认 42；弹窗打开与拖拽分栏时 child WebView 必须隐藏，避免遮挡与吞事件。
+
+## 游戏中心
+
+- 已注册游戏只有 `tetris` 与 `2048`（`src/games/game-ids.js`），非法或空选择一律回退俄罗斯方块；新游戏必须先登记 ID 再接入 `src/games/game-center.js`。
+- 游戏切换、窗口生命周期和浮层状态必须串行更新，隐藏中的游戏不得继续接收键盘输入或推进计时。
+- 引擎与界面分离：俄罗斯方块纯逻辑在 `src/games/tetris-engine.js`，界面壳在 `src/games/game-tetris.js`；2048 同理。最后选择的游戏随 v2 设置记录持久化。
+
 ## 本地调试应用
 
 - `src-tauri/build.rs` 必须追踪 `../src`，避免 Rust 构建复用旧的内嵌前端资源。
@@ -61,7 +77,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targe
 
 - 应用退出后 PTY 进程不会存活；`term-session-layout` 只保存标签名称、项目目录和启动命令，重开应用后重新创建 PTY。
 - CLI 续接命令统一由 `src/session-restore-utils.js` 生成：Claude 与 OpenCode 使用 `--continue`，Codex 使用 `resume --last`。Codex 的 `--last` 默认按当前工作目录选择最近的交互会话，所以创建恢复终端时必须继续使用原标签的 `cwd`。
-- 已经包含 Claude/Codex 恢复参数的命令不得重复追加；相关回归测试位于 `tests/session-restore-utils.test.mjs`。
+- 已经包含 Claude/OpenCode/Codex 恢复参数的命令不得重复追加；相关回归测试位于 `tests/session-restore-utils.test.mjs`。
 - Rust `terminal_create` 会拒绝不存在、不可访问或并非目录的非空 `cwd`，禁止静默回退到默认目录，避免 Codex 跨项目接错最近会话；空 `cwd` 的普通空白终端仍使用默认目录。
 - 前端只有在 `terminal_create` 成功后才把标签标记为可恢复并写入布局；启动失败的红点标签仅用于显示错误，不得再次进入下次恢复列表。
 
@@ -81,8 +97,9 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targe
 - 前端状态测试：`tests/file-editor-utils.test.mjs`。
 - 终端背景颜色测试：`tests/terminal-theme-utils.test.mjs`，覆盖中性色、语义色、已有透明度和无效颜色。
 - 主题、鼠标、分层人物和表单测试：`tests/terminal-theme-preset.test.mjs`、`tests/terminal-theme-pointer.test.mjs`、`tests/terminal-theme-character.test.mjs`、`tests/project-form.test.mjs`；窗口能力测试为 `tests/app-config.test.mjs`。
-- 当前工作区前端测试共 36 项；自动覆盖 RGB 与 ANSI 256 色、重绘行范围、缓存、主题清理、预装主题成功/失败种子语义、动态鼠标输入类型与减少动效、分层人物主题门控/状态映射/互动区域/cover 几何/本地素材与静态降级、运行环境空值归一化、Codex/Claude 重启续接命令及实际恢复编排、失败终端不再持久化、CSS 图片主题门控和窗口关闭权限。
-- `tests/terminal-theme-character-fixture.html` 是不计入上述 36 项的人工视觉夹具：在仓库根目录运行 `python3 -m http.server 4174 --bind 127.0.0.1` 后打开对应 URL，可切换人物状态、定格闭眼、切换静态/动态，并追加 `?compact=1` 检查矮终端布局。自动测试不实例化真实浏览器动画，资源就绪、淡入、蒙版边缘、状态反馈和静态降级仍需用该夹具或仓库 Debug App 验收。
+- 工作区模式与游戏测试：`tests/workspace-mode-utils.test.mjs`、`tests/workspace-mode-behavior.test.mjs`、`tests/workspace-mode-runtime.test.mjs`、`tests/companion-webview.test.mjs`、`tests/game-center.test.mjs`、`tests/game-tetris.test.mjs`、`tests/game-2048.test.mjs`。
+- 当前工作区前端测试共 157 项；自动覆盖 RGB 与 ANSI 256 色、重绘行范围、缓存、主题清理、预装主题成功/失败种子语义、动态鼠标输入类型与减少动效、分层人物主题门控/状态映射/互动区域/cover 几何/本地素材与静态降级、运行环境空值归一化、Claude/OpenCode/Codex 重启续接命令及实际恢复编排、失败终端不再持久化、CSS 图片主题门控和窗口关闭权限、工作区模式与远程网页伴生 WebView、游戏中心与俄罗斯方块/2048。
+- `tests/terminal-theme-character-fixture.html` 是不计入上述 157 项的人工视觉夹具：在仓库根目录运行 `python3 -m http.server 4174 --bind 127.0.0.1` 后打开对应 URL，可切换人物状态、定格闭眼、切换静态/动态，并追加 `?compact=1` 检查矮终端布局。自动测试不实例化真实浏览器动画，资源就绪、淡入、蒙版边缘、状态反馈和静态降级仍需用该夹具或仓库 Debug App 验收。
 - 当前工作区 Rust 测试共 22 项，覆盖终端 cwd 安全边界，以及文件 BOM/换行、外部冲突、后置 NUL、超大文件、无效 UTF-8 和扩展属性保留。
 - v1.2.12 发布前结果：前端 2 项测试通过，Rust 20 项测试通过，Clippy 严格模式通过，`git diff --check` 通过。
 
@@ -107,3 +124,4 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targe
 - `tests/` 是测试源码，必须纳入版本控制，不应忽略。
 - `node_modules/`、`src-tauri/target/`、`src-tauri/gen/`、`.vscode/` 保持忽略。
 - 原 `douyin/` 本地素材目录已于 v1.2.12 发布后移到 macOS 废纸篓，不属于项目源码。
+- `design/guofeng-3d/` 约 150MB 设计源文件（Blender 脚本与渲染帧）已在 `f8c6cf2` 入库，仓库已明显膨胀；后续大型设计中间产物不再提交 Git，放仓库外目录或 Git LFS。

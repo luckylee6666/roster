@@ -1,5 +1,5 @@
 //! 极简文件日志：追加到
-//! `~/Library/Application Support/vibe-coding-manage/logs/app.log`。
+//! `~/.vibe-coding-manage/logs/app.log`。
 //!
 //! 设计取舍：不引 tracing/log 等框架（工具体量小、保持少依赖）。零额外依赖，
 //! 仅用已有的 chrono/dirs。超过 ~1MB 滚动一份（app.log → app.log.1，只留两份）。
@@ -20,9 +20,9 @@ const MAX_BYTES: u64 = 1_000_000;
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn log_dir() -> PathBuf {
-    dirs::data_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("vibe-coding-manage")
+        .join(".vibe-coding-manage")
         .join("logs")
 }
 

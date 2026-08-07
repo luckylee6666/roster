@@ -131,11 +131,13 @@ For manual layered-character QA, run `python3 -m http.server 4174 --bind 127.0.0
 
 ## Data location
 
-- macOS: `~/Library/Application Support/vibe-coding-manage/`
+- macOS: `~/.vibe-coding-manage/`（隐藏目录，避免清理软件误删）
+- Windows: `~\.vibe-coding-manage\`
+- Linux: `~/.vibe-coding-manage/`
+
+  首次启动自动从旧路径迁移。核心文件：
   - `projects.json` — project data
   - `servers.json` — server config
-- Windows: `%APPDATA%/vibe-coding-manage/`
-- Linux: `~/.local/share/vibe-coding-manage/`
 
 ## Download
 

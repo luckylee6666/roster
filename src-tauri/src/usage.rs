@@ -396,9 +396,9 @@ fn now_ms() -> u64 {
 }
 
 fn cache_file(name: &str) -> PathBuf {
-    dirs::data_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("vibe-coding-manage")
+        .join(".vibe-coding-manage")
         .join(name)
 }
 fn oauth_cache_path(endpoint: &str) -> PathBuf {

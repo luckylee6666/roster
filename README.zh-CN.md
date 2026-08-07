@@ -131,11 +131,13 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 数据存储位置
 
-- macOS: `~/Library/Application Support/vibe-coding-manage/`
+- macOS: `~/.vibe-coding-manage/`（隐藏目录，避免清理软件误删）
+- Windows: `~\.vibe-coding-manage\`
+- Linux: `~/.vibe-coding-manage/`
+
+  首次启动自动从旧路径迁移。核心文件：
   - `projects.json` — 项目数据
   - `servers.json` — 服务器配置
-- Windows: `%APPDATA%/vibe-coding-manage/`
-- Linux: `~/.local/share/vibe-coding-manage/`
 
 ## 下载
 
