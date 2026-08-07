@@ -73,6 +73,12 @@ export function restoredCliCommand(command) {
       : `${trimmed.slice(0, executableEnd)} resume --last${trimmed.slice(executableEnd)}`;
   }
 
+  if (tool === 'opencode') {
+    return /(^|\s)(--continue|-c|--session|-s)(\s|$)/.test(trimmed)
+      ? trimmed
+      : `${trimmed} --continue`;
+  }
+
   return trimmed;
 }
 

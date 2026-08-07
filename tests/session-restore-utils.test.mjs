@@ -36,8 +36,22 @@ test('已是 Codex 恢复命令时不会重复追加参数', () => {
 test('Claude 延续旧行为，其他终端命令保持不变', () => {
   assert.equal(restoredCliCommand('claude'), 'claude --continue');
   assert.equal(restoredCliCommand('claude --continue'), 'claude --continue');
-  assert.equal(restoredCliCommand('opencode'), 'opencode');
+  assert.equal(restoredCliCommand('gemini'), 'gemini');
   assert.equal(restoredCliCommand(''), '');
+});
+
+test('重启恢复 OpenCode 标签时用 --continue 续接最近会话', () => {
+  assert.equal(restoredCliCommand('opencode'), 'opencode --continue');
+  assert.equal(restoredCliCommand('opencode -m anthropic/claude-opus-4-1'), 'opencode -m anthropic/claude-opus-4-1 --continue');
+  assert.equal(restoredCliCommand('/usr/local/bin/opencode'), '/usr/local/bin/opencode --continue');
+});
+
+test('已是 OpenCode 恢复命令时不会重复追加参数', () => {
+  assert.equal(restoredCliCommand('opencode --continue'), 'opencode --continue');
+  assert.equal(restoredCliCommand('opencode -c'), 'opencode -c');
+  assert.equal(restoredCliCommand('opencode --session ses_123'), 'opencode --session ses_123');
+  assert.equal(restoredCliCommand('opencode -s ses_123'), 'opencode -s ses_123');
+  assert.equal(restoredCliCommand('opencode run -c "继续"'), 'opencode run -c "继续"');
 });
 
 test('工具识别兼容绝对路径命令', () => {
@@ -52,6 +66,7 @@ test('恢复编排把续接命令与原项目目录交给终端创建，并隔�
     null,
     { cwd: '/projects/two', name: 'Codex 2', autoCmd: 'codex resume session-2' },
     { cwd: '/projects/three', name: 'Claude', autoCmd: 'claude' },
+    { cwd: '/projects/four', name: 'OpenCode', autoCmd: 'opencode' },
   ], async options => {
     calls.push(options);
     if (options.cwd === '/projects/one') throw new Error('missing directory');
@@ -61,6 +76,7 @@ test('恢复编排把续接命令与原项目目录交给终端创建，并隔�
     { cwd: '/projects/one', name: 'Codex 1', autoCmd: 'codex resume --last' },
     { cwd: '/projects/two', name: 'Codex 2', autoCmd: 'codex resume session-2' },
     { cwd: '/projects/three', name: 'Claude', autoCmd: 'claude --continue' },
+    { cwd: '/projects/four', name: 'OpenCode', autoCmd: 'opencode --continue' },
   ]);
 });
 

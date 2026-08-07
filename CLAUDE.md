@@ -60,7 +60,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targe
 ## 终端会话恢复
 
 - 应用退出后 PTY 进程不会存活；`term-session-layout` 只保存标签名称、项目目录和启动命令，重开应用后重新创建 PTY。
-- CLI 续接命令统一由 `src/session-restore-utils.js` 生成：Claude 使用 `--continue`，Codex 使用 `resume --last`。Codex 的 `--last` 默认按当前工作目录选择最近的交互会话，所以创建恢复终端时必须继续使用原标签的 `cwd`。
+- CLI 续接命令统一由 `src/session-restore-utils.js` 生成：Claude 与 OpenCode 使用 `--continue`，Codex 使用 `resume --last`。Codex 的 `--last` 默认按当前工作目录选择最近的交互会话，所以创建恢复终端时必须继续使用原标签的 `cwd`。
 - 已经包含 Claude/Codex 恢复参数的命令不得重复追加；相关回归测试位于 `tests/session-restore-utils.test.mjs`。
 - Rust `terminal_create` 会拒绝不存在、不可访问或并非目录的非空 `cwd`，禁止静默回退到默认目录，避免 Codex 跨项目接错最近会话；空 `cwd` 的普通空白终端仍使用默认目录。
 - 前端只有在 `terminal_create` 成功后才把标签标记为可恢复并写入布局；启动失败的红点标签仅用于显示错误，不得再次进入下次恢复列表。

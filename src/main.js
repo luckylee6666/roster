@@ -1960,7 +1960,7 @@ function clearAttention(id) {
 
 // ===== 会话恢复：记住上次的终端标签布局，重开应用一键还原 =====
 // PTY 进程随应用退出无法真正续命，恢复的是"布局"——同目录、同 CLI 重新拉起；
-// Claude 用 --continue，Codex 用 resume --last 接回该项目目录最近的对话。
+// Claude/OpenCode 用 --continue，Codex 用 resume --last 接回该项目目录最近的对话。
 function persistSessionLayout() {
   const layout = sessionLayoutEntries(sessions);
   try { localStorage.setItem('term-session-layout', JSON.stringify(layout)); } catch (_) {}
@@ -1975,9 +1975,11 @@ function maybeRestoreSessions() {
     .map(it => cliToolName(it.autoCmd));
   const hasClaude = cmds.includes('claude');
   const hasCodex = cmds.includes('codex');
+  const hasOpencode = cmds.includes('opencode');
   const resumeNotes = [];
   if (hasClaude) resumeNotes.push('Claude 标签会用 --continue 接上次对话。');
   if (hasCodex) resumeNotes.push('Codex 标签会按项目目录续接最近一次对话。');
+  if (hasOpencode) resumeNotes.push('OpenCode 标签会用 --continue 接上次对话。');
   showConfirm({
     title: '恢复终端会话',
     message: `上次有 ${layout.length} 个终端会话，要恢复吗？\n同目录重新拉起对应 CLI。${resumeNotes.length ? '\n' + resumeNotes.join('\n') : ''}`,
