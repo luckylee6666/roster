@@ -129,6 +129,10 @@ For manual layered-character QA, run `python3 -m http.server 4174 --bind 127.0.0
 - **Built-in terminal**: portable-pty (real PTY, cross-platform; ConPTY/PowerShell on Windows) + xterm.js (vendored)
 - **File preview/editing**: highlight.js (highlighting) / marked (Markdown) / DOMPurify (sanitizing), all vendored with no CDN dependency; the Rust backend handles conflict detection and atomic saves
 
+## AI agent instructions
+
+The project root contains `CLAUDE.md`, `AGENTS.md`, and `opencode.json` — these are **local-only** AI instruction files (added to `.gitignore`, not committed to the repository). They configure how Claude Code, Codex, and OpenCode interact with this project.
+
 ## Data location
 
 - macOS: `~/.vibe-coding-manage/`（隐藏目录，避免清理软件误删）

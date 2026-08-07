@@ -129,6 +129,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - **内置终端**: portable-pty (真实 PTY，跨平台；Windows 走 ConPTY/PowerShell) + xterm.js (vendor)
 - **文件预览与编辑**: highlight.js（高亮）/ marked（Markdown）/ DOMPurify（净化），均 vendor，无 CDN 依赖；Rust 后端负责冲突检测与原子保存
 
+## AI 指令文件
+
+项目根目录的 `CLAUDE.md`、`AGENTS.md`、`opencode.json` 是**本地文件**（已加入 `.gitignore`，不提交到仓库），用于配置 Claude Code、Codex 和 OpenCode 与本项目的交互方式。
+
 ## 数据存储位置
 
 - macOS: `~/.vibe-coding-manage/`（隐藏目录，避免清理软件误删）
