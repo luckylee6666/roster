@@ -45,6 +45,11 @@ secrets*.json
 *.sln
 *.sw?
 
+# AI agent instructions (local only)
+CLAUDE.md
+AGENTS.md
+opencode.json
+
 # Generated Python bytecode and local-only 3D experiments.
 __pycache__/
 *.py[cod]

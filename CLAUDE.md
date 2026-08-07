@@ -125,3 +125,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targe
 - `node_modules/`、`src-tauri/target/`、`src-tauri/gen/`、`.vscode/` 保持忽略。
 - 原 `douyin/` 本地素材目录已于 v1.2.12 发布后移到 macOS 废纸篓，不属于项目源码。
 - `design/guofeng-3d/` 约 150MB 设计源文件（Blender 脚本与渲染帧）已在 `f8c6cf2` 入库，仓库已明显膨胀；后续大型设计中间产物不再提交 Git，放仓库外目录或 Git LFS。
+
+## 协作规则
+
+- **记忆同步**：收到"更新记忆"指令时，只更新 Claude 项目记忆（`~/.claude/projects/<编码>/memory/`），**不同步** Codex 记忆（`~/.codex/memories/`）。此规则适用于所有 AI 工具（Claude Code、Codex、OpenCode）。
