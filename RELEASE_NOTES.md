@@ -1,21 +1,23 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.12 / 本版更新
+## What's new in v1.2.14 / 本版更新
 
 **English**
-- **Edit code and configuration files in place** — open a file from the terminal tree, click the pencil, edit with Tab/Shift+Tab indentation, and save with `⌘/Ctrl + S`.
-- **Format-safe saving** — preserves UTF-8 BOM, line endings, permissions, ACLs, extended attributes, and supported platform metadata.
-- **Unsaved-change protection** — newer typing during an active save remains in the editor; file/session switches, window close, system quit, and tray quit require confirmation.
-- **Safer file boundaries** — binary, invalid UTF-8, read-only, mixed-line-ending, and files over 1 MB remain preview-only; reads are bounded and fully checked for NUL bytes.
-- **Atomic writes and conflict checks** — same-directory replacement prevents half-written files, while best-effort external-change detection stops detected overwrites.
+- **Reliable macOS quitting** — the red close button and `Cmd+Q` exit correctly while unsaved edits remain protected by confirmation.
+- **Reliable file previews** — selected files always replace the terminal, including while the WebGL terminal renderer is actively repainting.
+- **Safer data lifecycle** — migration retries after failures, daily snapshots and pre-overwrite backups are active, and failed writes no longer change in-memory data.
+- **Reliable terminal startup** — early keystrokes are buffered in order; duplicate IDs and failed child-process setup are cleaned up safely.
+- **Bounded local previews** — images, PDFs, and terminal-theme assets cannot bypass memory limits while files change.
+- **Hardened remote input** — WebSocket and terminal-input sizes are bounded, and blocking PTY writes no longer occupy async workers.
 
 **中文**
-- **直接编辑代码和配置文件**：从终端文件树打开文件，点击铅笔进入编辑；支持 Tab/Shift+Tab 缩进及 `⌘/Ctrl + S` 保存。
-- **安全保留原格式**：保存时保留 UTF-8 BOM、换行符、权限、ACL、扩展属性和平台支持的元数据。
-- **未保存修改保护**：保存期间继续输入仍保留在编辑器；切换文件/会话、关闭窗口、系统退出和托盘退出均需确认。
-- **更安全的文件边界**：二进制、无效 UTF-8、只读、混合换行及超过 1MB 的文件保持只读预览；读取有界并完整检测 NUL。
-- **原子写入与冲突检查**：同目录替换避免半截文件，尽力检测到的外部修改会停止保存。
+- **macOS 可靠退出**：左上角红色关闭按钮和 `Cmd+Q` 均可正常退出，未保存修改仍需确认后才能放弃。
+- **文件预览稳定显示**：即使 WebGL 终端正在持续重绘，选中文件后也会可靠切换到预览，不再被终端画面遮住。
+- **更安全的数据生命周期**：迁移失败会重试，每日快照与覆盖前备份正式生效，写入失败不再改变内存数据。
+- **可靠的终端启动**：启动期间的键入会按顺序缓存；重复 ID 与子进程创建失败均会安全清理。
+- **有界本地预览**：图片、PDF 和终端主题资源即使在读取期间发生变化，也无法绕过内存限制。
+- **远程输入加固**：限制 WebSocket 与终端输入大小，阻塞 PTY 写入不再占用异步工作线程。
 
 ## Install / 安装
 

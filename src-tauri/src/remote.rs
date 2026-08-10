@@ -56,6 +56,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// 单个会话的滚动缓存上限（字节）。手机连上时回放最近这么多输出，避免黑屏。
 const SCROLLBACK_CAP: usize = 256 * 1024;
+/// WebSocket JSON 帧和其中单次终端键入的硬上限，避免已认证客户端用大帧耗尽内存。
+const MAX_WS_MESSAGE_SIZE: usize = 64 * 1024;
+const MAX_TERMINAL_INPUT_SIZE: usize = 32 * 1024;
 
 /// 一个活跃的伪终端会话：保留 master（resize）、writer（写入键入）、child（kill）。
 pub struct PtySession {
@@ -63,6 +66,14 @@ pub struct PtySession {
     /// Arc<Mutex<>>：让写入在锁外进行，一个会话的阻塞写不至于攥着全局 sessions 锁楔死其它会话。
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub child: Box<dyn Child + Send + Sync>,
+}
+
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        // 任何错误路径、覆盖或显式清理只要释放会话，都必须回收子进程。
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// 会话元信息，供手机端列表展示（桌面那边叫「人物」/标签名）。
@@ -173,11 +184,8 @@ impl RemoteHub {
     /// 由 reader 线程在 EOF 时调用：广播退出并清理该会话（含 sessions，防 PtySession 泄漏）。
     pub fn mark_exit(&self, id: &str) {
         let _ = self.exit_tx.send(id.to_string());
-        if let Some(mut sess) = self.cleanup_session(id) {
-            // EOF 时子进程通常已退出；wait() 回收僵尸，否则它会挂到 app 退出。kill 幂等兜底。
-            let _ = sess.child.kill();
-            let _ = sess.child.wait();
-        }
+        // PtySession::drop 统一 kill/wait，覆盖 EOF、手动关闭和中途失败路径。
+        drop(self.cleanup_session(id));
     }
 }
 
@@ -328,7 +336,9 @@ async fn ws_handler(
         Some(id) if !id.is_empty() => id.clone(),
         _ => return (StatusCode::BAD_REQUEST, "缺少会话 id").into_response(),
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, hub, id))
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
+        .max_frame_size(MAX_WS_MESSAGE_SIZE)
+        .on_upgrade(move |socket| handle_socket(socket, hub, id))
 }
 
 async fn handle_socket(mut socket: WebSocket, hub: RemoteHub, id: String) {
@@ -383,7 +393,7 @@ async fn handle_socket(mut socket: WebSocket, hub: RemoteHub, id: String) {
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             inbound = socket.recv() => match inbound {
-                Some(Ok(Message::Text(txt))) => handle_client_msg(&hub, &id, &txt),
+                Some(Ok(Message::Text(txt))) => handle_client_msg(&hub, &id, &txt).await,
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Err(_)) => break,
                 _ => {}
@@ -428,34 +438,61 @@ async fn send_scrollback(socket: &mut WebSocket, hub: &RemoteHub, id: &str, rese
     socket.send(Message::Text(out_frame(&d))).await.is_ok()
 }
 
-/// 处理手机发来的消息：i=键入，r=resize。
-fn handle_client_msg(hub: &RemoteHub, id: &str, txt: &str) {
+fn parse_client_input(txt: &str) -> Option<String> {
+    if txt.len() > MAX_WS_MESSAGE_SIZE {
+        return None;
+    }
     let v: serde_json::Value = match serde_json::from_str(txt) {
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => return None,
     };
-    match v.get("t").and_then(|t| t.as_str()) {
-        Some("i") => {
-            if let Some(data) = v.get("d").and_then(|d| d.as_str()) {
-                // 与桌面 terminal_write 一样：锁内只取 writer 句柄，锁外再写，避免阻塞写攥住全局锁
-                let writer = hub
-                    .sessions
-                    .lock()
-                    .ok()
-                    .and_then(|s| s.get(id).map(|p| p.writer.clone()));
-                if let Some(writer) = writer {
-                    if let Ok(mut w) = writer.lock() {
-                        let _ = w.write_all(data.as_bytes());
-                        let _ = w.flush();
-                    }
-                }
+    if v.get("t").and_then(|t| t.as_str()) != Some("i") {
+        return None;
+    }
+    let data = v.get("d").and_then(|d| d.as_str())?;
+    if data.len() > MAX_TERMINAL_INPUT_SIZE {
+        return None;
+    }
+    Some(data.to_string())
+}
+
+/// 处理手机键入。解析/长度校验留在 async 线程，可能阻塞的 PTY 写入移到 blocking 池；
+/// 每个 WebSocket 仍串行 await，避免同一客户端无限堆积后台写任务。
+async fn handle_client_msg(hub: &RemoteHub, id: &str, txt: &str) {
+    let Some(data) = parse_client_input(txt) else {
+        return;
+    };
+    let writer = hub
+        .sessions
+        .lock()
+        .ok()
+        .and_then(|s| s.get(id).map(|p| p.writer.clone()));
+    if let Some(writer) = writer {
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(mut w) = writer.lock() {
+                let _ = w.write_all(data.as_bytes());
+                let _ = w.flush();
             }
-        }
-        Some("r") => {
-            // 故意忽略：PTY 尺寸只能有一个，由桌面端权威设定。手机是纯镜像，
-            // 绝不反过来 resize PTY——否则会把用户正在看的桌面终端画花。
-            let _ = (hub, id);
-        }
-        _ => {}
+        })
+        .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_input_accepts_small_input_only() {
+        assert_eq!(parse_client_input(r#"{"t":"i","d":"ls\n"}"#).as_deref(), Some("ls\n"));
+        assert_eq!(parse_client_input(r#"{"t":"r","cols":80}"#), None);
+        assert_eq!(parse_client_input("not-json"), None);
+    }
+
+    #[test]
+    fn client_input_rejects_oversized_data() {
+        let data = "x".repeat(MAX_TERMINAL_INPUT_SIZE + 1);
+        let frame = serde_json::json!({ "t": "i", "d": data }).to_string();
+        assert_eq!(parse_client_input(&frame), None);
     }
 }

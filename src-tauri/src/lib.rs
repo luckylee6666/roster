@@ -1,12 +1,12 @@
 use base64::Engine;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -146,10 +146,21 @@ fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
 
 /// 数据目录：优先用隐藏目录 ~/.vibe-coding-manage/，避免清理软件误删。
 /// 首次启动时自动从旧路径 ~/Library/Application Support/vibe-coding-manage/ 迁移。
-fn data_dir() -> PathBuf {
+fn preferred_data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".vibe-coding-manage")
+}
+
+/// 本次进程实际使用的数据目录。正常是新隐藏目录；若首次迁移失败，则本次运行
+/// 回退旧目录，避免加载空数据后又把空表写进新目录。下次启动仍会重试迁移。
+static ACTIVE_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+fn data_dir() -> PathBuf {
+    ACTIVE_DATA_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(preferred_data_dir)
 }
 
 /// 旧版数据目录（清理软件常扫的 ~/Library/Application Support/）。
@@ -157,45 +168,84 @@ fn legacy_data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("vibe-coding-manage"))
 }
 
-/// 从旧目录迁移数据到新隐藏目录（仅一次，成功后标记已迁移）。
-fn migrate_legacy_data() {
-    let marker = data_dir().join(".migrated-from-legacy");
-    if marker.exists() {
-        return;
+fn copy_file_if_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.exists() {
+        return Ok(());
     }
-    if let Some(old) = legacy_data_dir() {
-        if old.exists() && old.is_dir() {
-            // 迁移关键文件：projects/servers/snippets/requirements/themes/日志
-            let files = [
-                "projects.json",
-                "servers.json",
-                "snippets.json",
-                "requirements.json",
-                "term-themes.json",
-            ];
-            let new = data_dir();
-            fs::create_dir_all(&new).ok();
-            for name in &files {
-                let src = old.join(name);
-                let dst = new.join(name);
-                if src.exists() && !dst.exists() {
-                    let _ = fs::copy(&src, &dst);
-                }
-            }
-            // 迁移主题图片目录
-            let img_src = old.join("theme-images");
-            let img_dst = new.join("theme-images");
-            if img_src.exists() && !img_dst.exists() {
-                let _ = fs::rename(&img_src, &img_dst);
-            }
-            // 迁移日志目录
-            let log_src = old.join("logs");
-            let log_dst = new.join("logs");
-            if log_src.exists() && !log_dst.exists() {
-                let _ = fs::rename(&log_src, &log_dst);
-            }
-            // 标记迁移完成
-            let _ = fs::write(&marker, b"ok");
+    let tmp = dst.with_extension("migrating");
+    if tmp.exists() {
+        fs::remove_file(&tmp)?;
+    }
+    fs::copy(src, &tmp)?;
+    fs::rename(tmp, dst)
+}
+
+fn copy_dir_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let source = entry.path();
+        let target = dst.join(entry.file_name());
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_missing(&source, &target)?;
+        } else if ty.is_file() {
+            copy_file_if_missing(&source, &target)?;
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("迁移目录包含不支持的特殊文件：{}", source.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 从指定旧目录迁移到新目录。只有全部复制成功后才写完成标记；目录使用可重试的
+/// 逐项复制而非 rename，迁移中断后可安全补齐，也始终保留旧目录作为恢复来源。
+fn migrate_legacy_data_between(old: &Path, new: &Path) -> std::io::Result<()> {
+    let marker = new.join(".migrated-from-legacy");
+    if marker.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(new)?;
+    let files = [
+        "projects.json",
+        "servers.json",
+        "snippets.json",
+        "requirements.json",
+        "term-themes.json",
+    ];
+    for name in files {
+        let src = old.join(name);
+        if src.is_file() {
+            copy_file_if_missing(&src, &new.join(name))?;
+        }
+    }
+    for name in ["theme-images", "logs"] {
+        let src = old.join(name);
+        if src.is_dir() {
+            copy_dir_missing(&src, &new.join(name))?;
+        }
+    }
+    atomic_write(&marker, b"ok")
+}
+
+/// 初始化进程级数据目录。迁移失败时继续使用旧目录，既不写完成标记，也不允许
+/// 当前进程把空数据保存到新目录；下次启动会再次尝试迁移。
+fn initialize_data_dir() -> PathBuf {
+    let preferred = preferred_data_dir();
+    let Some(old) = legacy_data_dir().filter(|path| path.is_dir()) else {
+        return preferred;
+    };
+    match migrate_legacy_data_between(&old, &preferred) {
+        Ok(()) => preferred,
+        Err(e) => {
+            crate::log_error!(
+                "迁移旧数据目录失败，将继续使用旧目录 {}：{e}",
+                old.display()
+            );
+            old
         }
     }
 }
@@ -230,11 +280,16 @@ fn snapshot_data_files() {
     if dir.is_dir() && existing_data_files().iter().all(|(_, name)| dir.join(format!("{name}.json")).exists()) {
         return; // 今日已有完整快照
     }
-    fs::create_dir_all(&dir).ok();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        crate::log_warn!("创建每日备份目录失败：{e}");
+        return;
+    }
     for (path, name) in existing_data_files() {
         let dest = dir.join(format!("{name}.json"));
         if !dest.exists() {
-            let _ = fs::copy(&path, &dest);
+            if let Err(e) = copy_file_if_missing(&path, &dest) {
+                crate::log_warn!("备份 {:?} 失败：{e}", path.file_name().unwrap_or_default());
+            }
         }
     }
     // 裁剪：只保留最近 30 天
@@ -253,10 +308,18 @@ fn snapshot_data_files() {
 
 /// 备份某数据文件（覆盖写之前调用）：把现有文件拷贝为 `<name>.prev.json`，
 /// 只保留最近一份，防止上一次「正常」的数据被空/坏数据盖掉后无法找回。
-fn backup_prev(path: &PathBuf, name: &str) {
+fn backup_prev(path: &Path, name: &str) {
     if path.exists() {
-        let dest = data_dir().join(format!("{name}.prev.json"));
-        let _ = fs::copy(path, dest);
+        let dest = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{name}.prev.json"));
+        let tmp = dest.with_extension("prev.tmp");
+        let result = fs::copy(path, &tmp).and_then(|_| fs::rename(&tmp, &dest));
+        if let Err(e) = result {
+            let _ = fs::remove_file(tmp);
+            crate::log_warn!("创建 {name}.prev.json 失败：{e}");
+        }
     }
 }
 
@@ -294,11 +357,9 @@ fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path: &PathBuf)
 }
 
 impl AppState {
-    fn new() -> Self {
-        migrate_legacy_data();
-        let data_dir = data_dir();
-
-        fs::create_dir_all(&data_dir).ok();
+    fn new(data_dir: &Path) -> Self {
+        fs::create_dir_all(data_dir).ok();
+        snapshot_data_files();
         
         let data_path = data_dir.join("projects.json");
         let projects = load_json_or_backup(&data_path);
@@ -324,36 +385,36 @@ impl AppState {
         }
     }
 
-    fn save_projects(&self) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(&self.projects)
-            .map_err(|e| e.to_string())?;
+    fn save_projects_value(&self, projects: &[Project]) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(projects).map_err(|e| e.to_string())?;
+        backup_prev(&self.data_path, "projects");
         atomic_write(&self.data_path, data.as_bytes()).map_err(|e| {
             crate::log_error!("写 projects.json 失败：{e}");
             e.to_string()
         })
     }
 
-    fn save_servers(&self) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(&self.servers)
-            .map_err(|e| e.to_string())?;
+    fn save_servers_value(&self, servers: &[Server]) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(servers).map_err(|e| e.to_string())?;
+        backup_prev(&self.server_path, "servers");
         atomic_write(&self.server_path, data.as_bytes()).map_err(|e| {
             crate::log_error!("写 servers.json 失败：{e}");
             e.to_string()
         })
     }
 
-    fn save_snippets(&self) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(&self.snippets)
-            .map_err(|e| e.to_string())?;
+    fn save_snippets_value(&self, snippets: &[Snippet]) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(snippets).map_err(|e| e.to_string())?;
+        backup_prev(&self.snippet_path, "snippets");
         atomic_write(&self.snippet_path, data.as_bytes()).map_err(|e| {
             crate::log_error!("写 snippets.json 失败：{e}");
             e.to_string()
         })
     }
 
-    fn save_requirements(&self) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(&self.requirements)
-            .map_err(|e| e.to_string())?;
+    fn save_requirements_value(&self, requirements: &[Requirement]) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(requirements).map_err(|e| e.to_string())?;
+        backup_prev(&self.requirement_path, "requirements");
         atomic_write(&self.requirement_path, data.as_bytes()).map_err(|e| {
             crate::log_error!("写 requirements.json 失败：{e}");
             e.to_string()
@@ -396,8 +457,10 @@ fn add_project(
         updated_at: now,
     };
     
-    state.projects.push(project.clone());
-    state.save_projects()?;
+    let mut projects = state.projects.clone();
+    projects.push(project.clone());
+    state.save_projects_value(&projects)?;
+    state.projects = projects;
     
     Ok(project)
 }
@@ -435,8 +498,10 @@ fn update_project(
         updated_at: now,
     };
     
-    state.projects[index] = project.clone();
-    state.save_projects()?;
+    let mut projects = state.projects.clone();
+    projects[index] = project.clone();
+    state.save_projects_value(&projects)?;
+    state.projects = projects;
     
     Ok(project)
 }
@@ -444,8 +509,10 @@ fn update_project(
 #[tauri::command]
 fn delete_project(state: State<Mutex<AppState>>, id: String) -> Result<(), String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
-    state.projects.retain(|p| p.id != id);
-    state.save_projects()?;
+    let mut projects = state.projects.clone();
+    projects.retain(|p| p.id != id);
+    state.save_projects_value(&projects)?;
+    state.projects = projects;
     Ok(())
 }
 
@@ -453,12 +520,14 @@ fn delete_project(state: State<Mutex<AppState>>, id: String) -> Result<(), Strin
 #[tauri::command]
 fn rename_group(state: State<Mutex<AppState>>, old: String, new: String) -> Result<(), String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
-    for p in state.projects.iter_mut() {
+    let mut projects = state.projects.clone();
+    for p in &mut projects {
         if p.group == old {
             p.group = new.clone();
         }
     }
-    state.save_projects()?;
+    state.save_projects_value(&projects)?;
+    state.projects = projects;
     Ok(())
 }
 
@@ -626,8 +695,10 @@ fn add_server(
         note,
         created_at: now,
     };
-    state.servers.push(server.clone());
-    state.save_servers()?;
+    let mut servers = state.servers.clone();
+    servers.push(server.clone());
+    state.save_servers_value(&servers)?;
+    state.servers = servers;
     Ok(server)
 }
 
@@ -657,8 +728,10 @@ fn update_server(
         note,
         created_at: state.servers[index].created_at.clone(),
     };
-    state.servers[index] = server.clone();
-    state.save_servers()?;
+    let mut servers = state.servers.clone();
+    servers[index] = server.clone();
+    state.save_servers_value(&servers)?;
+    state.servers = servers;
     Ok(server)
 }
 
@@ -669,8 +742,10 @@ fn delete_server(state: State<Mutex<AppState>>, id: String) -> Result<(), String
     if count > 0 {
         return Err(format!("有 {} 个项目引用了该服务器，请先修改项目", count));
     }
-    state.servers.retain(|s| s.id != id);
-    state.save_servers()?;
+    let mut servers = state.servers.clone();
+    servers.retain(|s| s.id != id);
+    state.save_servers_value(&servers)?;
+    state.servers = servers;
     Ok(())
 }
 
@@ -700,8 +775,8 @@ fn save_snippets(
             s
         })
         .collect();
+    state.save_snippets_value(&snippets)?;
     state.snippets = snippets.clone();
-    state.save_snippets()?;
     Ok(snippets)
 }
 
@@ -798,7 +873,8 @@ fn pick_theme_image() -> Result<Option<String>, String> {
     let dir = theme_image_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建主题图目录失败：{e}"))?;
     let name = format!("{}.{ext}", Uuid::new_v4());
-    fs::copy(&src, dir.join(&name)).map_err(|e| format!("拷贝背景图失败：{e}"))?;
+    let bytes = read_binary_file_bounded(&src, MAX_THEME_IMAGE_SIZE, "主题图片过大（>16MB）")?;
+    atomic_write(&dir.join(&name), &bytes).map_err(|e| format!("拷贝背景图失败：{e}"))?;
     crate::log_info!("主题背景图已导入：{name}（来自 {src:?}）");
     Ok(Some(name))
 }
@@ -811,7 +887,8 @@ fn load_theme_image(name: String) -> Result<String, String> {
         return Err("非法文件名".to_string());
     }
     let path = theme_image_dir().join(&name);
-    let bytes = fs::read(&path).map_err(|e| format!("读取背景图失败：{e}"))?;
+    let bytes = read_binary_file_bounded(&path, MAX_THEME_IMAGE_SIZE, "主题图片过大（>16MB）")
+        .map_err(|e| format!("读取背景图失败：{e}"))?;
     let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -857,8 +934,8 @@ fn save_requirements(
             r
         })
         .collect();
+    state.save_requirements_value(&requirements)?;
     state.requirements = requirements.clone();
-    state.save_requirements()?;
     Ok(requirements)
 }
 
@@ -1003,7 +1080,6 @@ fn list_dir(path: String) -> Result<Vec<DirEntryInfo>, String> {
 
 #[derive(Default)]
 struct EditorExitGuard {
-    dirty: AtomicBool,
     allow_exit: AtomicBool,
 }
 
@@ -1020,6 +1096,9 @@ struct FileContent {
 }
 
 const MAX_TEXT_FILE_SIZE: u64 = 1024 * 1024;
+const MAX_IMAGE_FILE_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_PDF_FILE_SIZE: u64 = 32 * 1024 * 1024;
+const MAX_THEME_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
 
 fn split_utf8_bom(bytes: &[u8]) -> (bool, &[u8]) {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -1061,6 +1140,27 @@ fn read_file_bounded(p: &Path, limit: u64) -> Result<(Vec<u8>, u64, bool), Strin
         bytes.truncate(limit as usize);
     }
     Ok((bytes, observed_size, truncated))
+}
+
+/// 从同一个已打开句柄完成类型、大小检查和有界读取，避免 metadata 与 fs::read
+/// 之间文件被替换或增长，绕过预览内存上限。
+fn read_binary_file_bounded(p: &Path, limit: u64, too_large: &str) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(p).map_err(|e| e.to_string())?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("不是文件".to_string());
+    }
+    if metadata.len() > limit {
+        return Err(too_large.to_string());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len().min(limit) as usize + 1);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large.to_string());
+    }
+    Ok(bytes)
 }
 
 fn read_text_file(p: &Path) -> Result<FileContent, String> {
@@ -1295,31 +1395,22 @@ fn write_file(
 }
 
 #[tauri::command]
-fn set_editor_dirty(dirty: bool, state: State<'_, EditorExitGuard>) {
-    state.dirty.store(dirty, Ordering::SeqCst);
-    if dirty {
-        state.allow_exit.store(false, Ordering::SeqCst);
-    }
-}
-
-#[tauri::command]
 fn confirm_app_exit(app: AppHandle, state: State<'_, EditorExitGuard>) {
     state.allow_exit.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+/// 原生窗口关闭会在窗口销毁后触发应用 ExitRequested。先由前端用本地编辑器状态
+/// 做完判断，再放行这一次退出，避免异步 dirty IPC 与 Cmd+Q 之间的竞态。
+#[tauri::command]
+fn confirm_window_close(state: State<'_, EditorExitGuard>) {
+    state.allow_exit.store(true, Ordering::SeqCst);
 }
 
 /// 读取图片文件 → base64 data URL（供 <img> 直接显示）。>16MB 拒绝。
 #[tauri::command]
 fn read_image(path: String) -> Result<String, String> {
     let p = std::path::Path::new(&path);
-    if !p.is_file() {
-        return Err("不是文件".to_string());
-    }
-    const MAX: u64 = 16 * 1024 * 1024;
-    let size = fs::metadata(p).map_err(|e| e.to_string())?.len();
-    if size > MAX {
-        return Err("图片过大（>16MB）".to_string());
-    }
     let ext = p
         .extension()
         .and_then(|e| e.to_str())
@@ -1336,7 +1427,7 @@ fn read_image(path: String) -> Result<String, String> {
         "avif" => "image/avif",
         _ => "application/octet-stream",
     };
-    let bytes = fs::read(p).map_err(|e| e.to_string())?;
+    let bytes = read_binary_file_bounded(p, MAX_IMAGE_FILE_SIZE, "图片过大（>16MB）")?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, b64))
 }
@@ -1345,15 +1436,7 @@ fn read_image(path: String) -> Result<String, String> {
 #[tauri::command]
 fn read_binary_base64(path: String) -> Result<String, String> {
     let p = std::path::Path::new(&path);
-    if !p.is_file() {
-        return Err("不是文件".to_string());
-    }
-    const MAX: u64 = 32 * 1024 * 1024;
-    let size = fs::metadata(p).map_err(|e| e.to_string())?.len();
-    if size > MAX {
-        return Err("文件过大（>32MB）".to_string());
-    }
-    let bytes = fs::read(p).map_err(|e| e.to_string())?;
+    let bytes = read_binary_file_bounded(p, MAX_PDF_FILE_SIZE, "文件过大（>32MB）")?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
@@ -2014,6 +2097,9 @@ type ActivityMap = Arc<Mutex<HashMap<String, Activity>>>;
 /// 桌面命令与内嵌的手机端服务都操作同一个 hub（克隆即共享 Arc）。
 struct TerminalState {
     hub: RemoteHub,
+    /// 本进程内已经使用或正在创建的会话 ID。成功创建后也不复用，避免旧 reader
+    /// 线程的迟到 EOF 清理掉同 ID 的新会话。
+    used_ids: Arc<Mutex<HashSet<String>>>,
     /// 各会话输出活动追踪（reader 线程写、监控线程读）
     activity: ActivityMap,
     /// 各会话探测到的上下文窗口大小（终端输出或 Claude Code 生效配置，按会话缓存，
@@ -2025,6 +2111,7 @@ impl Default for TerminalState {
     fn default() -> Self {
         Self {
             hub: RemoteHub::new(REMOTE_PORT),
+            used_ids: Arc::new(Mutex::new(HashSet::new())),
             activity: Arc::new(Mutex::new(HashMap::new())),
             ctx_window: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -2100,6 +2187,54 @@ fn validate_terminal_cwd(cwd: &str) -> Result<(), String> {
     Err(format!("终端工作目录不存在或不可访问：{cwd}"))
 }
 
+fn validate_terminal_id(id: &str) -> Result<(), String> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("终端会话 ID 非法".to_string());
+    }
+    Ok(())
+}
+
+struct TerminalIdReservation {
+    used_ids: Arc<Mutex<HashSet<String>>>,
+    id: String,
+    committed: bool,
+}
+
+impl TerminalIdReservation {
+    fn reserve(used_ids: Arc<Mutex<HashSet<String>>>, id: &str) -> Result<Self, String> {
+        validate_terminal_id(id)?;
+        let mut ids = used_ids.lock().map_err(|e| e.to_string())?;
+        if !ids.insert(id.to_string()) {
+            return Err("终端会话 ID 已存在或已使用".to_string());
+        }
+        drop(ids);
+        Ok(Self {
+            used_ids,
+            id: id.to_string(),
+            committed: false,
+        })
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for TerminalIdReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Ok(mut ids) = self.used_ids.lock() {
+                ids.remove(&self.id);
+            }
+        }
+    }
+}
+
 // Tauri IPC 直接按终端创建参数解包，保留具名参数可避免前端协议变更。
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -2116,6 +2251,7 @@ fn terminal_create(
     // 不允许无效项目路径静默回退到应用默认目录，否则 `codex resume --last`
     // 可能按错误 cwd 接入另一个项目的最近会话。
     validate_terminal_cwd(&cwd)?;
+    let id_reservation = TerminalIdReservation::reserve(state.used_ids.clone(), &id)?;
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -2142,7 +2278,7 @@ fn terminal_create(
     }
     cmd.env("TERM", "xterm-256color");
 
-    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+    let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log_error!(
             "终端 spawn 失败（id={id} tool={}）：{e}",
             tool.as_deref().unwrap_or("")
@@ -2157,59 +2293,64 @@ fn terminal_create(
         if cwd.is_empty() { "(默认)" } else { cwd.as_str() }
     );
 
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e.to_string());
+        }
+    };
+    let writer = match pair.master.take_writer() {
+        Ok(writer) => writer,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e.to_string());
+        }
+    };
+    let pty_session = PtySession {
+        master: pair.master,
+        writer: Arc::new(Mutex::new(writer)),
+        child,
+    };
 
     // 后台线程持续读 PTY 输出：base64 后同时推给桌面窗口（Tauri 事件）和手机端（WS 广播 + 滚动缓存）
     let sess_name = name.unwrap_or_else(|| id.clone());
     let sess_tool = tool.unwrap_or_default();
 
-    // 登记活动追踪条目（监控线程据此判定"等待关注"）
-    {
-        let now = Instant::now();
-        state
-            .activity
-            .lock()
-            .map_err(|e| e.to_string())?
-            .insert(
-                id.clone(),
-                Activity {
-                    last_output: now,
-                    burst_start: now,
-                    burst_bytes: 0,
-                    busy: false,
-                    notified: false,
-                    name: sess_name.clone(),
-                    tool: sess_tool.clone(),
-                },
-            );
-    }
-
     // 先登记会话元信息 + PtySession，再起 reader 线程——否则 shell 秒退时 reader 可能
     // 在下面登记之前就读到 EOF、触发 cleanup_session 扑空，之后登记的这两张表就再没人清理
     // （泄漏 master FD + 手机端幽灵会话）。writer 包一层 Arc<Mutex<>>，让 terminal_write
     // 能在锁外做可能阻塞的写、不攥着全局 sessions 锁。
-    state.hub.metas.lock().map_err(|e| e.to_string())?.insert(
-        id.clone(),
-        SessionMeta {
-            id: id.clone(),
-            name: sess_name.clone(),
-            tool: sess_tool.clone(),
-        },
-    );
-    state
-        .hub
-        .sessions
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(
+    {
+        let mut activity = state.activity.lock().map_err(|e| e.to_string())?;
+        let mut metas = state.hub.metas.lock().map_err(|e| e.to_string())?;
+        let mut sessions = state.hub.sessions.lock().map_err(|e| e.to_string())?;
+        let now = Instant::now();
+        activity.insert(
             id.clone(),
-            PtySession {
-                master: pair.master,
-                writer: Arc::new(Mutex::new(writer)),
-                child,
+            Activity {
+                last_output: now,
+                burst_start: now,
+                burst_bytes: 0,
+                busy: false,
+                notified: false,
+                name: sess_name.clone(),
+                tool: sess_tool.clone(),
             },
         );
+        metas.insert(
+            id.clone(),
+            SessionMeta {
+                id: id.clone(),
+                name: sess_name.clone(),
+                tool: sess_tool.clone(),
+            },
+        );
+        sessions.insert(id.clone(), pty_session);
+    }
+    id_reservation.commit();
 
     let app_evt = app.clone();
     let sid = id.clone();
@@ -2307,10 +2448,7 @@ fn terminal_resize(
 fn terminal_close(state: State<TerminalState>, id: String) -> Result<(), String> {
     // 三个表（sessions/metas/scrollback）统一在 cleanup_session 里清，
     // 与 reader 线程 EOF 路径（mark_exit）共用同一处逻辑，避免漏删某个表泄漏。
-    if let Some(mut session) = state.hub.cleanup_session(&id) {
-        let _ = session.child.kill();
-        let _ = session.child.wait(); // 回收，否则子进程变僵尸挂到 app 退出
-    }
+    drop(state.hub.cleanup_session(&id));
     if let Ok(mut map) = state.activity.lock() {
         map.remove(&id);
     }
@@ -2517,9 +2655,9 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn should_block_for_unsaved_editor(app: &AppHandle) -> bool {
+fn app_exit_is_confirmed(app: &AppHandle) -> bool {
     let state = app.state::<EditorExitGuard>();
-    state.dirty.load(Ordering::SeqCst) && !state.allow_exit.load(Ordering::SeqCst)
+    state.allow_exit.load(Ordering::SeqCst)
 }
 
 fn request_app_quit_confirmation(app: &AppHandle) {
@@ -2563,7 +2701,9 @@ pub fn run() {
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS
     );
-    let state = Mutex::new(AppState::new());
+    let active_data_dir = initialize_data_dir();
+    let _ = ACTIVE_DATA_DIR.set(active_data_dir.clone());
+    let state = Mutex::new(AppState::new(&active_data_dir));
     let term_state = TerminalState::default();
     let activity_for_monitor = term_state.activity.clone();
 
@@ -2625,11 +2765,7 @@ pub fn run() {
                         }
                     }
                     "tray_quit" => {
-                        if should_block_for_unsaved_editor(app) {
-                            request_app_quit_confirmation(app);
-                        } else {
-                            app.exit(0);
-                        }
+                        request_app_quit_confirmation(app);
                     }
                     _ => {}
                 });
@@ -2667,8 +2803,8 @@ pub fn run() {
             list_dir,
             read_file,
             write_file,
-            set_editor_dirty,
             confirm_app_exit,
+            confirm_window_close,
             read_image,
             read_binary_base64,
             trash_path,
@@ -2702,7 +2838,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if should_block_for_unsaved_editor(app) {
+                if !app_exit_is_confirmed(app) {
                     api.prevent_exit();
                     request_app_quit_confirmation(app);
                 }
@@ -2713,6 +2849,42 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_legacy_migration_copies_all_data_before_marking_complete() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old");
+        let new = root.path().join("new");
+        fs::create_dir_all(old.join("theme-images/nested")).unwrap();
+        fs::create_dir_all(old.join("logs")).unwrap();
+        fs::write(old.join("projects.json"), b"[1]").unwrap();
+        fs::write(old.join("theme-images/nested/bg.png"), b"image").unwrap();
+        fs::write(old.join("logs/app.log"), b"log").unwrap();
+
+        migrate_legacy_data_between(&old, &new).unwrap();
+
+        assert_eq!(fs::read(new.join("projects.json")).unwrap(), b"[1]");
+        assert_eq!(
+            fs::read(new.join("theme-images/nested/bg.png")).unwrap(),
+            b"image"
+        );
+        assert_eq!(fs::read(new.join("logs/app.log")).unwrap(), b"log");
+        assert!(new.join(".migrated-from-legacy").is_file());
+        assert!(old.join("projects.json").is_file());
+    }
+
+    #[test]
+    fn test_legacy_migration_failure_never_writes_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old");
+        let new = root.path().join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("projects.json"), b"[]").unwrap();
+        fs::write(&new, b"not-a-directory").unwrap();
+
+        assert!(migrate_legacy_data_between(&old, &new).is_err());
+        assert!(!new.join(".migrated-from-legacy").exists());
+    }
 
     #[test]
     fn test_terminal_cwd_allows_default_and_existing_directory() {
@@ -2730,6 +2902,32 @@ mod tests {
 
         assert!(validate_terminal_cwd(missing.to_str().unwrap()).is_err());
         assert!(validate_terminal_cwd(file.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_terminal_id_rejects_invalid_and_reused_values() {
+        assert!(validate_terminal_id("").is_err());
+        assert!(validate_terminal_id("../../escape").is_err());
+        assert!(validate_terminal_id("term-valid_1").is_ok());
+
+        let used = Arc::new(Mutex::new(HashSet::new()));
+        let reservation = TerminalIdReservation::reserve(used.clone(), "term-1").unwrap();
+        assert!(TerminalIdReservation::reserve(used.clone(), "term-1").is_err());
+        drop(reservation);
+        let reservation = TerminalIdReservation::reserve(used.clone(), "term-1").unwrap();
+        reservation.commit();
+        assert!(TerminalIdReservation::reserve(used, "term-1").is_err());
+    }
+
+    #[test]
+    fn test_binary_reads_enforce_limit_on_open_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.bin");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(9).unwrap();
+        assert!(read_binary_file_bounded(&path, 8, "too large").is_err());
+        file.set_len(8).unwrap();
+        assert_eq!(read_binary_file_bounded(&path, 8, "too large").unwrap().len(), 8);
     }
 
     #[test]
@@ -2794,12 +2992,31 @@ mod tests {
             updated_at: now,
         };
         state.projects.push(project);
-        state.save_projects().unwrap();
+        state.save_projects_value(&state.projects).unwrap();
 
         let data = std::fs::read_to_string(&data_path).unwrap();
         let loaded: Vec<Project> = serde_json::from_str(&data).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name, "test");
+
+        let mut next = state.projects.clone();
+        next.push(Project {
+            id: Uuid::new_v4().to_string(),
+            name: "second".into(),
+            local_path: "/tmp".into(),
+            remote_url: String::new(),
+            description: String::new(),
+            machine: "local".into(),
+            server_id: String::new(),
+            group: String::new(),
+            created_at: "2025-01-02 00:00:00".into(),
+            updated_at: "2025-01-02 00:00:00".into(),
+        });
+        state.save_projects_value(&next).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("projects.prev.json")).unwrap(),
+            data
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

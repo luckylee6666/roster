@@ -2980,6 +2980,12 @@ body {
   display: flex;
 }
 
+/* xterm 使用 WebGL 时 canvas 是独立合成层，持续重绘期间偶尔会穿透上方预览。
+   预览打开后隐藏整个终端渲染容器，不能只依赖 z-index。 */
+.terminal-bodies.preview-obscured {
+  visibility: hidden;
+}
+
 .file-preview-head {
   display: flex;
   align-items: center;

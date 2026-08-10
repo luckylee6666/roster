@@ -17,6 +17,8 @@ import {
   restoreSessionLayout,
   sessionLayoutEntries,
 } from './session-restore-utils.js';
+import { setFilePreviewLayerOpen } from './file-preview-layer.js';
+import { createTerminalInputBuffer } from './terminal-input-buffer.js';
 import { installWorkspaceMode } from './workspace-mode.js';
 
 let invoke;
@@ -2980,36 +2982,25 @@ let fileEditorSaving = false;
 let currentAppWindow = null;
 let allowWindowClose = false;
 let exitPromptPending = false;
-let queuedEditorDirty = false;
-let editorDirtySync = Promise.resolve();
+let appExitResolutionPending = false;
 
 function hasUnsavedFileChanges() {
   return fileEditorSaving || isFileEditorDirty();
 }
 
-// 串行同步，避免快速输入/撤销时 IPC 乱序，导致后端记住过期的 dirty 状态。
-function syncEditorDirtyState(forceValue) {
-  const dirty = forceValue ?? hasUnsavedFileChanges();
-  if (dirty === queuedEditorDirty) return editorDirtySync;
-  queuedEditorDirty = dirty;
-  editorDirtySync = editorDirtySync
-    .catch(() => {})
-    .then(() => invoke('set_editor_dirty', { dirty }));
-  return editorDirtySync;
-}
-
 async function discardChangesAndExit(kind) {
   try {
-    await syncEditorDirtyState(false);
     if (kind === 'window') {
+      await invoke('confirm_window_close');
       allowWindowClose = true;
       await currentAppWindow?.close();
     } else {
+      appExitResolutionPending = true;
       await invoke('confirm_app_exit');
     }
   } catch (e) {
     allowWindowClose = false;
-    syncEditorDirtyState();
+    appExitResolutionPending = false;
     msg('退出失败: ' + (e.message || e), 'error');
   }
 }
@@ -3032,12 +3023,33 @@ async function setupEditorExitGuard() {
   const tauri = window.__TAURI__;
   currentAppWindow = tauri.window.getCurrentWindow();
   await currentAppWindow.onCloseRequested(async event => {
-    if (allowWindowClose || !hasUnsavedFileChanges()) return;
-    event.preventDefault();
-    requestDiscardChangesAndExit('window');
+    if (allowWindowClose) return;
+    if (hasUnsavedFileChanges()) {
+      event.preventDefault();
+      requestDiscardChangesAndExit('window');
+      return;
+    }
+    try {
+      await invoke('confirm_window_close');
+      allowWindowClose = true;
+    } catch (e) {
+      event.preventDefault();
+      msg('退出失败: ' + (e.message || e), 'error');
+    }
   });
-  await tauri.event.listen('app-quit-requested', () => {
-    requestDiscardChangesAndExit('app');
+  await tauri.event.listen('app-quit-requested', async () => {
+    if (hasUnsavedFileChanges()) {
+      requestDiscardChangesAndExit('app');
+      return;
+    }
+    if (appExitResolutionPending) return;
+    appExitResolutionPending = true;
+    try {
+      await invoke('confirm_app_exit');
+    } catch (e) {
+      appExitResolutionPending = false;
+      msg('退出失败: ' + (e.message || e), 'error');
+    }
   });
 }
 
@@ -3130,7 +3142,6 @@ function updateFileEditorActions() {
     termEl.previewStatus.title = '';
   }
   updateFileEditorPosition();
-  syncEditorDirtyState();
 }
 
 // CSV/TSV 解析（处理引号包裹的字段）
@@ -3187,7 +3198,7 @@ async function openPreview(path, name) {
   termEl.previewName.textContent = name;
   termEl.previewName.title = path;
   termEl.previewInsert.dataset.path = path;
-  termEl.preview.classList.add('active');
+  setFilePreviewLayerOpen(termEl.preview, termEl.bodies, true);
   revokePreviewPdf();
   previewRichState = null;
   previewTextState = null;
@@ -3460,7 +3471,7 @@ function closePreview(force = false) {
     return false;
   }
   previewLoadSeq++;
-  termEl.preview.classList.remove('active');
+  setFilePreviewLayerOpen(termEl.preview, termEl.bodies, false);
   revokePreviewPdf();
   previewRichState = null;
   previewTextState = null;
@@ -3468,6 +3479,16 @@ function closePreview(force = false) {
   showPreviewView('text');
   updateFileEditorActions();
   if (treeActiveRow) { treeActiveRow.classList.remove('active'); treeActiveRow = null; }
+  const restoredSessionId = activeSession;
+  if (restoredSessionId) {
+    requestAnimationFrame(() => {
+      if (activeSession !== restoredSessionId) return;
+      const session = sessions.get(restoredSessionId);
+      if (!session) return;
+      fitSession(restoredSessionId);
+      try { session.term.refresh(0, Math.max(0, session.term.rows - 1)); } catch (_) {}
+    });
+  }
   return true;
 }
 
@@ -3870,7 +3891,12 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   if (!(currentThemeDef && currentThemeDef.bg)) {
     webgl = attachWebgl(term);
   }
-  term.onData(d => invoke('terminal_write', { id, data: d }).catch(() => {}));
+  const inputBuffer = createTerminalInputBuffer({
+    send: data => invoke('terminal_write', { id, data }),
+    onError: error => appLog('warn', `终端输入写入失败（${id}）：${error}`),
+    onOverflow: () => term.write('\r\n\x1b[33m启动期间输入过多，仅保留前 1MB\x1b[0m\r\n'),
+  });
+  term.onData(data => inputBuffer.write(data));
 
   const session = {
     term, fit, tabEl, bodyEl, webgl, name: label, status: 'running', cwd, tool: autoCmd,
@@ -3899,9 +3925,11 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     persistSessionLayout();
     fitSession(id);
     if (autoCmd) {
-      setTimeout(() => invoke('terminal_write', { id, data: autoCmd + '\r' }).catch(() => {}), 400);
+      await new Promise(resolve => setTimeout(resolve, 400));
     }
+    await inputBuffer.markReady(autoCmd ? autoCmd + '\r' : '');
   } catch (e) {
+    inputBuffer.markFailed();
     session.status = 'failed';
     session.restorable = false;
     tabEl.classList.add('failed');

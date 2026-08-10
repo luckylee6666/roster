@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.14
+
+### English
+
+**Fixed**
+- The macOS red close button and `Cmd+Q` now exit correctly while still requiring confirmation before discarding unsaved file edits.
+- File previews now reliably replace the terminal even while its WebGL renderer is actively repainting, preventing a selected file from leaving terminal output visually stuck on top.
+- Keystrokes entered while a terminal session is starting are buffered and replayed in order after the startup command. Duplicate or invalid terminal session IDs are rejected, and failed session creation cleans up child processes.
+- Legacy-data migration writes its completion marker only after every required copy succeeds; failed migrations keep using the legacy directory and retry on the next launch.
+
+**Hardened**
+- Daily snapshots and pre-overwrite backups are now active, and failed disk writes no longer mutate in-memory project, server, snippet, or requirement data.
+- Image, PDF, and terminal-theme reads use bounded file handles to prevent oversized or changing files from causing unbounded memory use.
+- Remote-terminal WebSocket frames and input are bounded, with blocking PTY writes moved off asynchronous workers.
+
+**Tests**
+- Added regression coverage for exit guards, terminal startup input ordering, migration retries, bounded binary reads, terminal ID reuse, and data backups.
+
+### 中文
+
+**修复**
+- macOS 左上角红色关闭按钮和 `Cmd+Q` 现可正常退出，同时继续保护尚未保存的文件修改，放弃修改前必须确认。
+- 文件预览在 WebGL 终端持续重绘时也会稳定显示，避免文件已选中但终端输出仍卡在预览层上方。
+- 终端创建期间的键入会先缓存，并在启动命令之后按顺序发送；重复或非法会话 ID 会被拒绝，创建失败时会清理子进程。
+- 旧数据迁移仅在全部所需文件复制成功后写完成标记；迁移失败时继续使用旧目录，并在下次启动重试。
+
+**安全加固**
+- 每日快照和覆盖前备份正式生效；磁盘写入失败时不再提前修改内存中的项目、服务器、片段或需求数据。
+- 图片、PDF 和终端主题图片均通过同一文件句柄进行有界读取，避免超大或变化中的文件导致无界内存占用。
+- 限制远程终端 WebSocket 帧及输入大小，并将阻塞的 PTY 写入移出异步工作线程。
+
+**测试**
+- 新增退出保护、终端启动输入顺序、迁移重试、有界二进制读取、终端 ID 重用和数据备份的回归测试。
+
 ## v1.2.12
 
 ### English
