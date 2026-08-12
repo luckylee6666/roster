@@ -384,6 +384,35 @@
               </button>
             </div>
           </div>
+          <div class="terminal-layout-wrap">
+            <button class="term-tool-btn" id="terminal-layout-btn" type="button"
+                    title="终端布局：单窗" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4" width="17" height="16" rx="1.5"/><path d="M12 4v16M3.5 12h17"/></svg>
+            </button>
+            <div class="terminal-layout-menu" id="terminal-layout-menu" role="menu" aria-label="终端分屏布局">
+              <button class="terminal-layout-option" type="button" role="menuitemradio" data-layout="single">
+                <span class="terminal-layout-diagram layout-single"><i></i></span>
+                <span><strong>单窗</strong><small>默认布局</small></span>
+                <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
+              <button class="terminal-layout-option" type="button" role="menuitemradio" data-layout="columns">
+                <span class="terminal-layout-diagram layout-columns"><i></i><i></i></span>
+                <span><strong>左右分屏</strong><small>最多 2 个会话</small></span>
+                <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
+              <button class="terminal-layout-option" type="button" role="menuitemradio" data-layout="rows">
+                <span class="terminal-layout-diagram layout-rows"><i></i><i></i></span>
+                <span><strong>上下分屏</strong><small>最多 2 个会话</small></span>
+                <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
+              <button class="terminal-layout-option" type="button" role="menuitemradio" data-layout="grid">
+                <span class="terminal-layout-diagram layout-grid"><i></i><i></i><i></i><i></i></span>
+                <span><strong>四宫格</strong><small>最多 4 个会话</small></span>
+                <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
+              <div class="terminal-layout-hint">更多会话继续在标签栏后台运行</div>
+            </div>
+          </div>
           <div class="term-theme-wrap">
             <button class="term-tool-btn" id="terminal-theme-btn" title="配色主题">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 100 18h1.6a2.4 2.4 0 002.4-2.4c0-.63-.25-1.2-.65-1.62a2.36 2.36 0 01-.65-1.6 2.4 2.4 0 012.4-2.38H19a3 3 0 003-3C22 6.13 17.97 3 12 3z"/><circle cx="7.5" cy="11.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="11" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16" cy="9" r="1.1" fill="currentColor" stroke="none"/></svg>
@@ -410,7 +439,10 @@
         </aside>
         <div class="tree-splitter" id="tree-splitter"></div>
         <div class="terminal-content">
-          <div class="terminal-bodies" id="terminal-bodies"></div>
+          <div class="terminal-bodies" id="terminal-bodies" data-layout="single">
+            <div class="terminal-pane-splitter vertical" id="terminal-pane-splitter-vertical" aria-hidden="true"></div>
+            <div class="terminal-pane-splitter horizontal" id="terminal-pane-splitter-horizontal" aria-hidden="true"></div>
+          </div>
           <div class="file-preview" id="file-preview">
             <div class="file-preview-head">
               <span class="file-preview-name" id="file-preview-name"></span>
@@ -435,20 +467,26 @@
               </button>
             </div>
             <div class="file-preview-body" id="file-preview-body">
-              <pre id="file-preview-pre"><code id="file-preview-code" class="hljs"></code></pre>
+              <div class="file-preview-text" id="file-preview-text">
+                <pre class="file-preview-line-numbers" id="file-preview-line-numbers" aria-hidden="true">1</pre>
+                <pre id="file-preview-pre"><code id="file-preview-code" class="hljs"></code></pre>
+              </div>
               <div class="file-preview-image" id="file-preview-image"><img id="file-preview-img" alt="" /></div>
               <div class="file-preview-rich markdown-body" id="file-preview-rich"></div>
               <iframe class="file-preview-pdf" id="file-preview-pdf" title="PDF 预览"></iframe>
               <div class="file-editor" id="file-editor">
-                <textarea
-                  class="file-editor-input"
-                  id="file-editor-input"
-                  aria-label="文件内容编辑器"
-                  autocomplete="off"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  wrap="off"
-                ></textarea>
+                <div class="file-editor-main">
+                  <pre class="file-editor-line-numbers" id="file-editor-line-numbers" aria-hidden="true">1</pre>
+                  <textarea
+                    class="file-editor-input"
+                    id="file-editor-input"
+                    aria-label="文件内容编辑器"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    wrap="off"
+                  ></textarea>
+                </div>
                 <div class="file-editor-footer">
                   <span id="file-editor-meta">UTF-8</span>
                   <span id="file-editor-position">第 1 行，第 1 列</span>
@@ -687,6 +725,10 @@
       <div class="ctx-item" data-action="insert">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5 5 5-5M12 14V3"/></svg>
         <span>插入路径到终端</span>
+      </div>
+      <div class="ctx-item" id="ctx-run-script" data-action="run-script" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4l14 8-14 8V4z"/></svg>
+        <span>填入运行命令</span>
       </div>
       <div class="ctx-item" data-action="copy">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>

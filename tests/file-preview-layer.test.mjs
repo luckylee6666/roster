@@ -38,3 +38,17 @@ test('预览遮挡类从渲染树隐藏终端，主流程关闭后刷新终端',
   assert.match(main, /setFilePreviewLayerOpen\(termEl\.preview, termEl\.bodies, true\)/);
   assert.match(main, /setFilePreviewLayerOpen\(termEl\.preview, termEl\.bodies, false\)[\s\S]*?session\.term\.refresh/);
 });
+
+test('源码预览和编辑态都提供独立行号栏', async () => {
+  const [html, styles, main] = await Promise.all([
+    readFile(new URL('../src/index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../src/styles.css', import.meta.url), 'utf8'),
+    readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(html, /id="file-preview-line-numbers"[^>]*aria-hidden="true"/);
+  assert.match(html, /id="file-editor-line-numbers"[^>]*aria-hidden="true"/);
+  assert.match(styles, /\.file-preview-line-numbers[\s\S]*?position:\s*sticky/);
+  assert.match(main, /previewLineNumbers\.textContent\s*=\s*createLineNumberText/);
+  assert.match(main, /editorLineNumbers\.scrollTop\s*=\s*termEl\.editorInput\.scrollTop/);
+});

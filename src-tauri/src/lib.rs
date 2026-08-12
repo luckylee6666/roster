@@ -2587,6 +2587,22 @@ async fn has_npx() -> bool {
         .unwrap_or(false)
 }
 
+/// `.sh` 快捷命令依赖 Bash；仅探测可用性，不执行用户脚本。
+#[tauri::command]
+async fn has_bash() -> bool {
+    tauri::async_runtime::spawn_blocking(|| {
+        std::process::Command::new("bash")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// 用系统默认浏览器打开一个 URL（如引导去 nodejs.org 装 Node）。
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -2830,6 +2846,7 @@ pub fn run() {
             agent_weekly,
             oauth_usage,
             has_npx,
+            has_bash,
             open_url,
             open_log,
             app_log

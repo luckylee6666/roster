@@ -1,7 +1,9 @@
 import {
+  createLineNumberText,
   editorChangedDuringSave,
   editorTextFromFile,
   fileTextFromEditor,
+  textLineCount,
 } from './file-editor-utils.js';
 import {
   clearImageTerminalCellBackgrounds,
@@ -20,6 +22,23 @@ import {
 import { setFilePreviewLayerOpen } from './file-preview-layer.js';
 import { createTerminalInputBuffer } from './terminal-input-buffer.js';
 import { installWorkspaceMode } from './workspace-mode.js';
+import {
+  createShellScriptCommand,
+  isShellScriptEntry,
+  shellQuotePath as quoteShellPath,
+  shouldCloseShellScriptPreview,
+} from './shell-script-utils.js';
+import {
+  closeTerminalPaneSession,
+  normalizeTerminalPaneLayout,
+  reconcileTerminalPanes,
+  removeTerminalPaneSession,
+  selectTerminalPaneSession,
+  terminalPaneCapacity,
+  terminalSessionIdAtPoint,
+  visibleTerminalSessionIds,
+} from './terminal-pane-layout.js';
+import { createTerminalSessionCloseCoordinator } from './terminal-session-close.js';
 
 let invoke;
 try {
@@ -484,7 +503,17 @@ function bind() {
     };
   });
 
-  document.onkeydown = e => { if (e.key === 'Escape') { closeModal(); closeDel(); closeServerModal(); closeServerList(); closeReqModal(); } };
+  document.onkeydown = e => {
+    if (e.key !== 'Escape') return;
+    closeModal();
+    closeDel();
+    closeServerModal();
+    closeServerList();
+    closeReqModal();
+    closeThemeMenu();
+    closeSnippetMenu();
+    closeTerminalLayoutMenu();
+  };
 
   // 运行环境切换时显示/隐藏服务器选择
   el.machine.onchange = () => {
@@ -551,7 +580,11 @@ function bind() {
   termEl.bellBtn.onclick = toggleNotify;
   applyBellState();
   // Prompt 片段库
-  termEl.snippetBtn.onclick = (ev) => { ev.stopPropagation(); toggleSnippetMenu(ev.currentTarget); };
+  termEl.snippetBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    closeTerminalLayoutMenu();
+    toggleSnippetMenu(ev.currentTarget);
+  };
   // 片段快捷浮层：展开/收起（记忆状态）
   $('snippet-quick-fab').onclick = () => { localStorage.setItem('snippet-quick-collapsed', '0'); $('snippet-quick').classList.remove('collapsed'); };
   $('snippet-quick-collapse').onclick = () => { localStorage.setItem('snippet-quick-collapsed', '1'); $('snippet-quick').classList.add('collapsed'); };
@@ -603,8 +636,18 @@ function bind() {
     e.stopPropagation();
     (themeMenuOpening || termEl.themeMenu.classList.contains('active')) ? closeThemeMenu() : void openThemeMenu();
   };
+  termEl.layoutBtn.onclick = (e) => {
+    e.stopPropagation();
+    (terminalLayoutMenuOpening || termEl.layoutMenu.classList.contains('active'))
+      ? closeTerminalLayoutMenu()
+      : void openTerminalLayoutMenu();
+  };
+  termEl.layoutMenu.querySelectorAll('[data-layout]').forEach(option => {
+    option.onclick = () => setTerminalPaneLayout(option.dataset.layout);
+  });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.term-theme-wrap')) closeThemeMenu();
+    if (!e.target.closest('.terminal-layout-wrap')) closeTerminalLayoutMenu();
   });
   // 终端字号快捷键：⌘/Ctrl + 加号放大、减号缩小、0 复位（capture 阶段抢在 xterm 之前）
   document.addEventListener('keydown', (e) => {
@@ -622,6 +665,7 @@ function bind() {
   }, { passive: false });
   applyTermBackground(currentThemeDef || TERM_THEMES.classic); // custom:* 由 initTermTheme 异步精确应用
   setupTermResize();
+  setupTerminalPaneSplitters();
   setupWorkspaceMode();
   // 文件树 + 内容预览
   termEl.treeBtn.onclick = toggleTree;
@@ -655,6 +699,8 @@ function bind() {
         invoke('open_folder', { path: target }).catch(e => msg('打开失败: ' + e, 'error'));
       } else if (action === 'insert') {
         insertPathToTerminal(ctx.entry.path);
+      } else if (action === 'run-script') {
+        insertShellScriptCommand(ctx.entry);
       } else if (action === 'copy') {
         navigator.clipboard?.writeText(ctx.entry.path).then(
           () => msg('路径已复制', 'success'),
@@ -685,8 +731,10 @@ function bind() {
   termEl.treeBtn.classList.toggle('active', !treeHidden);
   window.addEventListener('resize', () => {
     if (termEl.dock.classList.contains('maximized')) termEl.dock.style.height = window.innerHeight + 'px';
-    if (activeSession) fitSession(activeSession);
+    closeTerminalLayoutMenu();
+    scheduleFitVisibleSessions();
   });
+  renderTerminalPaneLayout();
 }
 
 function openModal(p = null) {
@@ -1372,6 +1420,8 @@ const termEl = {
   usageBtn: $('terminal-usage-btn'),
   bellBtn: $('terminal-bell-btn'),
   snippetBtn: $('terminal-snippet-btn'),
+  layoutBtn: $('terminal-layout-btn'),
+  layoutMenu: $('terminal-layout-menu'),
   themeBtn: $('terminal-theme-btn'),
   themeMenu: $('terminal-theme-menu'),
   maximizeBtn: $('terminal-maximize-btn'),
@@ -1383,11 +1433,14 @@ const termEl = {
   treeRootName: $('tree-root-name'),
   treeRefreshBtn: $('tree-refresh-btn'),
   treeSplitter: $('tree-splitter'),
+  paneSplitterVertical: $('terminal-pane-splitter-vertical'),
+  paneSplitterHorizontal: $('terminal-pane-splitter-horizontal'),
   main: document.querySelector('.terminal-main'),
   preview: $('file-preview'),
   previewName: $('file-preview-name'),
+  previewText: $('file-preview-text'),
+  previewLineNumbers: $('file-preview-line-numbers'),
   previewCode: $('file-preview-code'),
-  previewPre: $('file-preview-pre'),
   previewImage: $('file-preview-image'),
   previewImg: $('file-preview-img'),
   previewRich: $('file-preview-rich'),
@@ -1401,6 +1454,7 @@ const termEl = {
   previewInsert: $('file-preview-insert'),
   previewClose: $('file-preview-close'),
   editor: $('file-editor'),
+  editorLineNumbers: $('file-editor-line-numbers'),
   editorInput: $('file-editor-input'),
   editorMeta: $('file-editor-meta'),
   editorPosition: $('file-editor-position'),
@@ -1897,6 +1951,26 @@ const sessions = new Map(); // id -> { term, fit, tabEl, bodyEl, name, status, a
 let activeSession = null;
 let termSeq = 0;
 let termEventsBound = false;
+let terminalPaneLayout = 'single';
+let terminalPaneAssignments = [null];
+let terminalFitFrame = 0;
+let terminalFitTimer = null;
+let terminalFitLastRunAt = 0;
+let terminalFitForceResize = false;
+const TERMINAL_RESIZE_INTERVAL_MS = 100;
+
+const TERMINAL_LAYOUT_LABELS = {
+  single: '单窗',
+  columns: '左右分屏',
+  rows: '上下分屏',
+  grid: '四宫格',
+};
+
+const sessionCloseCoordinator = createTerminalSessionCloseCoordinator({
+  closeBackend: id => invoke('terminal_close', { id }),
+  onClosed: finalizeSessionClose,
+  onError: error => msg('关闭终端失败: ' + (error?.message || error), 'error'),
+});
 
 function scheduleImageCellBackgroundSync(session, renderRange = null) {
   if (!session || !(currentThemeDef && currentThemeDef.bg)) return;
@@ -1950,6 +2024,7 @@ function markAttention(id) {
   if (!s) return;
   s.attention = true;
   s.tabEl.classList.add('attention');
+  updateTerminalPaneStatus(s);
   updateFabBadge();
 }
 function clearAttention(id) {
@@ -1957,6 +2032,7 @@ function clearAttention(id) {
   if (!s || !s.attention) return;
   s.attention = false;
   s.tabEl.classList.remove('attention');
+  updateTerminalPaneStatus(s);
   updateFabBadge();
 }
 
@@ -2649,6 +2725,7 @@ async function bindTermEvents() {
     if (s) {
       s.status = 'exited';
       s.tabEl.classList.add('exited');
+      updateTerminalPaneStatus(s);
       s.term.write('\r\n\x1b[90m[会话已结束]\x1b[0m\r\n');
       if (activeSession === e.payload) characterTheme.handleTerminalEvent('exit');
       if (shouldNotify(e.payload)) {
@@ -2672,42 +2749,52 @@ async function bindTermEvents() {
     }
   });
 
-  // 拖拽文件/文件夹到终端面板 → 把路径写入当前会话（同 macOS 终端）
-  const overDock = (pos) => {
-    if (!pos || !termEl.dock.classList.contains('active')) return false;
+  // 拖拽文件/文件夹到终端窗格 → 写入鼠标命中的会话（同 macOS 终端）。
+  const targetAtNativePosition = (pos) => {
+    if (!pos || !termEl.dock.classList.contains('active')) return null;
     const dpr = window.devicePixelRatio || 1;
     const x = pos.x / dpr, y = pos.y / dpr;
-    const r = termEl.dock.getBoundingClientRect();
-    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    return terminalSessionAtViewportPoint(x, y);
   };
   await listen('tauri://drag-over', e => {
-    termEl.dock.classList.toggle('drag-target', overDock(e.payload && e.payload.position));
+    setTerminalPaneDragTarget(targetAtNativePosition(e.payload && e.payload.position));
   });
   await listen('tauri://drag-leave', () => {
-    termEl.dock.classList.remove('drag-target');
+    setTerminalPaneDragTarget(null);
   });
   await listen('tauri://drag-drop', e => {
-    termEl.dock.classList.remove('drag-target');
     const p = e.payload || {};
-    if (!overDock(p.position) || !activeSession) return;
+    const targetSessionId = targetAtNativePosition(p.position);
+    setTerminalPaneDragTarget(null);
+    if (!targetSessionId) return;
     const paths = (p.paths || []).filter(Boolean);
     if (!paths.length) return;
-    const data = paths.map(shellQuotePath).join(' ') + ' ';
-    invoke('terminal_write', { id: activeSession, data }).catch(() => {});
-    sessions.get(activeSession)?.term.focus();
+    activateSession(targetSessionId, false, () => {
+      const data = paths.map(shellQuotePath).join(' ') + ' ';
+      invoke('terminal_write', { id: targetSessionId, data }).catch(() => {});
+      sessions.get(targetSessionId)?.term.focus();
+    });
   });
 }
 
 const IS_WINDOWS = navigator.userAgent.includes('Windows');
+let bashAvailabilityPromise = null;
 
-// shell 路径转义。Windows(PowerShell/cmd)用双引号；Unix(bash/zsh)用单引号
+// shell 路径转义。Windows 终端是 PowerShell；Unix 终端是用户登录 shell。
 function shellQuotePath(p) {
-  if (IS_WINDOWS) {
-    // 含空格或 shell 元字符时双引号包裹（Windows 路径几乎不含 " / $ / 反引号）
-    return /[\s&()^%!,;'`$]/.test(p) ? `"${p}"` : p;
+  return quoteShellPath(p, IS_WINDOWS);
+}
+
+async function ensureBashAvailable() {
+  bashAvailabilityPromise ||= invoke('has_bash').catch(() => false);
+  const available = await bashAvailabilityPromise;
+  if (!available) {
+    bashAvailabilityPromise = null; // 安装 Bash 后无需重启应用即可重试。
+    msg(IS_WINDOWS
+      ? '未检测到 Bash，请先安装 Git Bash 或配置可用的 bash 命令'
+      : '未检测到 Bash，无法运行 .sh 文件', 'error');
   }
-  if (/^[A-Za-z0-9_@%+=:,./~-]+$/.test(p)) return p;
-  return "'" + p.replace(/'/g, "'\\''") + "'";
+  return available;
 }
 
 // 应用配色方案：更新所有已开会话 + 终端面板背景，并持久化
@@ -2796,10 +2883,38 @@ function renderThemeMenu() {
 
 let themeMenuRevision = 0;
 let themeMenuOpening = false;
+let terminalLayoutMenuRevision = 0;
+let terminalLayoutMenuOpening = false;
+
+async function openTerminalLayoutMenu() {
+  const revision = ++terminalLayoutMenuRevision;
+  terminalLayoutMenuOpening = true;
+  closeThemeMenu();
+  closeSnippetMenu();
+  const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-layout-menu', true);
+  if (revision !== terminalLayoutMenuRevision) return;
+  if (webviewHidden === false) {
+    terminalLayoutMenuOpening = false;
+    return;
+  }
+  terminalLayoutMenuOpening = false;
+  termEl.layoutMenu.classList.add('active');
+  termEl.layoutBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeTerminalLayoutMenu() {
+  const wasOpen = terminalLayoutMenuOpening || termEl.layoutMenu.classList.contains('active');
+  terminalLayoutMenuRevision += 1;
+  terminalLayoutMenuOpening = false;
+  termEl.layoutMenu.classList.remove('active');
+  termEl.layoutBtn.setAttribute('aria-expanded', 'false');
+  if (wasOpen) void workspaceController?.setFloatingUiOpen('terminal-layout-menu', false);
+}
 
 async function openThemeMenu() {
   const revision = ++themeMenuRevision;
   themeMenuOpening = true;
+  closeTerminalLayoutMenu();
   const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-theme-menu', true);
   if (revision !== themeMenuRevision) return;
   if (webviewHidden === false) {
@@ -2825,7 +2940,8 @@ function setTermFontSize(size) {
   if (size === currentFontSize) return;
   currentFontSize = size;
   localStorage.setItem('term-fontsize', String(size));
-  sessions.forEach((s, id) => { s.term.options.fontSize = size; clearTermAtlas(s.term); fitSession(id); });
+  sessions.forEach(s => { s.term.options.fontSize = size; clearTermAtlas(s.term); });
+  scheduleFitVisibleSessions();
 }
 
 // DPR 变化（窗口在不同缩放的显示器间移动）会让 WebGL 图集坐标错位 → 花屏。
@@ -2834,7 +2950,8 @@ function watchDprChange() {
   const dpr = window.devicePixelRatio || 1;
   const mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
   const onChange = () => {
-    sessions.forEach((s, id) => { clearTermAtlas(s.term); fitSession(id); });
+    sessions.forEach(s => clearTermAtlas(s.term));
+    scheduleFitVisibleSessions();
     watchDprChange();
   };
   mq.addEventListener('change', onChange, { once: true });
@@ -2963,10 +3080,46 @@ async function renderTree(cwd) {
   }
 }
 
-function insertPathToTerminal(path) {
-  if (!activeSession) return;
-  invoke('terminal_write', { id: activeSession, data: shellQuotePath(path) + ' ' }).catch(() => {});
-  sessions.get(activeSession)?.term.focus();
+function insertPathToTerminal(path, sessionId = activeSession) {
+  if (!sessionId || !sessions.has(sessionId)) return;
+  invoke('terminal_write', { id: sessionId, data: shellQuotePath(path) + ' ' }).catch(() => {});
+  sessions.get(sessionId)?.term.focus();
+}
+
+async function insertShellScriptCommand(entry) {
+  if (!isShellScriptEntry(entry) || !activeSession) return;
+  if (fileEditorSaving) {
+    msg('文件正在保存，请稍候再填入运行命令', 'info');
+    return;
+  }
+  if (isFileEditorDirty()) {
+    msg('当前文件有未保存修改，请先保存', 'info');
+    return;
+  }
+  const sessionId = activeSession;
+  const previewSeqAtStart = previewLoadSeq;
+  if (!await ensureBashAvailable() || !sessions.has(sessionId)) return;
+  try {
+    await invoke('terminal_write', {
+      id: sessionId,
+      data: createShellScriptCommand(entry.path, IS_WINDOWS),
+    });
+  } catch (e) {
+    msg('填入命令失败: ' + (e.message || e), 'error');
+    return;
+  }
+  if (shouldCloseShellScriptPreview({
+    sessionId,
+    activeSessionId: activeSession,
+    previewSeqAtStart,
+    currentPreviewSeq: previewLoadSeq,
+    previewOpen: termEl.preview.classList.contains('active'),
+    hasUnsavedChanges: hasUnsavedFileChanges(),
+  })) closePreview();
+  requestAnimationFrame(() => {
+    if (activeSession === sessionId) sessions.get(sessionId)?.term.focus();
+  });
+  msg('运行命令已填入，请检查并按回车执行', 'info');
 }
 
 function isImageFile(name) { return /\.(png|jpe?g|gif|webp|bmp|ico|svg|avif)$/i.test(name); }
@@ -2979,6 +3132,7 @@ let previewRichState = null;         // { kind:'md'|'csv', content, name } 供�
 let previewTextState = null;         // 当前可作为文本查看/编辑的文件状态
 let previewLoadSeq = 0;              // 连点不同文件时忽略过期的异步读取结果
 let fileEditorSaving = false;
+let fileEditorLineCount = 0;
 let currentAppWindow = null;
 let allowWindowClose = false;
 let exitPromptPending = false;
@@ -3055,7 +3209,7 @@ async function setupEditorExitGuard() {
 
 // 在五个视图(pre/image/rich/pdf/editor)间切换显示
 function showPreviewView(which) {
-  termEl.previewPre.style.display = which === 'text' ? '' : 'none';
+  termEl.previewText.classList.toggle('active', which === 'text');
   termEl.previewImage.classList.toggle('active', which === 'image');
   termEl.previewRich.classList.toggle('active', which === 'rich');
   termEl.previewPdf.classList.toggle('active', which === 'pdf');
@@ -3074,6 +3228,7 @@ function renderTextPreview(content, name, truncatedNote) {
   termEl.previewCode.className = 'hljs';
   termEl.previewCode.removeAttribute('data-highlighted');
   termEl.previewCode.textContent = content;
+  termEl.previewLineNumbers.textContent = createLineNumberText(textLineCount(content));
   const lang = hljsLangFor(name);
   termEl.previewCode.className = lang ? `hljs language-${lang}` : 'hljs';
   try { window.hljs.highlightElement(termEl.previewCode); } catch (e) {}
@@ -3105,10 +3260,15 @@ function updateFileEditorPosition() {
   if (!isFileEditorOpen()) return;
   const value = termEl.editorInput.value;
   const before = value.slice(0, termEl.editorInput.selectionStart);
-  const line = before.split('\n').length;
+  const line = textLineCount(before);
   const lastBreak = before.lastIndexOf('\n');
   const column = before.length - lastBreak;
-  const lines = value.length ? value.split('\n').length : 1;
+  const lines = textLineCount(value);
+  if (fileEditorLineCount !== lines) {
+    fileEditorLineCount = lines;
+    termEl.editorLineNumbers.textContent = createLineNumberText(lines);
+    termEl.editorLineNumbers.scrollTop = termEl.editorInput.scrollTop;
+  }
   const encoding = previewTextState.utf8Bom ? 'UTF-8 BOM' : 'UTF-8';
   termEl.editorMeta.textContent =
     `${encoding} · ${lineEndingLabel(previewTextState.lineEnding)} · ${lines} 行`;
@@ -3192,6 +3352,26 @@ function renderRich() {
   }
 }
 
+function positionFilePreview() {
+  if (!termEl.preview.classList.contains('active')) return;
+  if (terminalPaneLayout === 'single') {
+    termEl.preview.style.inset = '0';
+    termEl.preview.style.width = '';
+    termEl.preview.style.height = '';
+    return;
+  }
+  const session = activeSession ? sessions.get(activeSession) : null;
+  const content = termEl.preview.parentElement;
+  if (!session || !content) return;
+  const paneRect = session.bodyEl.getBoundingClientRect();
+  const contentRect = content.getBoundingClientRect();
+  termEl.preview.style.inset = 'auto';
+  termEl.preview.style.left = `${Math.round(paneRect.left - contentRect.left)}px`;
+  termEl.preview.style.top = `${Math.round(paneRect.top - contentRect.top)}px`;
+  termEl.preview.style.width = `${Math.round(paneRect.width)}px`;
+  termEl.preview.style.height = `${Math.round(paneRect.height)}px`;
+}
+
 async function openPreview(path, name) {
   const loadSeq = ++previewLoadSeq;
   termEl.preview.querySelector('.file-preview-truncated')?.remove();
@@ -3199,6 +3379,7 @@ async function openPreview(path, name) {
   termEl.previewName.title = path;
   termEl.previewInsert.dataset.path = path;
   setFilePreviewLayerOpen(termEl.preview, termEl.bodies, true);
+  positionFilePreview();
   revokePreviewPdf();
   previewRichState = null;
   previewTextState = null;
@@ -3303,6 +3484,10 @@ function beginFileEdit() {
     return;
   }
   termEl.editorInput.value = editorTextFromFile(previewTextState.content);
+  termEl.editorInput.scrollTop = 0;
+  termEl.editorInput.scrollLeft = 0;
+  termEl.editorLineNumbers.scrollTop = 0;
+  fileEditorLineCount = 0;
   showPreviewView('editor');
   updateFileEditorActions();
   termEl.editorInput.focus();
@@ -3417,6 +3602,9 @@ function handleEditorTab(e) {
 
 function setupFileEditor() {
   termEl.editorInput.addEventListener('input', updateFileEditorActions);
+  termEl.editorInput.addEventListener('scroll', () => {
+    termEl.editorLineNumbers.scrollTop = termEl.editorInput.scrollTop;
+  });
   ['click', 'keyup', 'select'].forEach(type => {
     termEl.editorInput.addEventListener(type, updateFileEditorPosition);
   });
@@ -3497,7 +3685,7 @@ function toggleTree() {
   termEl.treeBtn.classList.toggle('active', !hidden);
   localStorage.setItem('term-tree-hidden', hidden ? '1' : '0');
   if (!hidden && treeRoot === null && activeSession) renderTree(sessions.get(activeSession).cwd);
-  if (activeSession) requestAnimationFrame(() => fitSession(activeSession));
+  scheduleFitVisibleSessions();
 }
 
 function setupTreeSplitter() {
@@ -3505,7 +3693,7 @@ function setupTreeSplitter() {
   const onMove = (e) => {
     const w = Math.min(Math.max(startW + (e.clientX - startX), 140), 480);
     termEl.tree.style.width = w + 'px';
-    if (activeSession) fitSession(activeSession);
+    scheduleFitVisibleSessions();
   };
   const onUp = () => {
     document.removeEventListener('mousemove', onMove);
@@ -3514,6 +3702,7 @@ function setupTreeSplitter() {
     document.body.style.userSelect = '';
     termEl.dock.classList.remove('is-tree-resizing');
     localStorage.setItem('term-tree-width', String(termEl.tree.offsetWidth));
+    scheduleFitVisibleSessions(true);
   };
   termEl.treeSplitter.addEventListener('mousedown', (e) => {
     startX = e.clientX;
@@ -3531,10 +3720,20 @@ function setupTreeSplitter() {
 let treeDrag = null;
 let treeDragSuppressClick = false;
 
-function isOverTerminalArea(x, y) {
-  if (!termEl.dock.classList.contains('active')) return false;
-  const r = termEl.bodies.getBoundingClientRect();
-  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+function terminalSessionAtViewportPoint(x, y) {
+  if (!termEl.dock.classList.contains('active')) return null;
+  const panes = visibleTerminalSessionIds(terminalPaneAssignments).map(id => {
+    const rect = sessions.get(id)?.bodyEl.getBoundingClientRect();
+    return rect ? { id, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
+  }).filter(Boolean);
+  return terminalSessionIdAtPoint(panes, x, y);
+}
+
+function setTerminalPaneDragTarget(sessionId) {
+  termEl.dock.classList.toggle('drag-target', !!sessionId);
+  sessions.forEach((session, id) => {
+    session.bodyEl.classList.toggle('drag-target-pane', id === sessionId);
+  });
 }
 
 function startTreeDragWatch(entry, e) {
@@ -3549,7 +3748,7 @@ function cleanupTreeDrag() {
   if (treeDrag.ghost) treeDrag.ghost.remove();
   treeDrag = null;
   document.body.style.userSelect = '';
-  termEl.dock.classList.remove('drag-target');
+  setTerminalPaneDragTarget(null);
 }
 
 function setupTreeDrag() {
@@ -3567,7 +3766,7 @@ function setupTreeDrag() {
     }
     treeDrag.ghost.style.left = (e.clientX + 12) + 'px';
     treeDrag.ghost.style.top = (e.clientY + 14) + 'px';
-    termEl.dock.classList.toggle('drag-target', isOverTerminalArea(e.clientX, e.clientY));
+    setTerminalPaneDragTarget(terminalSessionAtViewportPoint(e.clientX, e.clientY));
   });
   document.addEventListener('mouseup', (e) => {
     if (!treeDrag) return;
@@ -3576,8 +3775,9 @@ function setupTreeDrag() {
     cleanupTreeDrag();
     if (started) {
       treeDragSuppressClick = true; // 抑制随后的 click（预览/展开）
-      if (isOverTerminalArea(e.clientX, e.clientY) && activeSession) {
-        insertPathToTerminal(d.entry.path);
+      const targetSessionId = terminalSessionAtViewportPoint(e.clientX, e.clientY);
+      if (targetSessionId) {
+        activateSession(targetSessionId, false, () => insertPathToTerminal(d.entry.path, targetSessionId));
       }
     }
   });
@@ -3600,6 +3800,7 @@ function openTreeCtx(entry, row, e) {
   e.preventDefault();
   treeCtx = { entry, row };
   $('ctx-open-label').textContent = entry.isDir ? '打开文件夹' : '打开所在文件夹';
+  $('ctx-run-script').style.display = isShellScriptEntry(entry) ? '' : 'none';
   const menu = el.treeCtxMenu;
   menu.classList.add('active');
   menu.style.left = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8) + 'px';
@@ -3636,7 +3837,7 @@ function setupWorkspaceMode() {
       }
     },
     onLayoutChange: () => {
-      if (activeSession) requestAnimationFrame(() => fitSession(activeSession));
+      scheduleFitVisibleSessions();
     },
     onFocusTerminal: focusActiveTerminal,
     openExternal: url => invoke('open_url', { url }).catch(error => {
@@ -3657,7 +3858,7 @@ function openDock() {
   termEl.fab.classList.add('hidden');
   characterTheme.setDockOpen(true);
   workspaceController?.setDockOpen(true);
-  if (activeSession) requestAnimationFrame(() => fitSession(activeSession));
+  scheduleFitVisibleSessions();
 }
 
 function collapseDock() {
@@ -3665,6 +3866,7 @@ function collapseDock() {
   // Close those dropdowns before docking so no stale hide reason survives reopen.
   closeThemeMenu();
   closeSnippetMenu();
+  closeTerminalLayoutMenu();
   termEl.dock.classList.remove('active');
   termEl.fab.classList.remove('hidden');
   characterTheme.setDockOpen(false);
@@ -3690,7 +3892,7 @@ function setDockMaximized(maxed) {
     termEl.maximizeBtn.title = '最大化';
   }
   workspaceController?.scheduleBoundsSync();
-  if (activeSession) requestAnimationFrame(() => fitSession(activeSession));
+  scheduleFitVisibleSessions();
 }
 
 function toggleDockMaximize() {
@@ -3738,36 +3940,195 @@ const TAB_BRANCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
 async function updateBranchBadges() {
   for (const s of sessions.values()) {
     const el = s.tabEl && s.tabEl.querySelector('.term-tab-branch');
+    const paneEl = s.paneBranchEl;
     if (!el) continue;
-    if (!s.cwd) { el.style.display = 'none'; continue; }
+    if (!s.cwd) {
+      el.style.display = 'none';
+      if (paneEl) paneEl.style.display = 'none';
+      continue;
+    }
     try {
       const b = await invoke('git_branch', { path: s.cwd });
       if (b) {
         el.innerHTML = TAB_BRANCH_SVG + `<span>${esc(b)}</span>`;
         el.title = `git 分支：${b}`;
         el.style.display = '';
+        if (paneEl) {
+          paneEl.textContent = b;
+          paneEl.title = `git 分支：${b}`;
+          paneEl.style.display = '';
+        }
       } else {
         el.style.display = 'none';
+        if (paneEl) paneEl.style.display = 'none';
       }
-    } catch (_) { el.style.display = 'none'; }
+    } catch (_) {
+      el.style.display = 'none';
+      if (paneEl) paneEl.style.display = 'none';
+    }
   }
 }
 
-function fitSession(id) {
+function flushTerminalResize(id, session) {
+  if (session.resizeTimer) {
+    clearTimeout(session.resizeTimer);
+    session.resizeTimer = null;
+  }
+  const pending = session.pendingResize;
+  if (!pending || sessions.get(id) !== session) return;
+  session.pendingResize = null;
+  session.lastResizeKey = pending.key;
+  session.lastResizeSentAt = Date.now();
+  invoke('terminal_resize', { id, cols: pending.cols, rows: pending.rows }).catch(() => {
+    if (sessions.get(id) === session && session.lastResizeKey === pending.key) {
+      session.lastResizeKey = '';
+    }
+  });
+}
+
+function queueTerminalResize(id, session, forceResize = false) {
+  const cols = session.term.cols;
+  const rows = session.term.rows;
+  const key = `${cols}x${rows}`;
+  if (key === session.lastResizeKey && !session.pendingResize) return;
+  session.pendingResize = { cols, rows, key };
+
+  const elapsed = Date.now() - session.lastResizeSentAt;
+  if (forceResize || elapsed >= TERMINAL_RESIZE_INTERVAL_MS) {
+    flushTerminalResize(id, session);
+  } else if (!session.resizeTimer) {
+    session.resizeTimer = setTimeout(
+      () => flushTerminalResize(id, session),
+      TERMINAL_RESIZE_INTERVAL_MS - elapsed,
+    );
+  }
+}
+
+function scheduleFitVisibleSessions(forceResize = false) {
+  terminalFitForceResize ||= forceResize;
+  if (terminalFitFrame) return;
+  const elapsed = Date.now() - terminalFitLastRunAt;
+  if (!terminalFitForceResize && elapsed < TERMINAL_RESIZE_INTERVAL_MS) {
+    terminalFitTimer ||= setTimeout(() => {
+      terminalFitTimer = null;
+      scheduleFitVisibleSessions();
+    }, TERMINAL_RESIZE_INTERVAL_MS - elapsed);
+    return;
+  }
+  if (terminalFitTimer) {
+    clearTimeout(terminalFitTimer);
+    terminalFitTimer = null;
+  }
+  terminalFitFrame = requestAnimationFrame(() => {
+    const shouldForceResize = terminalFitForceResize;
+    terminalFitFrame = 0;
+    terminalFitLastRunAt = Date.now();
+    terminalFitForceResize = false;
+    visibleTerminalSessionIds(terminalPaneAssignments).forEach(id => {
+      fitSession(id, { forceResize: shouldForceResize });
+    });
+    positionFilePreview();
+  });
+}
+
+function updateTerminalPaneStatus(session) {
+  if (!session) return;
+  session.bodyEl.classList.toggle('attention', !!session.attention);
+  session.bodyEl.classList.toggle('failed', session.status === 'failed');
+  session.bodyEl.classList.toggle('exited', session.status === 'exited');
+  if (!session.paneStatusEl) return;
+  let label = '运行中';
+  if (session.status === 'failed') label = '启动失败';
+  else if (session.status === 'exited') label = '已结束';
+  else if (session.attention) label = '等待处理';
+  session.paneStatusEl.title = label;
+  session.paneStatusEl.setAttribute('aria-label', label);
+}
+
+function renderTerminalPaneLayout() {
+  const sessionIds = [...sessions.keys()];
+  terminalPaneLayout = normalizeTerminalPaneLayout(terminalPaneLayout);
+  terminalPaneAssignments = reconcileTerminalPanes({
+    assignments: terminalPaneAssignments,
+    sessionIds,
+    activeSessionId: activeSession,
+    layout: terminalPaneLayout,
+    fill: false,
+  });
+  termEl.bodies.dataset.layout = terminalPaneLayout;
+  termEl.bodies.querySelectorAll('.term-pane-empty').forEach(node => node.remove());
+
+  sessions.forEach((session, id) => {
+    const paneIndex = terminalPaneAssignments.indexOf(id);
+    const visible = paneIndex >= 0;
+    session.bodyEl.classList.toggle('pane-visible', visible);
+    session.bodyEl.classList.toggle('active', id === activeSession && visible);
+    session.tabEl.classList.toggle('active', id === activeSession);
+    session.tabEl.classList.toggle('pane-visible', visible);
+    session.bodyEl.style.order = visible ? String(paneIndex) : '';
+    session.paneIndexEl.textContent = visible ? String(paneIndex + 1) : '';
+    session.tabPaneEl.textContent = visible ? String(paneIndex + 1) : '';
+    session.tabPaneEl.title = visible ? `当前显示在窗格 ${paneIndex + 1}` : '';
+    updateTerminalPaneStatus(session);
+  });
+
+  terminalPaneAssignments.forEach((id, index) => {
+    if (id) return;
+    const empty = document.createElement('button');
+    empty.type = 'button';
+    empty.className = 'term-pane-empty';
+    empty.style.order = String(index);
+    empty.innerHTML = `<span>${index + 1}</span><strong>空窗格</strong><small>从上方标签选择会话</small>`;
+    empty.onclick = () => termEl.tabs.querySelector('.term-tab:not(.pane-visible)')?.click();
+    termEl.bodies.appendChild(empty);
+  });
+
+  const label = TERMINAL_LAYOUT_LABELS[terminalPaneLayout];
+  termEl.layoutBtn.classList.toggle('active', terminalPaneLayout !== 'single');
+  termEl.layoutBtn.title = `终端布局：${label}`;
+  termEl.layoutBtn.setAttribute('aria-label', `终端布局：${label}`);
+  termEl.layoutMenu.querySelectorAll('[data-layout]').forEach(option => {
+    const selected = option.dataset.layout === terminalPaneLayout;
+    option.classList.toggle('active', selected);
+    option.setAttribute('aria-checked', selected ? 'true' : 'false');
+  });
+  scheduleFitVisibleSessions();
+}
+
+function setTerminalPaneLayout(layout) {
+  terminalPaneLayout = normalizeTerminalPaneLayout(layout);
+  terminalPaneAssignments = reconcileTerminalPanes({
+    assignments: terminalPaneAssignments,
+    sessionIds: [...sessions.keys()],
+    activeSessionId: activeSession,
+    layout: terminalPaneLayout,
+    fill: true,
+  });
+  if (!activeSession || !terminalPaneAssignments.includes(activeSession)) {
+    activeSession = visibleTerminalSessionIds(terminalPaneAssignments)[0] || null;
+  }
+  const active = activeSession ? sessions.get(activeSession) : null;
+  if (active && active.cwd !== treeRoot) renderTree(active.cwd);
+  closeTerminalLayoutMenu();
+  renderTerminalPaneLayout();
+  if (active) active.term.focus();
+}
+
+function fitSession(id, { forceResize = false } = {}) {
   const s = sessions.get(id);
   if (!s) return;
   try {
     s.fit.fit();
-    invoke('terminal_resize', { id, cols: s.term.cols, rows: s.term.rows }).catch(() => {});
+    queueTerminalResize(id, s, forceResize);
   } catch (e) {}
 }
 
-function activateSession(id, force = false) {
+function activateSession(id, force = false, onActivated = null) {
   const s = sessions.get(id);
-  if (!s) return;
+  if (!s || sessionCloseCoordinator.isClosing(id)) return false;
   if (!force && fileEditorSaving) {
     msg('文件正在保存，请稍候', 'info');
-    return;
+    return false;
   }
   if (!force && isFileEditorDirty()) {
     showConfirm({
@@ -3775,32 +4136,78 @@ function activateSession(id, force = false) {
       message: `对 ${previewTextState.name} 的修改尚未保存，返回终端会丢失这些修改。`,
       confirmText: '放弃并切换',
       danger: true,
-      onConfirm: () => activateSession(id, true),
+      onConfirm: () => activateSession(id, true, onActivated),
     });
-    return;
+    return false;
   }
   const rootChanged = s.cwd !== treeRoot;
-  activeSession = id;
-  sessions.forEach((other, oid) => {
-    const on = oid === id;
-    other.tabEl.classList.toggle('active', on);
-    other.bodyEl.classList.toggle('active', on);
-  });
+  const selected = selectTerminalPaneSession({
+    assignments: terminalPaneAssignments,
+    activeSessionId: activeSession,
+    layout: terminalPaneLayout,
+  }, id);
+  terminalPaneAssignments = selected.assignments;
+  activeSession = selected.activeSessionId;
   closePreview(true);
   if (rootChanged) renderTree(s.cwd);
+  renderTerminalPaneLayout();
   // 标签栏可横向滚动：激活的标签可能在可视区外，滚进来
   s.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  fitSession(id);
-  s.term.focus();
+  requestAnimationFrame(() => {
+    fitSession(id);
+    s.term.focus();
+  });
   clearAttention(id);
   characterTheme.setState(s.status === 'exited' ? 'rest' : 'idle');
   updateBranchBadges(); // 切到该标签时刷新分支（catch 终端里的 git checkout）
+  if (typeof onActivated === 'function') onActivated();
+  return true;
+}
+
+function removeSessionFromPane(id, force = false) {
+  const session = sessions.get(id);
+  if (!session || sessionCloseCoordinator.isClosing(id) || !terminalPaneAssignments.includes(id)) return;
+  if (!force && activeSession === id && fileEditorSaving) {
+    msg('文件正在保存，请稍候', 'info');
+    return;
+  }
+  if (!force && activeSession === id && isFileEditorDirty()) {
+    showConfirm({
+      title: '移出分屏？',
+      message: `对 ${previewTextState.name} 的修改尚未保存，移出「${session.name}」会关闭文件预览，但终端会话仍在后台运行。`,
+      confirmText: '放弃修改并移出',
+      danger: true,
+      onConfirm: () => removeSessionFromPane(id, true),
+    });
+    return;
+  }
+  if (activeSession === id) closePreview(true);
+  const removed = removeTerminalPaneSession({
+    assignments: terminalPaneAssignments,
+    activeSessionId: activeSession,
+    layout: terminalPaneLayout,
+  }, id);
+  terminalPaneAssignments = removed.assignments;
+  if (activeSession === id) {
+    activeSession = removed.activeSessionId;
+    const next = activeSession ? sessions.get(activeSession) : null;
+    if (next) renderTree(next.cwd);
+    else {
+      treeRoot = null;
+      termEl.treeRootName.textContent = '文件树';
+      termEl.treeRootName.title = '';
+      termEl.treeBody.innerHTML = '<div class="tree-empty">选择上方标签以显示会话</div>';
+    }
+  }
+  renderTerminalPaneLayout();
+  if (activeSession) requestAnimationFrame(() => sessions.get(activeSession)?.term.focus());
+  msg(`「${session.name}」已移出分屏，会话仍在后台运行`, 'info');
 }
 
 // 关闭终端前确认（提醒先让 AI 更新记忆）
 function confirmCloseSession(id) {
   const s = sessions.get(id);
-  if (!s) return;
+  if (!s || sessionCloseCoordinator.isClosing(id)) return;
   if (activeSession === id && fileEditorSaving) {
     msg('文件正在保存，请稍候再关闭终端', 'info');
     return;
@@ -3814,29 +4221,62 @@ function confirmCloseSession(id) {
     message: `确定关闭「${s.name}」吗？${running ? '\n关闭后该会话立即结束。' : ''}${activeSession === id && isFileEditorDirty() ? '\n当前文件中未保存的修改也会丢失。' : ''}${aiHint}`,
     confirmText: '关闭',
     danger: true,
-    onConfirm: () => {
-      if (activeSession === id) closePreview(true);
-      closeSession(id);
-    },
+    onConfirm: () => closeSession(id),
   });
 }
 
-async function closeSession(id) {
-  const s = sessions.get(id);
-  if (!s) return;
-  try { await invoke('terminal_close', { id }); } catch (e) {}
-  s.term.dispose();
-  s.tabEl.remove();
-  s.bodyEl.remove();
+function setSessionClosingState(session, closing) {
+  session.tabEl.classList.toggle('closing', closing);
+  session.bodyEl.classList.toggle('closing', closing);
+  session.tabEl.setAttribute('aria-busy', closing ? 'true' : 'false');
+  const tabClose = session.tabEl.querySelector('.term-tab-close');
+  if (tabClose) tabClose.setAttribute('aria-disabled', closing ? 'true' : 'false');
+  const paneClose = session.paneHeadEl?.querySelector('.term-pane-close');
+  if (paneClose) paneClose.disabled = closing;
+}
+
+function finalizeSessionClose(id) {
+  const session = sessions.get(id);
+  if (!session) return;
+  if (activeSession === id) closePreview(true);
+  if (session.resizeTimer) clearTimeout(session.resizeTimer);
+  try { session.term.dispose(); } catch (_) {}
+  session.tabEl.remove();
+  session.bodyEl.remove();
   sessions.delete(id);
-  if (activeSession === id) {
-    activeSession = null;
-    const next = sessions.keys().next().value;
-    if (next) activateSession(next);
-    else collapseDock();
+
+  const nextState = closeTerminalPaneSession({
+    assignments: terminalPaneAssignments,
+    activeSessionId: activeSession,
+    layout: terminalPaneLayout,
+    remainingSessionIds: [...sessions.keys()],
+  }, id);
+  terminalPaneAssignments = nextState.assignments;
+  activeSession = nextState.activeSessionId;
+
+  if (activeSession) {
+    const next = sessions.get(activeSession);
+    if (next && next.cwd !== treeRoot) renderTree(next.cwd);
+    renderTerminalPaneLayout();
+    requestAnimationFrame(() => next?.term.focus());
+  } else if (!sessions.size) {
+    renderTerminalPaneLayout();
+    collapseDock();
+  } else {
+    renderTerminalPaneLayout();
   }
   updateFabBadge();
   persistSessionLayout();
+}
+
+async function closeSession(id) {
+  const session = sessions.get(id);
+  if (!session || sessionCloseCoordinator.isClosing(id)) return false;
+  if (activeSession === id) closePreview(true);
+  setSessionClosingState(session, true);
+  const closed = await sessionCloseCoordinator.close(id);
+  if (!closed && sessions.get(id) === session) setSessionClosingState(session, false);
+  return closed;
 }
 
 async function createSession({ cwd = '', name = '', autoCmd = '' }) {
@@ -3847,18 +4287,34 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   const bodyEl = document.createElement('div');
   bodyEl.className = 'term-body';
   bodyEl.dataset.id = id;
+  const toolName = (autoCmd || '').trim().split(/\s+/)[0] || '';
+  const paneHeadEl = document.createElement('div');
+  paneHeadEl.className = 'term-pane-head';
+  paneHeadEl.innerHTML =
+    '<span class="term-pane-index"></span>' +
+    '<span class="term-pane-status" role="status" aria-label="运行中"></span>' +
+    `<span class="term-pane-name" title="${escAttr(label)}">${esc(label)}</span>` +
+    (toolName ? `<span class="term-pane-tool tool-${esc(toolName)}">${esc(toolName)}</span>` : '') +
+    '<span class="term-pane-branch" style="display:none;"></span>' +
+    '<span class="term-pane-spacer"></span>' +
+    '<button class="term-pane-close" type="button" title="移出分屏（会话继续运行）" aria-label="移出分屏">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>' +
+    '</button>';
+  const terminalHostEl = document.createElement('div');
+  terminalHostEl.className = 'term-pane-terminal';
+  bodyEl.append(paneHeadEl, terminalHostEl);
   termEl.bodies.appendChild(bodyEl);
 
   const tabEl = document.createElement('div');
   tabEl.className = 'term-tab';
   tabEl.dataset.id = id;
   // 徽标只显示工具名（命令首词），不显示参数——否则恢复命令会整条塞进徽标
-  const toolName = (autoCmd || '').trim().split(/\s+/)[0] || '';
   const toolBadge = toolName
     ? `<span class="term-tab-tool tool-${esc(toolName)}">${esc(toolName)}</span>`
     : '';
   tabEl.innerHTML =
     `<span class="term-tab-dot"></span>` +
+    `<span class="term-tab-pane"></span>` +
     `<span class="term-tab-name" title="${esc(label)}">${esc(label)}</span>` +
     toolBadge +
     `<span class="term-tab-branch" style="display:none;"></span>` +
@@ -3868,6 +4324,14 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   tabEl.onclick = (ev) => {
     if (ev.target.closest('.term-tab-close')) { confirmCloseSession(id); return; }
     activateSession(id);
+  };
+  bodyEl.addEventListener('mousedown', (event) => {
+    if (event.target.closest('.term-pane-close') || activeSession === id) return;
+    activateSession(id);
+  });
+  paneHeadEl.querySelector('.term-pane-close').onclick = (event) => {
+    event.stopPropagation();
+    removeSessionFromPane(id);
   };
 
   const term = new window.Terminal({
@@ -3883,7 +4347,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   });
   const fit = new window.FitAddon.FitAddon();
   term.loadAddon(fit);
-  term.open(bodyEl);
+  term.open(terminalHostEl);
   // WebGL 渲染器：默认 DOM 渲染器在触控板滚动时选区会糊成一大块（ghosting），
   // 改用 GPU 渲染正确重绘选区/滚动。WebGL 不可用或上下文丢失时安全降级回默认渲染器。
   // 图片主题的 xterm 必须走 DOM 渲染——xterm WebGL 画布是像素级不透明，背景透不上来。
@@ -3900,6 +4364,13 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
 
   const session = {
     term, fit, tabEl, bodyEl, webgl, name: label, status: 'running', cwd, tool: autoCmd,
+    paneHeadEl,
+    paneIndexEl: paneHeadEl.querySelector('.term-pane-index'),
+    paneStatusEl: paneHeadEl.querySelector('.term-pane-status'),
+    paneBranchEl: paneHeadEl.querySelector('.term-pane-branch'),
+    tabPaneEl: tabEl.querySelector('.term-tab-pane'),
+    terminalHostEl,
+    lastResizeKey: '', lastResizeSentAt: 0, pendingResize: null, resizeTimer: null,
     startedAt: Date.now(), restorable: false,
   };
   sessions.set(id, session);
@@ -3933,6 +4404,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     session.status = 'failed';
     session.restorable = false;
     tabEl.classList.add('failed');
+    updateTerminalPaneStatus(session);
     characterTheme.handleTerminalEvent('failure');
     persistSessionLayout();
     term.write(`\r\n\x1b[31m启动失败: ${e}\x1b[0m\r\n`);
@@ -3947,7 +4419,7 @@ function setupTermResize() {
   const onMove = (e) => {
     const h = Math.min(Math.max(startH + (startY - e.clientY), 160), window.innerHeight);
     termEl.dock.style.height = h + 'px';
-    if (activeSession) fitSession(activeSession);
+    scheduleFitVisibleSessions();
   };
   const onUp = () => {
     document.removeEventListener('mousemove', onMove);
@@ -3955,6 +4427,7 @@ function setupTermResize() {
     window.removeEventListener('blur', onUp);
     document.body.style.userSelect = '';
     termEl.dock.classList.remove('is-resizing');
+    scheduleFitVisibleSessions(true);
   };
   termEl.resize.addEventListener('mousedown', (e) => {
     startY = e.clientY;
@@ -3965,6 +4438,57 @@ function setupTermResize() {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     window.addEventListener('blur', onUp, { once: true });
+  });
+}
+
+function setupTerminalPaneSplitters() {
+  let drag = null;
+
+  const onMove = (event) => {
+    if (!drag) return;
+    const rect = termEl.bodies.getBoundingClientRect();
+    const raw = drag.axis === 'vertical'
+      ? ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100
+      : ((event.clientY - rect.top) / Math.max(1, rect.height)) * 100;
+    const percent = Math.max(20, Math.min(80, raw));
+    const property = drag.axis === 'vertical' ? '--terminal-split-column' : '--terminal-split-row';
+    termEl.bodies.style.setProperty(property, `${percent}%`);
+    scheduleFitVisibleSessions();
+  };
+
+  const onUp = () => {
+    if (!drag) return;
+    drag.splitter.classList.remove('is-dragging');
+    drag = null;
+    termEl.bodies.classList.remove('is-pane-resizing');
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onUp);
+    scheduleFitVisibleSessions(true);
+  };
+
+  const start = (axis, splitter, event) => {
+    const allowed = axis === 'vertical'
+      ? terminalPaneLayout === 'columns' || terminalPaneLayout === 'grid'
+      : terminalPaneLayout === 'rows' || terminalPaneLayout === 'grid';
+    if (!allowed || terminalPaneCapacity(terminalPaneLayout) < 2) return;
+    event.preventDefault();
+    drag = { axis, splitter };
+    splitter.classList.add('is-dragging');
+    termEl.bodies.classList.add('is-pane-resizing');
+    document.body.style.userSelect = 'none';
+    themePointer.hide();
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', onUp, { once: true });
+  };
+
+  termEl.paneSplitterVertical.addEventListener('mousedown', event => {
+    start('vertical', termEl.paneSplitterVertical, event);
+  });
+  termEl.paneSplitterHorizontal.addEventListener('mousedown', event => {
+    start('horizontal', termEl.paneSplitterHorizontal, event);
   });
 }
 
