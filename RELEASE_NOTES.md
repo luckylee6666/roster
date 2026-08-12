@@ -1,23 +1,21 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.14 / 本版更新
+## What's new in v1.2.15 / 本版更新
 
 **English**
-- **Reliable macOS quitting** — the red close button and `Cmd+Q` exit correctly while unsaved edits remain protected by confirmation.
-- **Reliable file previews** — selected files always replace the terminal, including while the WebGL terminal renderer is actively repainting.
-- **Safer data lifecycle** — migration retries after failures, daily snapshots and pre-overwrite backups are active, and failed writes no longer change in-memory data.
-- **Reliable terminal startup** — early keystrokes are buffered in order; duplicate IDs and failed child-process setup are cleaned up safely.
-- **Bounded local previews** — images, PDFs, and terminal-theme assets cannot bypass memory limits while files change.
-- **Hardened remote input** — WebSocket and terminal-input sizes are bounded, and blocking PTY writes no longer occupy async workers.
+- **Flexible terminal layouts** — arrange sessions as one pane, side-by-side, stacked, or a four-pane grid; resize panes and move sessions without stopping background work.
+- **Pane-aware drag and drop** — files and folders are inserted into the terminal pane under the pointer.
+- **File line numbers** — previews and the built-in editor now keep line numbers synchronized across common line-ending formats.
+- **Quick `.sh` commands** — insert a safely quoted shell-script command from the file-tree context menu after Bash availability is checked.
+- **More reliable session cleanup** — concurrent close actions are deduplicated so tabs, panes, and backend sessions stay in sync.
 
 **中文**
-- **macOS 可靠退出**：左上角红色关闭按钮和 `Cmd+Q` 均可正常退出，未保存修改仍需确认后才能放弃。
-- **文件预览稳定显示**：即使 WebGL 终端正在持续重绘，选中文件后也会可靠切换到预览，不再被终端画面遮住。
-- **更安全的数据生命周期**：迁移失败会重试，每日快照与覆盖前备份正式生效，写入失败不再改变内存数据。
-- **可靠的终端启动**：启动期间的键入会按顺序缓存；重复 ID 与子进程创建失败均会安全清理。
-- **有界本地预览**：图片、PDF 和终端主题资源即使在读取期间发生变化，也无法绕过内存限制。
-- **远程输入加固**：限制 WebSocket 与终端输入大小，阻塞 PTY 写入不再占用异步工作线程。
+- **灵活终端布局**：支持单窗、左右、上下和四宫格；可调整窗格大小、移动会话，后台任务持续运行。
+- **分屏感知拖放**：文件与文件夹会填入指针所在的终端窗格。
+- **文件行号**：文件预览和内置编辑器新增同步行号，兼容常见换行格式。
+- **`.sh` 快捷命令**：从文件树右键菜单安全填入 Shell 脚本运行命令，并预先检查 Bash 可用性。
+- **更可靠的会话清理**：并发关闭操作会自动去重，保证标签、窗格与后端会话状态一致。
 
 ## Install / 安装
 

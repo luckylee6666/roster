@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.15
+
+### English
+
+**Added**
+- Terminal sessions can now be arranged as a single pane, side-by-side panes, stacked panes, or a four-pane grid. Sessions can be selected or moved between panes, and splitters resize visible panes while background sessions continue running.
+- File previews and the built-in text editor now show synchronized line numbers for LF, CRLF, and CR content.
+- The file-tree context menu can insert a safely quoted command for a `.sh` file into the active terminal, with Bash availability checked before use.
+
+**Improved / Fixed**
+- Dragged files and folders are routed to the terminal pane under the pointer, and visible terminals are resized with throttled fitting after layout, font, and display-scale changes.
+- Concurrent terminal-close requests are deduplicated so pane and tab state stay consistent with backend session cleanup.
+
+**Tests**
+- Added regression coverage for terminal pane layout and runtime behavior, concurrent session closing, line-number generation, and shell-script command quoting and preview races.
+
+### 中文
+
+**新增**
+- 终端会话现支持单窗、左右分屏、上下分屏和四宫格布局；可在窗格间选择或移动会话，拖动分隔线调整可见窗格大小，后台会话继续运行。
+- 文件预览和内置文本编辑器新增同步行号，兼容 LF、CRLF 与 CR 换行。
+- 文件树右键菜单可将 `.sh` 文件的安全转义运行命令填入当前终端，并在使用前检查 Bash 是否可用。
+
+**改进 / 修复**
+- 拖入的文件和文件夹会写入指针所在的终端窗格；布局、字号和显示缩放变化后，对可见终端进行限频尺寸适配。
+- 去重并发的终端关闭请求，确保窗格、标签状态与后端会话清理保持一致。
+
+**测试**
+- 新增终端窗格布局与运行时、并发会话关闭、行号生成，以及 Shell 脚本命令转义与预览竞态的回归测试。
+
 ## v1.2.14
 
 ### English

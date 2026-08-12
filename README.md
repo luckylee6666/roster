@@ -4,7 +4,7 @@
 
 A desktop app for managing your Vibe Coding projects, built with Tauri v2.
 
-Latest release: **v1.2.14** — fixes macOS window/system quitting, hardens data migration and backups, and improves terminal and file-preview safety. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.15** — adds terminal split panes, file-preview line numbers, and convenient `.sh` command insertion. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
