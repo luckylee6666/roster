@@ -1,21 +1,17 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.15 / 本版更新
+## What's new in v1.2.16 / 本版更新
 
 **English**
-- **Flexible terminal layouts** — arrange sessions as one pane, side-by-side, stacked, or a four-pane grid; resize panes and move sessions without stopping background work.
-- **Pane-aware drag and drop** — files and folders are inserted into the terminal pane under the pointer.
-- **File line numbers** — previews and the built-in editor now keep line numbers synchronized across common line-ending formats.
-- **Quick `.sh` commands** — insert a safely quoted shell-script command from the file-tree context menu after Bash availability is checked.
-- **More reliable session cleanup** — concurrent close actions are deduplicated so tabs, panes, and backend sessions stay in sync.
+- **Grok CLI launch** — start Grok from a project card; restored Grok tabs continue the most recent session in that directory with `--continue`.
+- **Escape reaches the built-in terminal on macOS** — vim, less, and Claude Code can receive `\x1b`. Open dialogs and menus still consume Escape first.
+- macOS builds remain **ad-hoc signed**.
 
 **中文**
-- **灵活终端布局**：支持单窗、左右、上下和四宫格；可调整窗格大小、移动会话，后台任务持续运行。
-- **分屏感知拖放**：文件与文件夹会填入指针所在的终端窗格。
-- **文件行号**：文件预览和内置编辑器新增同步行号，兼容常见换行格式。
-- **`.sh` 快捷命令**：从文件树右键菜单安全填入 Shell 脚本运行命令，并预先检查 Bash 可用性。
-- **更可靠的会话清理**：并发关闭操作会自动去重，保证标签、窗格与后端会话状态一致。
+- **Grok CLI 启动**：可从项目卡片打开 Grok；恢复 Grok 标签时用 `--continue` 续接该目录最近一次会话。
+- **macOS 内置终端可收到 ESC**：vim / less / Claude Code 能收到 `\x1b`。已打开的弹窗和菜单仍优先消费 ESC。
+- macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装
 

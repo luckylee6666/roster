@@ -79,6 +79,12 @@ export function restoredCliCommand(command) {
       : `${trimmed} --continue`;
   }
 
+  if (tool === 'grok') {
+    return /(^|\s)(--continue|--resume|-c|-r)(\s|$)/.test(trimmed)
+      ? trimmed
+      : `${trimmed} --continue`;
+  }
+
   return trimmed;
 }
 

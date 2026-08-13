@@ -1,6 +1,6 @@
 [package]
 name = "vibe-coding-manage"
-version = "1.2.15"
+version = "1.2.16"
 description = "Vibe Coding Project Manager"
 authors = ["you"]
 edition = "2021"
@@ -35,6 +35,10 @@ axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
 local-ip-address = "0.6"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }  # 仅 SVG，不拉 image 依赖
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", features = ["NSEvent", "block2"] }
+block2 = "0.6.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

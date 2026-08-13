@@ -40,6 +40,19 @@ test('Claude 延续旧行为，其他终端命令保持不变', () => {
   assert.equal(restoredCliCommand(''), '');
 });
 
+test('重启恢复 Grok 标签时用 --continue 续接最近会话', () => {
+  assert.equal(restoredCliCommand('grok'), 'grok --continue');
+  assert.equal(restoredCliCommand('grok --ask-for-approval'), 'grok --ask-for-approval --continue');
+  assert.equal(restoredCliCommand('/usr/local/bin/grok'), '/usr/local/bin/grok --continue');
+});
+
+test('已是 Grok 恢复命令时不会重复追加参数', () => {
+  assert.equal(restoredCliCommand('grok --continue'), 'grok --continue');
+  assert.equal(restoredCliCommand('grok -c'), 'grok -c');
+  assert.equal(restoredCliCommand('grok --resume'), 'grok --resume');
+  assert.equal(restoredCliCommand('grok -r last-title'), 'grok -r last-title');
+});
+
 test('重启恢复 OpenCode 标签时用 --continue 续接最近会话', () => {
   assert.equal(restoredCliCommand('opencode'), 'opencode --continue');
   assert.equal(restoredCliCommand('opencode -m anthropic/claude-opus-4-1'), 'opencode -m anthropic/claude-opus-4-1 --continue');
@@ -67,6 +80,7 @@ test('恢复编排把续接命令与原项目目录交给终端创建，并隔�
     { cwd: '/projects/two', name: 'Codex 2', autoCmd: 'codex resume session-2' },
     { cwd: '/projects/three', name: 'Claude', autoCmd: 'claude' },
     { cwd: '/projects/four', name: 'OpenCode', autoCmd: 'opencode' },
+    { cwd: '/projects/five', name: 'Grok', autoCmd: 'grok' },
   ], async options => {
     calls.push(options);
     if (options.cwd === '/projects/one') throw new Error('missing directory');
@@ -77,6 +91,7 @@ test('恢复编排把续接命令与原项目目录交给终端创建，并隔�
     { cwd: '/projects/two', name: 'Codex 2', autoCmd: 'codex resume session-2' },
     { cwd: '/projects/three', name: 'Claude', autoCmd: 'claude --continue' },
     { cwd: '/projects/four', name: 'OpenCode', autoCmd: 'opencode --continue' },
+    { cwd: '/projects/five', name: 'Grok', autoCmd: 'grok --continue' },
   ]);
 });
 
@@ -94,4 +109,5 @@ test('主流程调用可测试的恢复编排', async () => {
   const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(main, /await restoreSessionLayout\(layout, createSession\)/);
   assert.match(main, /Codex 标签会按项目目录续接最近一次对话/);
+  assert.match(main, /Grok 标签会用 --continue 接上次对话/);
 });

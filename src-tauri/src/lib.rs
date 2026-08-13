@@ -17,6 +17,7 @@ mod remote;
 use remote::{PtySession, RemoteHub, SessionMeta};
 mod usage;
 mod applog;
+mod native_esc;
 
 /// 手机端远程服务监听端口（局域网）。
 const REMOTE_PORT: u16 = 8787;
@@ -2732,6 +2733,8 @@ pub fn run() {
         .manage(TermThemeLock(Mutex::new(())))
         .manage(EditorExitGuard::default())
         .setup(move |app| {
+            // macOS WKWebView 会吞掉 ESC；本地 NSEvent 监听把裸 ESC 转成 native-esc。
+            native_esc::install_native_esc_monitor(app.handle().clone());
             // 会话状态感知：监控线程扫描"活跃后静默"的终端，emit terminal-attention
             let mon_app = app.handle().clone();
             std::thread::spawn(move || monitor_attention(mon_app, activity_for_monitor));

@@ -19,6 +19,11 @@ import {
   restoreSessionLayout,
   sessionLayoutEntries,
 } from './session-restore-utils.js';
+import {
+  isNativeEscOverlayOpen,
+  isXtermHelperTextarea,
+  shouldWriteNativeEscapeToPty,
+} from './native-esc-utils.js';
 import { setFilePreviewLayerOpen } from './file-preview-layer.js';
 import { createTerminalInputBuffer } from './terminal-input-buffer.js';
 import { installWorkspaceMode } from './workspace-mode.js';
@@ -152,7 +157,35 @@ async function init() {
   }
   await initTermTheme(); // 自定义主题表 + 恢复上次主题（可能是 custom:*），先于会话还原
   bindUsageEvents();
+  await bindNativeEscListener();
   maybeRestoreSessions();
+}
+
+let nativeEscBound = false;
+async function bindNativeEscListener() {
+  if (nativeEscBound) return;
+  nativeEscBound = true;
+  const listen = window.__TAURI__?.event?.listen;
+  if (typeof listen !== 'function') return;
+  await listen('native-esc', () => {
+    const renameInput = document.querySelector('.group-rename-input');
+    if (renameInput) {
+      renameInput.blur();
+      return;
+    }
+    if (isNativeEscOverlayOpen(document)) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return;
+    }
+    const session = activeSession ? sessions.get(activeSession) : null;
+    if (!shouldWriteNativeEscapeToPty({
+      dockActive: termEl.dock.classList.contains('active'),
+      sessionStatus: session?.status || '',
+      overlayOpen: false,
+      terminalFocused: isXtermHelperTextarea(document.activeElement),
+    })) return;
+    invoke('terminal_write', { id: activeSession, data: '\x1b' }).catch(() => {});
+  });
 }
 
 // 用量后台：探测 npx 是否可用 + 安装引导（与终端是否打开无关，启动即跑）
@@ -2038,7 +2071,7 @@ function clearAttention(id) {
 
 // ===== 会话恢复：记住上次的终端标签布局，重开应用一键还原 =====
 // PTY 进程随应用退出无法真正续命，恢复的是"布局"——同目录、同 CLI 重新拉起；
-// Claude/OpenCode 用 --continue，Codex 用 resume --last 接回该项目目录最近的对话。
+// Claude/OpenCode/Grok 用 --continue，Codex 用 resume --last 接回该项目目录最近的对话。
 function persistSessionLayout() {
   const layout = sessionLayoutEntries(sessions);
   try { localStorage.setItem('term-session-layout', JSON.stringify(layout)); } catch (_) {}
@@ -2054,10 +2087,12 @@ function maybeRestoreSessions() {
   const hasClaude = cmds.includes('claude');
   const hasCodex = cmds.includes('codex');
   const hasOpencode = cmds.includes('opencode');
+  const hasGrok = cmds.includes('grok');
   const resumeNotes = [];
   if (hasClaude) resumeNotes.push('Claude 标签会用 --continue 接上次对话。');
   if (hasCodex) resumeNotes.push('Codex 标签会按项目目录续接最近一次对话。');
   if (hasOpencode) resumeNotes.push('OpenCode 标签会用 --continue 接上次对话。');
+  if (hasGrok) resumeNotes.push('Grok 标签会用 --continue 接上次对话。');
   showConfirm({
     title: '恢复终端会话',
     message: `上次有 ${layout.length} 个终端会话，要恢复吗？\n同目录重新拉起对应 CLI。${resumeNotes.length ? '\n' + resumeNotes.join('\n') : ''}`,

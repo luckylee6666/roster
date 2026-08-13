@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.16
+
+### English
+
+**Added**
+- The project-card launch menu now includes **Grok** (`grok`). Restored Grok tabs append `--continue` so the CLI resumes the most recent session in that directory.
+- On macOS, a native `NSEvent` monitor forwards Escape into the focused terminal so vim, less, and Claude Code can receive `\x1b`. Open overlays still consume Escape first.
+
+**Tests**
+- Added coverage for native Escape forwarding, Grok session restore, and the Grok launch-menu entry.
+
+### 中文
+
+**新增**
+- 项目卡片启动菜单新增 **Grok**（`grok`）。恢复 Grok 标签时会追加 `--continue`，按该目录续接最近一次会话。
+- macOS 上通过原生 `NSEvent` 监听把 ESC 转发给当前终端，vim / less / Claude Code 可以收到 `\x1b`。已打开的弹窗和菜单仍优先消费 ESC。
+
+**测试**
+- 新增原生 ESC 转发、Grok 会话续接和启动菜单入口的回归测试。
+
 ## v1.2.15
 
 ### English
@@ -65,6 +85,28 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 **测试**
 - 新增退出保护、终端启动输入顺序、迁移重试、有界二进制读取、终端 ID 重用和数据备份的回归测试。
+
+## v1.2.13
+
+### English
+
+**Added**
+- **Workspace modes**: Normal, Relax (HTTPS / localhost companion WebView), and Entertainment (Tetris / 2048).
+- **Moonlit Brocade** terminal theme with layered character animation on the built-in GuoFeng artwork.
+- OpenCode session restore now appends `--continue`.
+
+**Changed**
+- App data moved to `~/.vibe-coding-manage/` so cleaner apps are less likely to delete it. The first launch migrates the legacy Application Support directory.
+
+### 中文
+
+**新增**
+- **工作区模式**：普通 / 轻松（HTTPS 或 localhost 伴生网页）/ 娱乐（俄罗斯方块 / 2048）。
+- 终端主题新增中国风 **黛月华裳**，并在内置原画上叠加分层人物动效。
+- OpenCode 会话恢复会追加 `--continue`。
+
+**变更**
+- 数据目录改到 `~/.vibe-coding-manage/`，降低清理软件误删概率。首次启动会迁移旧的 Application Support 目录。
 
 ## v1.2.12
 

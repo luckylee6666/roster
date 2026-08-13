@@ -30,3 +30,15 @@ test('系统退出始终回到前端本地状态确认，避免 dirty IPC 竞态
     /RunEvent::ExitRequested[\s\S]*?!app_exit_is_confirmed\(app\)[\s\S]*?api\.prevent_exit\(\)[\s\S]*?request_app_quit_confirmation\(app\)/,
   );
 });
+
+test('启动菜单包含 Grok，macOS 发版固定 adhoc 签名', async () => {
+  const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
+  const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  const workflow = await readFile(new URL('../.github/workflows/build.yml', import.meta.url), 'utf8');
+
+  assert.match(html, /data-cmd="grok"/);
+  assert.equal(config.bundle.macOS.signingIdentity, '-');
+  assert.equal(config.bundle.macOS.entitlements, undefined);
+  assert.doesNotMatch(workflow, /APPLE_CERTIFICATE/);
+  assert.match(workflow, /ad-hoc 签名/);
+});

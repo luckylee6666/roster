@@ -1687,6 +1687,11 @@ body {
   background: rgba(217, 119, 87, 0.16);
 }
 
+.term-tab-tool.tool-grok {
+  color: #e8b86d;
+  background: rgba(232, 184, 109, 0.16);
+}
+
 .term-tab-tool.tool-codex {
   color: #6ea8fe;
   background: rgba(110, 168, 254, 0.16);

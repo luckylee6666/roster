@@ -4,7 +4,7 @@
 
 A desktop app for managing your Vibe Coding projects, built with Tauri v2.
 
-Latest release: **v1.2.15** — adds terminal split panes, file-preview line numbers, and convenient `.sh` command insertion. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.16** — adds Grok CLI launch and macOS Escape forwarding into the built-in terminal. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -13,10 +13,10 @@ Latest release: **v1.2.15** — adds terminal split panes, file-preview line num
 - **Server management** — configure SSH servers (host, port, user, password/key login method)
 - **Grouping** — group projects, collapsible sidebar, click to locate, rename a group inline (hover → pencil; all projects in it move together)
 - **Built-in terminal** — in-app bottom-drawer tabbed terminal managing all sessions; file tree, file preview and editing, color themes, font size, drag-to-insert path; closing a tab asks first and reminds you to let the AI update its memory (see [Using the terminal](#using-the-built-in-terminal))
-- **Multi AI CLI launch** — start **Claude / Codex / opencode / Gemini / agy** in a project directory from the project card, with a tool badge on the tab
+- **Multi AI CLI launch** — start **Claude / Grok / Codex / opencode / Gemini / agy** in a project directory from the project card, with a tool badge on the tab
 - **Session attention awareness** — when a terminal session goes quiet after a burst of output (an AI CLI likely finished or is waiting for input), you get a desktop notification + chime + an amber pulsing dot on the tab; the session you're actively watching won't interrupt you, and a bell icon in the toolbar toggles it
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
-- **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude and OpenCode use `--continue`, while Codex uses `resume --last` in the saved project directory
+- **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude, OpenCode, and Grok use `--continue`, while Codex uses `resume --last` in the saved project directory
 - **Prompt/snippet library** — a toolbar bookmark icon holds reusable prompts/commands; click one to inject it into the current terminal (text only, no auto-Enter, so you can review before sending); add/edit/delete via a management dialog, stored in `snippets.json`
 - **Restore context** — a history icon on each project card opens a one-glance snapshot to resume work: git overview + recent commits + changed files + CLAUDE.md summary + the CLI you last launched there; footer buttons jump back in (open terminal / Claude)
 - **Rate-limit usage (no dependencies)** — the Claude usage panel shows your real 5-hour / 7-day limit utilization (% + reset countdown), same source as Claude Code's `/usage` (reads the Keychain token and calls the official endpoint; first read prompts a Keychain authorization); cached 60s, near-instant, **no Node required**
@@ -50,10 +50,10 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 - Workspace modes and color themes are independent: themes can be switched in any mode, and their backgrounds and character effects apply to the left Coding area
 
 **Launch an AI CLI**
-- Click the terminal icon on a project card → a menu pops up: **Open Claude / Open Codex / Open opencode / Open Gemini / Open agy**
-- A new tab is created, `cd`s into the project directory and runs the command; the tab shows a tool badge (claude orange / codex blue / opencode green / gemini purple / agy cyan)
+- Click the terminal icon on a project card → a menu pops up: **Open Claude / Open Grok / Open Codex / Open opencode / Open Gemini / Open agy**
+- A new tab is created, `cd`s into the project directory and runs the command; the tab shows a tool badge (claude orange / grok gold / codex blue / opencode green / gemini purple / agy cyan)
 - The **+** at the top-left opens a blank terminal (no CLI)
-- Prerequisite: the corresponding CLI (`codex` / `opencode` / `gemini` / `agy`) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
+- Prerequisite: the corresponding CLI (`grok` / `codex` / `opencode` / `gemini` / `agy`) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
 
 **File tree + preview** (left)
 - The tree is rooted at the active tab's project directory and follows tab switches; folders load lazily on click
@@ -80,6 +80,9 @@ The editor supports Tab/Shift+Tab indentation and warns before discarding unsave
 - Image themes have matching animated pointers, trails, and click particles; resize handles keep their native cursors, and reduced-motion preferences disable decorative motion
 - **Moonlit Brocade** uses state-aware Retina 2D layers: while no task is running, the 3584×2240 portrait remains pixel-locked and only source-aligned eyelids, fabric light, jewelry glints, and particles animate. Terminal output fades in the same woman seated at a rosewood desk, typing on a visible keyboard; repeated output keeps that Coding scene alive across short pauses, and a second hands-and-keys frame supplies the local typing loop. No idle video, mesh deformation, or whole-image transform is used, so the face, hands, and brocade cannot be replaced or softened between frames; asset failures or reduced-motion preferences keep the static Retina artwork
 - Open **DIY Theme** to choose a built-in or local background, base palette, overlay tint/strength, and click effects; multiple themes can be saved, edited, or deleted
+
+**Escape**
+- On macOS, Escape is forwarded into the focused terminal so vim, less, and Claude Code can interrupt. Open dialogs and menus still consume Escape first.
 
 **Font size**
 - `⌘/Ctrl +` to enlarge, `⌘/Ctrl -` to shrink, `⌘/Ctrl 0` to reset, or `⌘/Ctrl + wheel`
@@ -155,7 +158,7 @@ Grab the build for your platform from [Releases](https://github.com/luckylee6666
 
 ### macOS install
 
-The app is unsigned, so the first launch is blocked by macOS:
+The published DMG is ad-hoc signed, so the first launch is blocked by macOS:
 
 1. Open the `.dmg` and drag `Vibe Coding Manager.app` into Applications
 2. The first launch shows "cancelled" / "move to Trash"
