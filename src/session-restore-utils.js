@@ -48,6 +48,82 @@ function hasCodexResumeSubcommand(argumentsText) {
   return false;
 }
 
+export function quoteCliArg(value) {
+  const text = String(value || '');
+  if (!text) return '';
+  if (/^[A-Za-z0-9._:/-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+export function resumeCliCommand(tool, sessionId) {
+  const name = String(tool || '').trim();
+  const id = String(sessionId || '').trim();
+  if (!name || !id) return '';
+  if (name === 'claude') return `claude --resume ${quoteCliArg(id)}`;
+  if (name === 'grok') return `grok --resume ${quoteCliArg(id)}`;
+  if (name === 'codex') return `codex resume ${quoteCliArg(id)}`;
+  if (name === 'opencode') return `opencode --session ${quoteCliArg(id)}`;
+  if (name === 'gemini') return `gemini --session-file ${quoteCliArg(id)}`;
+  if (name === 'agy') return `agy --conversation ${quoteCliArg(id)}`;
+  return '';
+}
+
+function takeFlagValue(args, flags) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    const eq = arg.indexOf('=');
+    const flag = eq === -1 ? arg : arg.slice(0, eq);
+    if (!flags.has(flag)) continue;
+    if (eq !== -1) return arg.slice(eq + 1);
+    const next = args[index + 1];
+    if (!next || next.startsWith('-')) return '';
+    return next;
+  }
+  return '';
+}
+
+export function extractResumedSessionId(command) {
+  const words = shellWords(command);
+  if (!words.length) return '';
+  const tool = cliToolName(words[0]);
+  const args = words.slice(1);
+  if (tool === 'claude') return takeFlagValue(args, new Set(['--resume']));
+  if (tool === 'grok') return takeFlagValue(args, new Set(['--resume', '-r']));
+  if (tool === 'codex') {
+    const resumeAt = args.indexOf('resume');
+    if (resumeAt < 0) return '';
+    const next = args[resumeAt + 1] || '';
+    if (!next || next.startsWith('-') || next === '--last') return '';
+    return next;
+  }
+  if (tool === 'opencode') return takeFlagValue(args, new Set(['--session', '-s']));
+  if (tool === 'gemini') return takeFlagValue(args, new Set(['--session-file']));
+  if (tool === 'agy') return takeFlagValue(args, new Set(['--conversation']));
+  return '';
+}
+
+export function isGenericContinueCommand(command) {
+  const words = shellWords(command);
+  if (!words.length) return false;
+  const tool = cliToolName(words[0]);
+  const args = words.slice(1);
+  if (tool === 'claude' || tool === 'grok' || tool === 'opencode') {
+    return args.includes('--continue') || args.includes('-c');
+  }
+  if (tool === 'codex') {
+    const resumeAt = args.indexOf('resume');
+    return resumeAt >= 0 && args[resumeAt + 1] === '--last';
+  }
+  return false;
+}
+
+export function sessionTitlePreview(text, limit = 36) {
+  const title = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!title) return '未命名会话';
+  const max = Number.isFinite(limit) && limit > 8 ? limit : 36;
+  return title.length > max ? `${title.slice(0, max)}…` : title;
+}
+
 export function cliToolName(command) {
   const executable = String(command || '').trim().split(/\s+/)[0] || '';
   return executable.split(/[\\/]/).pop() || '';

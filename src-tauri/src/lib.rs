@@ -18,6 +18,9 @@ use remote::{PtySession, RemoteHub, SessionMeta};
 mod usage;
 mod applog;
 mod native_esc;
+mod project_memory;
+mod project_sessions;
+mod orchestra;
 
 /// 手机端远程服务监听端口（局域网）。
 const REMOTE_PORT: u16 = 8787;
@@ -1803,11 +1806,79 @@ fn configured_context_window(cwd: &str) -> Option<u64> {
         .and_then(|value| parse_context_window_value(&value))
 }
 
-/// Claude Code 把项目路径编码成 ~/.claude/projects 下的目录名：`/` 和 `.` 都替换为 `-`。
+/// Claude Code 把项目路径编码成 ~/.claude/projects 下的目录名：`/`、`\` 和 `.` 都替换为 `-`。
 fn encode_claude_project_dir(cwd: &str) -> String {
-    cwd.chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
-        .collect()
+    project_memory::encode_claude_project_dir(cwd)
+}
+
+#[tauri::command]
+async fn ensure_project_memory(path: String) -> Result<project_memory::ProjectMemoryState, String> {
+    tauri::async_runtime::spawn_blocking(move || project_memory::ensure_project_memory(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn detach_project_memory(path: String) -> Result<project_memory::ProjectMemoryState, String> {
+    tauri::async_runtime::spawn_blocking(move || project_memory::detach_project_memory(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_project_sessions(path: String) -> Result<project_sessions::ProjectHistory, String> {
+    tauri::async_runtime::spawn_blocking(move || project_sessions::list_project_history(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn preview_project_session(
+    path: String,
+    tool: String,
+    id: String,
+) -> Result<project_sessions::ProjectHistoryPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project_sessions::preview_project_session(&path, &tool, &id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_project_session(path: String, tool: String, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project_sessions::delete_project_session(&path, &tool, &id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ensure_orchestra(path: String) -> Result<orchestra::OrchestraState, String> {
+    tauri::async_runtime::spawn_blocking(move || orchestra::ensure_orchestra(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn write_orchestra_file(
+    path: String,
+    name: String,
+    content: String,
+) -> Result<orchestra::OrchestraState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        orchestra::write_orchestra_file(&path, &name, &content)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn read_orchestra_file(path: String, name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || orchestra::read_orchestra_file(&path, &name))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 找某项目对应的 Claude transcript 目录：先按编码规则猜，猜不中再扫 projects 下
@@ -2837,6 +2908,14 @@ pub fn run() {
             git_status_batch,
             git_branch,
             project_context,
+            ensure_project_memory,
+            detach_project_memory,
+            list_project_sessions,
+            preview_project_session,
+            delete_project_session,
+            ensure_orchestra,
+            write_orchestra_file,
+            read_orchestra_file,
             context_usage,
             get_snippets,
             save_snippets,

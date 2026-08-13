@@ -17,8 +17,31 @@ import { seedThemePresets } from './terminal-theme-presets.js';
 import {
   cliToolName,
   restoreSessionLayout,
+  resumeCliCommand,
   sessionLayoutEntries,
 } from './session-restore-utils.js';
+import {
+  DEFAULT_PROJECT_KIT,
+  PROJECT_KIT_LAYOUT,
+  filterHistoryGroups,
+  findRunningProjectTool,
+  runningHistoryLookup,
+  runningTerminalIdForHistory,
+} from './project-history-utils.js';
+import {
+  DEFAULT_ORCHESTRA_BRAIN,
+  ORCHESTRA_GOAL_FILE,
+  ORCHESTRA_KIT,
+  ORCHESTRA_PLAN_FILE,
+  orchestraBrainPrompt,
+  orchestraBroadcastPrompt,
+  orchestraInboxFile,
+  orchestraRoleForTool,
+  orchestraRoleLabel,
+  orchestraWorkerPrompt,
+  orchestraWorkers,
+  normalizeOrchestraConfig,
+} from './orchestra-utils.js';
 import {
   isNativeEscOverlayOpen,
   isXtermHelperTextarea,
@@ -39,10 +62,19 @@ import {
   reconcileTerminalPanes,
   removeTerminalPaneSession,
   selectTerminalPaneSession,
-  terminalPaneCapacity,
+  terminalPaneArrangement,
   terminalSessionIdAtPoint,
   visibleTerminalSessionIds,
 } from './terminal-pane-layout.js';
+import {
+  PROJECT_MEMORY_UNIFY_STORAGE_KEY,
+  isProjectMemoryUnifyEnabled,
+  loadProjectMemoryUnifyPaths,
+  memoryBannerText,
+  setProjectMemoryUnifyEnabled,
+  shouldAutoMountProjectMemory,
+  shouldMountProjectMemory,
+} from './project-memory-utils.js';
 import { createTerminalSessionCloseCoordinator } from './terminal-session-close.js';
 
 let invoke;
@@ -115,6 +147,19 @@ const el = {
   confirmMessage: $('confirm-message'),
   confirmCancel: $('confirm-cancel'),
   confirmDelete: $('confirm-delete'),
+  sessionPreview: $('session-preview-overlay'),
+  sessionPreviewTitle: $('session-preview-title'),
+  sessionPreviewMeta: $('session-preview-meta'),
+  sessionPreviewBody: $('session-preview-body'),
+  sessionPreviewClose: $('session-preview-close'),
+  sessionPreviewCancel: $('session-preview-cancel'),
+  sessionPreviewOpen: $('session-preview-open'),
+  orchestra: $('orchestra-overlay'),
+  orchestraGoal: $('orchestra-goal'),
+  orchestraWorkersHint: $('orchestra-workers-hint'),
+  orchestraModalClose: $('orchestra-modal-close'),
+  orchestraModalCancel: $('orchestra-modal-cancel'),
+  orchestraModalStart: $('orchestra-modal-start'),
   toasts: $('toast-container'),
   serverModal: $('server-modal-overlay'),
   serverModalTitle: $('server-modal-title'),
@@ -396,6 +441,9 @@ function render(list) {
       <div class="card-row">
         <div class="card-main">
           <div class="card-title">
+            <button class="card-session-toggle" type="button" aria-expanded="false" title="展开历史会话">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+            </button>
             ${esc(p.name)}
             ${p.group ? `<span class="card-group">${esc(p.group)}</span>` : ''}
           </div>
@@ -423,6 +471,12 @@ function render(list) {
           <button class="action-btn terminal-btn" title="打开终端">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
           </button>
+          <button class="action-btn kit-btn" title="开一套（Claude + Codex + Grok 主从）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.2" y="4.2" width="10.2" height="15.6" rx="1.4"/><rect x="10.6" y="7.2" width="10.2" height="6.2" rx="1.2"/><rect x="10.6" y="14.4" width="10.2" height="5.4" rx="1.2"/></svg>
+          </button>
+          <button class="action-btn orchestra-btn-card" title="开协作（一个大脑拆活，另外两个动手）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="8" r="2.2"/><circle cx="17" cy="8" r="2.2"/><circle cx="12" cy="16.2" r="2.2"/><path d="M8.8 9.4l2.4 5.2M15.2 9.4l-2.4 5.2"/></svg>
+          </button>
           <button class="action-btn edit-btn" title="编辑">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"/></svg>
           </button>
@@ -431,6 +485,7 @@ function render(list) {
           </button>
         </div>
       </div>
+      <div class="card-sessions" hidden></div>
     </div>
   `).join('');
 
@@ -438,6 +493,14 @@ function render(list) {
     const id = card.dataset.id;
     const p = projects.find(x => x.id === id);
     if (!p) return;
+    const toggle = card.querySelector('.card-session-toggle');
+    toggle.onclick = (ev) => {
+      ev.stopPropagation();
+      toggleProjectSessions(p, card);
+    };
+    if (expandedProjectIds.has(id)) {
+      void expandProjectSessions(p, card);
+    }
     card.querySelector('.context-btn').onclick = (ev) => {
       ev.stopPropagation();
       openContextModal(p);
@@ -445,6 +508,14 @@ function render(list) {
     card.querySelector('.terminal-btn').onclick = (ev) => {
       ev.stopPropagation();
       openLaunchMenu(p, ev.currentTarget);
+    };
+    card.querySelector('.kit-btn').onclick = (ev) => {
+      ev.stopPropagation();
+      void openProjectKit(p);
+    };
+    card.querySelector('.orchestra-btn-card').onclick = (ev) => {
+      ev.stopPropagation();
+      openOrchestraModal(p);
     };
     card.querySelector('.edit-btn').onclick = () => openModal(p);
     card.querySelector('.del-btn').onclick = () => del(p.id, p.name);
@@ -460,6 +531,531 @@ function render(list) {
   });
 
   refreshGitStatus();
+}
+
+const expandedProjectIds = new Set();
+const projectSessionCache = new Map();
+const projectSessionLoads = new Map();
+const projectSessionQueries = new Map();
+let sessionPreviewContext = null;
+let projectKitOpening = false;
+
+function listLiveTerminals() {
+  return [...sessions.entries()].map(([id, session]) => ({
+    id,
+    cwd: session.cwd,
+    tool: session.tool,
+    status: session.status,
+  }));
+}
+
+function historySessionPayload(row) {
+  return {
+    tool: row?.dataset?.tool || '',
+    id: row?.dataset?.sessionId || '',
+    title: row?.querySelector('.card-session-title')?.textContent || '会话',
+    runningId: row?.dataset?.runningId || '',
+  };
+}
+
+function historySessionHtml(session, runningId) {
+  const when = session.atMs ? relTimeFromMs(session.atMs) : '';
+  const preview = String(session.preview || '').trim();
+  const showPreview = preview && preview !== session.title;
+  return `<div class="card-session-item${runningId ? ' is-running' : ''}" data-tool="${escAttr(session.tool)}" data-session-id="${escAttr(session.id)}"${runningId ? ` data-running-id="${escAttr(runningId)}"` : ''}>`
+    + `<button class="card-session-open" type="button" title="${escAttr(session.title)}">`
+    + `<span class="card-session-title-row">`
+    + `<span class="card-session-title">${esc(session.title)}</span>`
+    + (runningId ? '<span class="card-session-running">运行中</span>' : '')
+    + (when ? `<span class="card-session-time">${esc(when)}</span>` : '')
+    + `</span>`
+    + (showPreview ? `<span class="card-session-preview-text">${esc(preview)}</span>` : '')
+    + `</button>`
+    + `<span class="card-session-actions">`
+    + `<button class="card-session-icon card-session-preview-btn" type="button" title="预览" aria-label="预览">`
+    + `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>`
+    + `</button>`
+    + `<button class="card-session-icon is-danger card-session-delete" type="button" title="删除" aria-label="删除">`
+    + `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 7h14M9.5 7V5.6A1.6 1.6 0 0111.1 4h1.8A1.6 1.6 0 0114.5 5.6V7m-6 0l.5 11.2A1.6 1.6 0 0010.6 20h2.8a1.6 1.6 0 001.6-1.8L15.5 7"/></svg>`
+    + `</button>`
+    + `</span>`
+    + `</div>`;
+}
+
+function sessionToolbarHtml(query) {
+  return `<div class="card-session-toolbar">`
+    + `<label class="card-session-search-wrap">`
+    + `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 21l-5.2-5.2m0 0A7.2 7.2 0 105.2 5.2a7.2 7.2 0 0010.6 10.6z"/></svg>`
+    + `<input class="card-session-search" type="search" placeholder="搜索标题、预览、工具" value="${escAttr(query)}" />`
+    + `</label>`
+    + `<button class="card-session-kit" type="button" title="同时打开 Claude、Codex、Grok 主从三窗">开一套</button>`
+    + `<button class="card-session-orchestra" type="button" title="一个大脑拆活，另外两个动手">开协作</button>`
+    + `</div>`;
+}
+
+function renderProjectSessions(card, history) {
+  const root = card.querySelector('.card-sessions');
+  if (!root) return;
+  const projectId = card.dataset.id;
+  const project = projects.find(item => item.id === projectId);
+  const query = projectSessionQueries.get(projectId) || '';
+  const searchEl = root.querySelector('.card-session-search');
+  const keepFocus = document.activeElement === searchEl;
+  const cursor = searchEl?.selectionStart ?? query.length;
+  const groups = filterHistoryGroups(history?.groups, query);
+  const lookup = runningHistoryLookup(listLiveTerminals(), history?.groups || [], project?.localPath || '');
+  const emptyText = (history?.groups || []).length
+    ? '没有匹配的会话'
+    : '这个项目还没有历史会话';
+  const body = groups.length
+    ? groups.map(group => (
+      `<div class="card-session-group">`
+      + `<div class="card-session-group-head"><span class="term-tab-tool tool-${esc(group.tool)}">${esc(group.label)}</span><span class="card-session-count">${group.sessions.length}</span></div>`
+      + group.sessions.map(session => historySessionHtml(session, runningTerminalIdForHistory(lookup, session.tool, session.id))).join('')
+      + `</div>`
+    )).join('')
+    : `<div class="card-sessions-empty">${emptyText}</div>`;
+  root.innerHTML = sessionToolbarHtml(query) + body;
+  const nextSearch = root.querySelector('.card-session-search');
+  if (keepFocus && nextSearch) {
+    nextSearch.focus();
+    const pos = Math.min(cursor, nextSearch.value.length);
+    nextSearch.setSelectionRange(pos, pos);
+  }
+  nextSearch.oninput = () => {
+    projectSessionQueries.set(projectId, nextSearch.value);
+    renderProjectSessions(card, history);
+  };
+  root.querySelector('.card-session-kit').onclick = (event) => {
+    event.stopPropagation();
+    if (project) void openProjectKit(project);
+  };
+  root.querySelector('.card-session-orchestra').onclick = (event) => {
+    event.stopPropagation();
+    if (project) openOrchestraModal(project);
+  };
+  root.querySelectorAll('.card-session-item').forEach(row => {
+    const session = historySessionPayload(row);
+    row.querySelector('.card-session-open').onclick = (event) => {
+      event.stopPropagation();
+      if (project) openHistorySession(project, session);
+    };
+    row.querySelector('.card-session-preview-btn').onclick = (event) => {
+      event.stopPropagation();
+      if (project) void previewHistorySession(project, session);
+    };
+    row.querySelector('.card-session-delete').onclick = (event) => {
+      event.stopPropagation();
+      if (project) deleteHistorySession(project, session);
+    };
+  });
+}
+
+async function expandProjectSessions(project, card) {
+  const toggle = card.querySelector('.card-session-toggle');
+  const panel = card.querySelector('.card-sessions');
+  if (!toggle || !panel) return;
+  expandedProjectIds.add(project.id);
+  card.classList.add('is-expanded');
+  toggle.setAttribute('aria-expanded', 'true');
+  panel.hidden = false;
+  const cached = projectSessionCache.get(project.id);
+  if (cached) {
+    renderProjectSessions(card, cached);
+    return;
+  }
+  panel.innerHTML = sessionToolbarHtml(projectSessionQueries.get(project.id) || '')
+    + '<div class="card-sessions-empty">加载历史会话…</div>';
+  panel.querySelector('.card-session-kit').onclick = (event) => {
+    event.stopPropagation();
+    void openProjectKit(project);
+  };
+  panel.querySelector('.card-session-orchestra').onclick = (event) => {
+    event.stopPropagation();
+    openOrchestraModal(project);
+  };
+  if (!project.localPath) {
+    renderProjectSessions(card, { groups: [] });
+    return;
+  }
+  let pending = projectSessionLoads.get(project.id);
+  if (!pending) {
+    pending = invoke('list_project_sessions', { path: project.localPath })
+      .finally(() => projectSessionLoads.delete(project.id));
+    projectSessionLoads.set(project.id, pending);
+  }
+  try {
+    const history = await pending;
+    projectSessionCache.set(project.id, history);
+    if (!expandedProjectIds.has(project.id) || card.dataset.id !== project.id) return;
+    renderProjectSessions(card, history);
+  } catch (error) {
+    if (!expandedProjectIds.has(project.id)) return;
+    panel.innerHTML = sessionToolbarHtml(projectSessionQueries.get(project.id) || '')
+      + `<div class="card-sessions-empty">加载失败：${esc(error?.message || error)}</div>`;
+    panel.querySelector('.card-session-kit').onclick = (event) => {
+      event.stopPropagation();
+      void openProjectKit(project);
+    };
+    panel.querySelector('.card-session-orchestra').onclick = (event) => {
+      event.stopPropagation();
+      openOrchestraModal(project);
+    };
+  }
+}
+
+function collapseProjectSessions(project, card) {
+  expandedProjectIds.delete(project.id);
+  card.classList.remove('is-expanded');
+  const toggle = card.querySelector('.card-session-toggle');
+  const panel = card.querySelector('.card-sessions');
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  if (panel) panel.hidden = true;
+}
+
+function toggleProjectSessions(project, card) {
+  if (expandedProjectIds.has(project.id)) collapseProjectSessions(project, card);
+  else void expandProjectSessions(project, card);
+}
+
+function openHistorySession(project, session) {
+  if (session.runningId && sessions.has(session.runningId)) {
+    activateSession(session.runningId);
+    return;
+  }
+  const autoCmd = resumeCliCommand(session.tool, session.id);
+  if (!autoCmd) {
+    msg('还不支持续接这个工具的历史会话', 'info');
+    return;
+  }
+  recordProjectActivity(project.id, autoCmd);
+  const name = `${session.tool} · ${session.title}`;
+  void createSession({ cwd: project.localPath, name, autoCmd });
+}
+
+function closeSessionPreview() {
+  sessionPreviewContext = null;
+  el.sessionPreview?.classList.remove('active');
+}
+
+function resumePreviewedSession() {
+  const context = sessionPreviewContext;
+  closeSessionPreview();
+  if (context?.project && context.session) openHistorySession(context.project, context.session);
+}
+
+async function previewHistorySession(project, session) {
+  if (!project.localPath) {
+    msg('这个项目没有本地路径', 'info');
+    return;
+  }
+  try {
+    const preview = await invoke('preview_project_session', {
+      path: project.localPath,
+      tool: session.tool,
+      id: session.id,
+    });
+    sessionPreviewContext = { project, session: { ...session, title: preview.title || session.title } };
+    el.sessionPreviewTitle.textContent = preview.title || session.title || '会话预览';
+    const when = preview.atMs ? relTimeFromMs(preview.atMs) : '';
+    el.sessionPreviewMeta.innerHTML = `<span class="term-tab-tool tool-${esc(session.tool)}">${esc(session.tool)}</span>`
+      + (when ? `<span>${esc(when)}</span>` : '');
+    el.sessionPreviewBody.textContent = preview.body || preview.title || '这条会话没有可预览的正文';
+    el.sessionPreviewOpen.textContent = session.runningId ? '回到终端' : '续接';
+    el.sessionPreview.classList.add('active');
+  } catch (error) {
+    msg('预览失败：' + (error?.message || error), 'error');
+  }
+}
+
+function deleteHistorySession(project, session) {
+  const runningHint = session.runningId
+    ? '\n对应终端仍在运行，删的是磁盘记录，不会关掉终端。'
+    : '';
+  showConfirm({
+    title: '删除历史会话',
+    message: `确定删除 ${session.tool} 的「${session.title}」吗？这会从该工具的本地记录里移除，不可恢复。${runningHint}`,
+    confirmText: '删除',
+    danger: true,
+    onConfirm: async () => {
+      try {
+        await invoke('delete_project_session', {
+          path: project.localPath,
+          tool: session.tool,
+          id: session.id,
+        });
+        projectSessionCache.delete(project.id);
+        const card = el.list.querySelector(`.project-card[data-id="${project.id}"]`);
+        if (card && expandedProjectIds.has(project.id)) await expandProjectSessions(project, card);
+        msg('已删除历史会话', 'success');
+      } catch (error) {
+        msg('删除失败：' + (error?.message || error), 'error');
+      }
+    },
+  });
+}
+
+function refreshExpandedHistoryCards() {
+  el.list?.querySelectorAll('.project-card.is-expanded').forEach(card => {
+    const cached = projectSessionCache.get(card.dataset.id);
+    if (cached) renderProjectSessions(card, cached);
+  });
+}
+
+function applyProjectKitLayout(sessionIds) {
+  const ids = sessionIds.filter(id => sessions.has(id));
+  if (!ids.length) return;
+  terminalPaneLayout = PROJECT_KIT_LAYOUT;
+  terminalPaneAssignments = reconcileTerminalPanes({
+    assignments: ids,
+    sessionIds: [...sessions.keys()],
+    activeSessionId: ids[0],
+    layout: PROJECT_KIT_LAYOUT,
+    fill: false,
+  });
+  activeSession = ids[0];
+  const active = sessions.get(activeSession);
+  if (active && active.cwd !== treeRoot) renderTree(active.cwd);
+  renderTerminalPaneLayout();
+  persistSessionLayout();
+  if (active) {
+    requestAnimationFrame(() => {
+      fitSession(activeSession);
+      active.term.focus();
+    });
+  }
+}
+
+async function openProjectKit(project, { forceNew = false } = {}) {
+  if (!project?.localPath) {
+    msg('这个项目没有本地路径', 'info');
+    return [];
+  }
+  if (projectKitOpening) return [];
+  projectKitOpening = true;
+  try {
+    const ids = [];
+    for (const tool of DEFAULT_PROJECT_KIT) {
+      if (!forceNew) {
+        const existing = findRunningProjectTool(listLiveTerminals(), project.localPath, tool);
+        if (existing) {
+          ids.push(existing.id);
+          continue;
+        }
+      }
+      recordProjectActivity(project.id, tool);
+      const id = await createSession({ cwd: project.localPath, name: tool, autoCmd: tool });
+      const created = sessions.get(id);
+      if (created && created.status !== 'failed') ids.push(id);
+    }
+    applyProjectKitLayout(ids);
+    refreshExpandedHistoryCards();
+    if (!ids.length) msg('没有成功打开的终端', 'error');
+    else if (!forceNew) msg('已打开 Claude + Codex + Grok 主从三窗', 'success');
+    return ids;
+  } catch (error) {
+    msg('开一套失败：' + (error?.message || error), 'error');
+    return [];
+  } finally {
+    projectKitOpening = false;
+  }
+}
+
+let orchestraProject = null;
+let activeOrchestra = null;
+let orchestraSending = false;
+
+function selectedOrchestraBrain() {
+  return document.querySelector('input[name="orchestra-brain"]:checked')?.value || DEFAULT_ORCHESTRA_BRAIN;
+}
+
+function syncOrchestraWorkersHint() {
+  if (!el.orchestraWorkersHint) return;
+  const workers = orchestraWorkers(selectedOrchestraBrain());
+  el.orchestraWorkersHint.textContent = `干活：${workers.map(name => name[0].toUpperCase() + name.slice(1)).join(' · ')}`;
+}
+
+function openOrchestraModal(project) {
+  if (!project?.localPath) {
+    msg('这个项目没有本地路径', 'info');
+    return;
+  }
+  orchestraProject = project;
+  if (el.orchestraGoal && !el.orchestraGoal.value.trim()) el.orchestraGoal.value = '';
+  const brain = document.querySelector(`input[name="orchestra-brain"][value="${DEFAULT_ORCHESTRA_BRAIN}"]`);
+  if (brain) brain.checked = true;
+  syncOrchestraWorkersHint();
+  el.orchestra.classList.add('active');
+  el.orchestraGoal?.focus();
+}
+
+function closeOrchestraModal() {
+  el.orchestra?.classList.remove('active');
+}
+
+function bindOrchestraSessions(sessionIds, config) {
+  const byTool = {};
+  for (const id of sessionIds) {
+    const session = sessions.get(id);
+    const tool = cliToolName(session?.tool);
+    if (session && tool) byTool[tool] = id;
+  }
+  return {
+    ...config,
+    sessionIds: byTool,
+  };
+}
+
+function syncOrchestraChrome() {
+  const bar = termEl.orchestraBar;
+  if (!bar) return;
+  const active = Boolean(activeOrchestra);
+  bar.hidden = !active;
+  bar.classList.toggle('active', active);
+  sessions.forEach(session => {
+    const role = active ? orchestraRoleForTool(activeOrchestra, session.tool) : '';
+    let badge = session.paneHeadEl?.querySelector('.term-pane-role');
+    if (!role) {
+      badge?.remove();
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'term-pane-role';
+      session.paneHeadEl?.querySelector('.term-pane-name')?.after(badge);
+    }
+    badge.dataset.role = role;
+    badge.textContent = orchestraRoleLabel(role);
+  });
+  if (!active || !termEl.orchestraRoles) return;
+  const chips = [
+    { tool: activeOrchestra.brain, role: 'brain' },
+    ...activeOrchestra.workers.map(tool => ({ tool, role: 'worker' })),
+  ];
+  termEl.orchestraRoles.innerHTML = chips.map(item => (
+    `<span class="orchestra-chip" data-role="${escAttr(item.role)}">`
+    + `<small>${esc(orchestraRoleLabel(item.role))}</small>${esc(item.tool)}`
+    + `</span>`
+  )).join('');
+}
+
+function closeOrchestra() {
+  activeOrchestra = null;
+  syncOrchestraChrome();
+}
+
+async function waitForCliPrompt(session) {
+  const elapsed = Date.now() - (session?.startedAt || 0);
+  const wait = Math.max(0, 3200 - elapsed);
+  if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+}
+
+async function injectToSession(id, text, send = true) {
+  const session = sessions.get(id);
+  if (!session || session.status === 'failed' || session.status === 'exited') return false;
+  const data = send ? String(text || '').replace(/[\r\n]+$/, '') + '\r' : String(text || '');
+  if (!data.trim()) return false;
+  await waitForCliPrompt(session);
+  if (session.inputBuffer) session.inputBuffer.write(data);
+  else await invoke('terminal_write', { id, data });
+  return true;
+}
+
+function orchestraSessionId(tool) {
+  return activeOrchestra?.sessionIds?.[tool] || findRunningProjectTool(
+    listLiveTerminals(),
+    activeOrchestra?.projectPath,
+    tool,
+  )?.id || '';
+}
+
+async function sendOrchestra(target) {
+  if (!activeOrchestra || orchestraSending) return;
+  const text = termEl.orchestraInput?.value || '';
+  const goal = activeOrchestra.goal || text;
+  orchestraSending = true;
+  try {
+    if (target === 'brain' || target === 'broadcast') {
+      const id = orchestraSessionId(activeOrchestra.brain);
+      const prompt = target === 'broadcast' && text.trim()
+        ? orchestraBroadcastPrompt({ role: 'brain', tool: activeOrchestra.brain, text })
+        : orchestraBrainPrompt({ goal: text.trim() || goal, workers: activeOrchestra.workers });
+      if (!id || !(await injectToSession(id, prompt))) {
+        msg('大脑那个终端还没准备好', 'error');
+        return;
+      }
+      activateSession(id);
+    }
+    if (target === 'workers' || target === 'broadcast') {
+      let plan = '';
+      try {
+        plan = await invoke('read_orchestra_file', {
+          path: activeOrchestra.projectPath,
+          name: ORCHESTRA_PLAN_FILE,
+        });
+      } catch (_) {}
+      let sent = 0;
+      for (const tool of activeOrchestra.workers) {
+        const id = orchestraSessionId(tool);
+        const prompt = text.trim() && target === 'broadcast'
+          ? orchestraBroadcastPrompt({ role: 'worker', tool, text })
+          : orchestraWorkerPrompt({
+            tool,
+            brain: activeOrchestra.brain,
+            goal: text.trim() || goal,
+            plan,
+            extra: text.trim(),
+            inboxFile: `.vibe/orchestra/${orchestraInboxFile(tool)}`,
+          });
+        if (id && await injectToSession(id, prompt)) sent += 1;
+      }
+      if (!sent) {
+        msg('干活的终端还没准备好', 'error');
+        return;
+      }
+    }
+    if (termEl.orchestraInput) termEl.orchestraInput.value = '';
+    msg(target === 'brain' ? '已发给大脑' : target === 'workers' ? '已派给干活的人' : '已广播到三个窗口', 'success');
+  } catch (error) {
+    msg('发送失败：' + (error?.message || error), 'error');
+  } finally {
+    orchestraSending = false;
+  }
+}
+
+async function startOrchestraFromModal() {
+  const project = orchestraProject;
+  if (!project?.localPath) return;
+  const goal = el.orchestraGoal?.value.trim() || '';
+  if (!goal) {
+    msg('先写这次要做什么', 'info');
+    el.orchestraGoal?.focus();
+    return;
+  }
+  const config = normalizeOrchestraConfig({
+    brain: selectedOrchestraBrain(),
+    kit: ORCHESTRA_KIT,
+  });
+  closeOrchestraModal();
+  try {
+    await invoke('write_orchestra_file', {
+      path: project.localPath,
+      name: ORCHESTRA_GOAL_FILE,
+      content: `# 目标\n\n${goal}\n`,
+    });
+    const sessionIds = await openProjectKit(project, { forceNew: true });
+    activeOrchestra = {
+      ...bindOrchestraSessions(sessionIds, config),
+      projectId: project.id,
+      projectPath: project.localPath,
+      goal,
+    };
+    if (termEl.orchestraInput) termEl.orchestraInput.value = goal;
+    syncOrchestraChrome();
+    msg('协作已就位：等 CLI 出现输入框后点「发给大脑」', 'success');
+  } catch (error) {
+    msg('开协作失败：' + (error?.message || error), 'error');
+  }
 }
 
 // ===== 项目卡片 Git 状态徽标 =====
@@ -512,6 +1108,27 @@ function bind() {
   el.confirmCancel.onclick = closeDel;
   el.confirm.onclick = e => { if (e.target === el.confirm) closeDel(); };
   el.confirmDelete.onclick = doDelete;
+  el.sessionPreviewClose.onclick = closeSessionPreview;
+  el.sessionPreviewCancel.onclick = closeSessionPreview;
+  el.sessionPreview.onclick = e => { if (e.target === el.sessionPreview) closeSessionPreview(); };
+  el.sessionPreviewOpen.onclick = resumePreviewedSession;
+  el.orchestraModalClose.onclick = closeOrchestraModal;
+  el.orchestraModalCancel.onclick = closeOrchestraModal;
+  el.orchestra.onclick = e => { if (e.target === el.orchestra) closeOrchestraModal(); };
+  el.orchestraModalStart.onclick = () => void startOrchestraFromModal();
+  document.querySelectorAll('input[name="orchestra-brain"]').forEach(input => {
+    input.onchange = syncOrchestraWorkersHint;
+  });
+  termEl.orchestraToBrain.onclick = () => void sendOrchestra('brain');
+  termEl.orchestraToWorkers.onclick = () => void sendOrchestra('workers');
+  termEl.orchestraBroadcast.onclick = () => void sendOrchestra('broadcast');
+  termEl.orchestraClose.onclick = closeOrchestra;
+  termEl.orchestraInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void sendOrchestra('brain');
+    }
+  });
   el.search.oninput = () => filterAndRender();
 
   document.querySelector('[data-group="all"]').onclick = (e) => {
@@ -545,7 +1162,10 @@ function bind() {
     closeReqModal();
     closeThemeMenu();
     closeSnippetMenu();
+    closeMemoryMenu();
     closeTerminalLayoutMenu();
+    closeSessionPreview();
+    closeOrchestraModal();
   };
 
   // 运行环境切换时显示/隐藏服务器选择
@@ -616,7 +1236,14 @@ function bind() {
   termEl.snippetBtn.onclick = (ev) => {
     ev.stopPropagation();
     closeTerminalLayoutMenu();
+    closeMemoryMenu();
     toggleSnippetMenu(ev.currentTarget);
+  };
+  termEl.memoryBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    closeTerminalLayoutMenu();
+    closeSnippetMenu();
+    toggleMemoryMenu(ev.currentTarget);
   };
   // 片段快捷浮层：展开/收起（记忆状态）
   $('snippet-quick-fab').onclick = () => { localStorage.setItem('snippet-quick-collapsed', '0'); $('snippet-quick').classList.remove('collapsed'); };
@@ -628,8 +1255,9 @@ function bind() {
   $('snippet-sched-mode').onchange = updateSnippetSchedFields;
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#snippet-menu') && !e.target.closest('#terminal-snippet-btn')) closeSnippetMenu();
+    if (!e.target.closest('#terminal-memory-menu') && !e.target.closest('#terminal-memory-btn')) closeMemoryMenu();
   });
-  window.addEventListener('resize', closeSnippetMenu);
+  window.addEventListener('resize', () => { closeSnippetMenu(); closeMemoryMenu(); });
   // 恢复现场 Modal
   $('context-modal-close').onclick = closeContextModal;
   $('context-modal-overlay').onclick = e => { if (e.target === $('context-modal-overlay')) closeContextModal(); };
@@ -1453,12 +2081,21 @@ const termEl = {
   usageBtn: $('terminal-usage-btn'),
   bellBtn: $('terminal-bell-btn'),
   snippetBtn: $('terminal-snippet-btn'),
+  memoryBtn: $('terminal-memory-btn'),
+  memoryMenu: $('terminal-memory-menu'),
   layoutBtn: $('terminal-layout-btn'),
   layoutMenu: $('terminal-layout-menu'),
   themeBtn: $('terminal-theme-btn'),
   themeMenu: $('terminal-theme-menu'),
   maximizeBtn: $('terminal-maximize-btn'),
   collapseBtn: $('terminal-collapse-btn'),
+  orchestraBar: $('orchestra-bar'),
+  orchestraRoles: $('orchestra-roles'),
+  orchestraInput: $('orchestra-input'),
+  orchestraToBrain: $('orchestra-to-brain'),
+  orchestraToWorkers: $('orchestra-to-workers'),
+  orchestraBroadcast: $('orchestra-broadcast'),
+  orchestraClose: $('orchestra-close'),
   fab: $('terminal-fab'),
   fabBadge: $('terminal-fab-badge'),
   tree: $('terminal-tree'),
@@ -1996,6 +2633,7 @@ const TERMINAL_LAYOUT_LABELS = {
   single: '单窗',
   columns: '左右分屏',
   rows: '上下分屏',
+  main: '主从分屏',
   grid: '四宫格',
 };
 
@@ -2123,6 +2761,7 @@ let snippetMenuOpening = false;
 async function openSnippetMenu(anchorEl) {
   const revision = ++snippetMenuRevision;
   snippetMenuOpening = true;
+  closeMemoryMenu();
   const webviewHidden = await workspaceController?.setFloatingUiOpen('snippet-menu', true);
   if (revision !== snippetMenuRevision) return;
   if (webviewHidden === false) {
@@ -2154,6 +2793,187 @@ function closeSnippetMenu() {
   snippetMenuOpening = false;
   menu.classList.remove('active');
   if (wasOpen) void workspaceController?.setFloatingUiOpen('snippet-menu', false);
+}
+
+let memoryMenuRevision = 0;
+let memoryMenuOpening = false;
+let memoryMenuState = null;
+let memoryUnifyOp = 0;
+
+function shortHomePath(path) {
+  const value = String(path || '');
+  return value.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+}
+
+function readMemoryUnifyPaths() {
+  try {
+    return loadProjectMemoryUnifyPaths(localStorage.getItem(PROJECT_MEMORY_UNIFY_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function persistMemoryUnifyPaths(paths) {
+  try {
+    localStorage.setItem(PROJECT_MEMORY_UNIFY_STORAGE_KEY, JSON.stringify({ paths }));
+  } catch (_) {}
+}
+
+function renderMemoryMenu(state, cwd) {
+  const menu = termEl.memoryMenu;
+  if (!cwd) {
+    menu.innerHTML = '<div class="memory-menu-empty">当前终端没有项目目录</div>';
+    return;
+  }
+  const unifyOn = isProjectMemoryUnifyEnabled(cwd, readMemoryUnifyPaths());
+  if (unifyOn && !state) {
+    menu.innerHTML = '<div class="memory-menu-empty">正在挂载项目记忆…</div>';
+    return;
+  }
+  const statusClass = unifyOn
+    ? (state?.mounted ? '' : (state?.warning ? 'is-warn' : 'is-empty'))
+    : 'is-empty';
+  const statusText = unifyOn ? (state?.mounted ? '已挂载' : (state?.warning ? '异常' : '未挂载')) : '未开启';
+  const topics = Array.isArray(state?.topics) ? state.topics : [];
+  const topicHtml = unifyOn
+    ? (topics.length
+      ? `<div class="memory-menu-label">索引</div><div class="memory-menu-topics">${
+        topics.map(topic => `<div class="memory-menu-topic" title="${escAttr(topic.file || '')}">${esc(topic.title)}</div>`).join('')
+      }</div>`
+      : '<div class="memory-menu-label">索引</div><div class="memory-menu-path">还没有专题。说「更新记忆」后会出现在这里。</div>')
+    : '<p class="memory-menu-path">默认不强制。打开后，从这个目录启动的 Claude / Codex / Grok / OpenCode 才会共用 Claude 那份记忆。</p>';
+  const inbox = unifyOn && Number(state?.inboxCount) > 0
+    ? `<div class="memory-menu-path">inbox ${esc(String(state.inboxCount))} 条待合并</div>`
+    : '';
+  const warning = unifyOn && state?.warning ? `<p class="memory-menu-note">${esc(state.warning)}</p>` : '';
+  menu.innerHTML =
+    `<div class="memory-menu-head"><span class="memory-menu-title">项目记忆</span><span class="memory-menu-status ${statusClass}">${statusText}</span></div>` +
+    `<label class="memory-menu-switch"><input type="checkbox" id="memory-unify-toggle"${unifyOn ? ' checked' : ''}>统一记忆到 Claude</label>` +
+    (unifyOn
+      ? `<p class="memory-menu-path" title="${escAttr(state?.memoryPath || cwd)}">${esc(shortHomePath(state?.memoryPath || cwd))}</p>`
+      : '') +
+    warning +
+    topicHtml +
+    inbox +
+    (unifyOn
+      ? `<div class="memory-menu-actions">` +
+          `<button class="btn btn-default" type="button" data-memory-act="open"${state?.memoryPath ? '' : ' disabled'}>打开目录</button>` +
+          `<button class="btn btn-primary" type="button" data-memory-act="remount">重新挂载</button>` +
+        `</div>`
+      : '');
+  const toggle = menu.querySelector('#memory-unify-toggle');
+  if (toggle) {
+    toggle.onchange = async () => {
+      const wanted = toggle.checked;
+      const revision = memoryMenuRevision;
+      const op = ++memoryUnifyOp;
+      toggle.disabled = true;
+      const session = activeSession ? sessions.get(activeSession) : null;
+      try {
+        if (wanted) {
+          const next = await mountProjectMemory(cwd, session);
+          if (revision !== memoryMenuRevision || op !== memoryUnifyOp) return;
+          if (next?.mounted) {
+            persistMemoryUnifyPaths(setProjectMemoryUnifyEnabled(cwd, true, readMemoryUnifyPaths()));
+          } else if (next?.warning) {
+            msg(next.warning, 'error');
+          }
+          memoryMenuState = next;
+          renderMemoryMenu(next, cwd);
+          return;
+        }
+        await invoke('detach_project_memory', { path: cwd });
+        if (revision !== memoryMenuRevision || op !== memoryUnifyOp) return;
+        persistMemoryUnifyPaths(setProjectMemoryUnifyEnabled(cwd, false, readMemoryUnifyPaths()));
+        if (session) session.memory = null;
+        memoryMenuState = null;
+        renderMemoryMenu(null, cwd);
+      } catch (error) {
+        if (revision !== memoryMenuRevision || op !== memoryUnifyOp) return;
+        msg((wanted ? '挂载' : '关闭') + '统一记忆失败: ' + (error?.message || error), 'error');
+        renderMemoryMenu(session?.memory || null, cwd);
+      }
+    };
+  }
+  menu.querySelectorAll('[data-memory-act]').forEach(button => {
+    button.onclick = async () => {
+      if (button.dataset.memoryAct === 'open' && state?.memoryPath) {
+        try { await invoke('open_folder', { path: state.memoryPath }); }
+        catch (error) { msg('打开记忆目录失败: ' + (error?.message || error), 'error'); }
+        return;
+      }
+      if (button.dataset.memoryAct === 'remount') {
+        const next = await mountProjectMemory(cwd);
+        memoryMenuState = next;
+        renderMemoryMenu(next, cwd);
+      }
+    };
+  });
+}
+
+async function mountProjectMemory(cwd, session = null) {
+  if (!shouldMountProjectMemory(cwd)) return null;
+  try {
+    const state = await invoke('ensure_project_memory', { path: cwd });
+    if (session) session.memory = state;
+    return state;
+  } catch (error) {
+    const warning = error?.message || String(error);
+    const failed = { mounted: false, skipped: false, warning, topics: [], inboxCount: 0, memoryPath: '' };
+    if (session) session.memory = failed;
+    return failed;
+  }
+}
+
+function writeMemoryBanner(term, state) {
+  const line = memoryBannerText(state);
+  if (!term || !line) return;
+  term.write(`\r\n\x1b[90m${line}\x1b[0m\r\n`);
+}
+
+async function openMemoryMenu(anchorEl) {
+  const revision = ++memoryMenuRevision;
+  memoryMenuOpening = true;
+  const webviewHidden = await workspaceController?.setFloatingUiOpen('memory-menu', true);
+  if (revision !== memoryMenuRevision) return;
+  if (webviewHidden === false) {
+    memoryMenuOpening = false;
+    return;
+  }
+  memoryMenuOpening = false;
+  const session = activeSession ? sessions.get(activeSession) : null;
+  const cwd = session?.cwd || '';
+  termEl.memoryMenu.classList.add('active');
+  termEl.memoryBtn.setAttribute('aria-expanded', 'true');
+  renderMemoryMenu(session?.memory || null, cwd);
+  if (cwd && isProjectMemoryUnifyEnabled(cwd, readMemoryUnifyPaths())) {
+    const state = await mountProjectMemory(cwd, session);
+    if (revision !== memoryMenuRevision) return;
+    memoryMenuState = state;
+    renderMemoryMenu(state, cwd);
+  }
+  const r = anchorEl.getBoundingClientRect();
+  const left = Math.max(8, r.right - termEl.memoryMenu.offsetWidth);
+  let top = r.bottom + 6;
+  if (top + termEl.memoryMenu.offsetHeight > window.innerHeight - 8) {
+    top = r.top - termEl.memoryMenu.offsetHeight - 6;
+  }
+  termEl.memoryMenu.style.left = left + 'px';
+  termEl.memoryMenu.style.top = top + 'px';
+}
+
+function toggleMemoryMenu(anchorEl) {
+  if (memoryMenuOpening || termEl.memoryMenu.classList.contains('active')) closeMemoryMenu();
+  else void openMemoryMenu(anchorEl);
+}
+
+function closeMemoryMenu() {
+  const wasOpen = memoryMenuOpening || termEl.memoryMenu.classList.contains('active');
+  memoryMenuRevision += 1;
+  memoryMenuOpening = false;
+  termEl.memoryMenu.classList.remove('active');
+  termEl.memoryBtn.setAttribute('aria-expanded', 'false');
+  if (wasOpen) void workspaceController?.setFloatingUiOpen('memory-menu', false);
 }
 
 function renderSnippetMenu() {
@@ -2724,6 +3544,9 @@ function renderContext(p, ctx) {
     html += '<div class="ctx-section"><div class="ctx-clean-note">工作区干净，无改动 ✓</div></div>';
   }
 
+  html += '<div class="ctx-section"><div class="ctx-section-title">项目记忆</div>';
+  html += '<div class="ctx-overview"><span class="ctx-muted">默认识记不强制。可在终端「项目记忆」里打开「统一记忆到 Claude」。</span></div></div>';
+
   // CLAUDE.md 摘要
   if (ctx.claudeMd) {
     html += '<div class="ctx-section"><div class="ctx-section-title">CLAUDE.md</div>';
@@ -2926,6 +3749,7 @@ async function openTerminalLayoutMenu() {
   terminalLayoutMenuOpening = true;
   closeThemeMenu();
   closeSnippetMenu();
+  closeMemoryMenu();
   const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-layout-menu', true);
   if (revision !== terminalLayoutMenuRevision) return;
   if (webviewHidden === false) {
@@ -2950,6 +3774,7 @@ async function openThemeMenu() {
   const revision = ++themeMenuRevision;
   themeMenuOpening = true;
   closeTerminalLayoutMenu();
+  closeMemoryMenu();
   const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-theme-menu', true);
   if (revision !== themeMenuRevision) return;
   if (webviewHidden === false) {
@@ -3389,7 +4214,7 @@ function renderRich() {
 
 function positionFilePreview() {
   if (!termEl.preview.classList.contains('active')) return;
-  if (terminalPaneLayout === 'single') {
+  if (currentTerminalPaneArrangement() === 'single') {
     termEl.preview.style.inset = '0';
     termEl.preview.style.width = '';
     termEl.preview.style.height = '';
@@ -3901,6 +4726,7 @@ function collapseDock() {
   // Close those dropdowns before docking so no stale hide reason survives reopen.
   closeThemeMenu();
   closeSnippetMenu();
+  closeMemoryMenu();
   closeTerminalLayoutMenu();
   termEl.dock.classList.remove('active');
   termEl.fab.classList.remove('hidden');
@@ -3975,11 +4801,9 @@ const TAB_BRANCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
 async function updateBranchBadges() {
   for (const s of sessions.values()) {
     const el = s.tabEl && s.tabEl.querySelector('.term-tab-branch');
-    const paneEl = s.paneBranchEl;
     if (!el) continue;
     if (!s.cwd) {
       el.style.display = 'none';
-      if (paneEl) paneEl.style.display = 'none';
       continue;
     }
     try {
@@ -3988,18 +4812,11 @@ async function updateBranchBadges() {
         el.innerHTML = TAB_BRANCH_SVG + `<span>${esc(b)}</span>`;
         el.title = `git 分支：${b}`;
         el.style.display = '';
-        if (paneEl) {
-          paneEl.textContent = b;
-          paneEl.title = `git 分支：${b}`;
-          paneEl.style.display = '';
-        }
       } else {
         el.style.display = 'none';
-        if (paneEl) paneEl.style.display = 'none';
       }
     } catch (_) {
       el.style.display = 'none';
-      if (paneEl) paneEl.style.display = 'none';
     }
   }
 }
@@ -4080,6 +4897,13 @@ function updateTerminalPaneStatus(session) {
   session.paneStatusEl.setAttribute('aria-label', label);
 }
 
+function currentTerminalPaneArrangement() {
+  return terminalPaneArrangement(
+    terminalPaneLayout,
+    visibleTerminalSessionIds(terminalPaneAssignments).length,
+  );
+}
+
 function renderTerminalPaneLayout() {
   const sessionIds = [...sessions.keys()];
   terminalPaneLayout = normalizeTerminalPaneLayout(terminalPaneLayout);
@@ -4090,33 +4914,28 @@ function renderTerminalPaneLayout() {
     layout: terminalPaneLayout,
     fill: false,
   });
+  const visibleIds = visibleTerminalSessionIds(terminalPaneAssignments);
+  const arrangement = terminalPaneArrangement(terminalPaneLayout, visibleIds.length);
   termEl.bodies.dataset.layout = terminalPaneLayout;
+  termEl.bodies.dataset.arrangement = arrangement;
   termEl.bodies.querySelectorAll('.term-pane-empty').forEach(node => node.remove());
 
   sessions.forEach((session, id) => {
-    const paneIndex = terminalPaneAssignments.indexOf(id);
-    const visible = paneIndex >= 0;
+    const visualIndex = visibleIds.indexOf(id);
+    const visible = visualIndex >= 0;
     session.bodyEl.classList.toggle('pane-visible', visible);
     session.bodyEl.classList.toggle('active', id === activeSession && visible);
     session.tabEl.classList.toggle('active', id === activeSession);
     session.tabEl.classList.toggle('pane-visible', visible);
-    session.bodyEl.style.order = visible ? String(paneIndex) : '';
-    session.paneIndexEl.textContent = visible ? String(paneIndex + 1) : '';
-    session.tabPaneEl.textContent = visible ? String(paneIndex + 1) : '';
-    session.tabPaneEl.title = visible ? `当前显示在窗格 ${paneIndex + 1}` : '';
+    session.bodyEl.style.order = visible ? String(visualIndex) : '';
+    if (visible) session.bodyEl.dataset.paneSlot = String(visualIndex);
+    else delete session.bodyEl.dataset.paneSlot;
+    session.paneIndexEl.textContent = visible ? String(visualIndex + 1) : '';
+    session.tabPaneEl.textContent = visible ? String(visualIndex + 1) : '';
+    session.tabPaneEl.title = visible ? `当前显示在窗格 ${visualIndex + 1}` : '';
     updateTerminalPaneStatus(session);
   });
-
-  terminalPaneAssignments.forEach((id, index) => {
-    if (id) return;
-    const empty = document.createElement('button');
-    empty.type = 'button';
-    empty.className = 'term-pane-empty';
-    empty.style.order = String(index);
-    empty.innerHTML = `<span>${index + 1}</span><strong>空窗格</strong><small>从上方标签选择会话</small>`;
-    empty.onclick = () => termEl.tabs.querySelector('.term-tab:not(.pane-visible)')?.click();
-    termEl.bodies.appendChild(empty);
-  });
+  syncOrchestraChrome();
 
   const label = TERMINAL_LAYOUT_LABELS[terminalPaneLayout];
   termEl.layoutBtn.classList.toggle('active', terminalPaneLayout !== 'single');
@@ -4249,7 +5068,7 @@ function confirmCloseSession(id) {
   }
   const running = s.status !== 'exited';
   const aiHint = s.tool
-    ? `\n如果刚跟 ${s.tool} 聊过，建议先让它「更新记忆」再关，否则上下文会丢。`
+    ? `\n如果刚跟 ${s.tool} 聊过，建议先让它「更新记忆」（写入 .memory）再关。平时结论可丢进 .memory/inbox。`
     : '';
   showConfirm({
     title: '关闭终端',
@@ -4302,6 +5121,14 @@ function finalizeSessionClose(id) {
   }
   updateFabBadge();
   persistSessionLayout();
+  refreshExpandedHistoryCards();
+  if (activeOrchestra) {
+    const tool = cliToolName(session.tool);
+    if (tool && activeOrchestra.sessionIds?.[tool] === id) delete activeOrchestra.sessionIds[tool];
+    const remaining = Object.values(activeOrchestra.sessionIds || {}).filter(item => sessions.has(item));
+    if (!remaining.length) closeOrchestra();
+    else syncOrchestraChrome();
+  }
 }
 
 async function closeSession(id) {
@@ -4329,11 +5156,9 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     '<span class="term-pane-index"></span>' +
     '<span class="term-pane-status" role="status" aria-label="运行中"></span>' +
     `<span class="term-pane-name" title="${escAttr(label)}">${esc(label)}</span>` +
-    (toolName ? `<span class="term-pane-tool tool-${esc(toolName)}">${esc(toolName)}</span>` : '') +
-    '<span class="term-pane-branch" style="display:none;"></span>' +
     '<span class="term-pane-spacer"></span>' +
     '<button class="term-pane-close" type="button" title="移出分屏（会话继续运行）" aria-label="移出分屏">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5.5" width="11" height="13" rx="1.2"/><path d="M14 12h6.5M17.5 9l3 3-3 3"/></svg>' +
     '</button>';
   const terminalHostEl = document.createElement('div');
   terminalHostEl.className = 'term-pane-terminal';
@@ -4399,10 +5224,10 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
 
   const session = {
     term, fit, tabEl, bodyEl, webgl, name: label, status: 'running', cwd, tool: autoCmd,
+    inputBuffer,
     paneHeadEl,
     paneIndexEl: paneHeadEl.querySelector('.term-pane-index'),
     paneStatusEl: paneHeadEl.querySelector('.term-pane-status'),
-    paneBranchEl: paneHeadEl.querySelector('.term-pane-branch'),
     tabPaneEl: tabEl.querySelector('.term-tab-pane'),
     terminalHostEl,
     lastResizeKey: '', lastResizeSentAt: 0, pendingResize: null, resizeTimer: null,
@@ -4430,6 +5255,10 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     characterTheme.setState('idle');
     persistSessionLayout();
     fitSession(id);
+    if (shouldAutoMountProjectMemory(cwd, '', readMemoryUnifyPaths())) {
+      const memory = await mountProjectMemory(cwd, session);
+      writeMemoryBanner(term, memory);
+    }
     if (autoCmd) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
@@ -4445,6 +5274,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     term.write(`\r\n\x1b[31m启动失败: ${e}\x1b[0m\r\n`);
   }
 
+  refreshExpandedHistoryCards();
   return id;
 }
 
@@ -4504,10 +5334,11 @@ function setupTerminalPaneSplitters() {
   };
 
   const start = (axis, splitter, event) => {
+    const arrangement = currentTerminalPaneArrangement();
     const allowed = axis === 'vertical'
-      ? terminalPaneLayout === 'columns' || terminalPaneLayout === 'grid'
-      : terminalPaneLayout === 'rows' || terminalPaneLayout === 'grid';
-    if (!allowed || terminalPaneCapacity(terminalPaneLayout) < 2) return;
+      ? arrangement === 'columns' || arrangement === 'main' || arrangement === 'grid'
+      : arrangement === 'rows' || arrangement === 'main' || arrangement === 'grid';
+    if (!allowed) return;
     event.preventDefault();
     drag = { axis, splitter };
     splitter.classList.add('is-dragging');

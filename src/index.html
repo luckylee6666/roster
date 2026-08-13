@@ -162,6 +162,57 @@
       </div>
     </div>
 
+    <!-- 协作会话 -->
+    <div class="modal-mask" id="orchestra-overlay">
+      <div class="modal-wrap">
+        <div class="modal">
+          <div class="modal-header">
+            <span class="modal-title">开协作会话</span>
+            <button class="modal-x" id="orchestra-modal-close" type="button">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="orchestra-lead">一个大脑拆活，另外两个动手。还是三家各自的终端，共用目标和 <code>.vibe/orchestra/plan.md</code>。</p>
+            <label class="form-label" for="orchestra-goal">这次要做什么</label>
+            <textarea class="form-input orchestra-goal" id="orchestra-goal" rows="4"
+                      placeholder="例如：把历史会话预览和删除做完，Codex 改 Rust，Grok 补前端测试"></textarea>
+            <div class="orchestra-brain-field">
+              <span class="form-label">大脑</span>
+              <div class="orchestra-brain-picks" id="orchestra-brain-picks">
+                <label class="orchestra-pick"><input type="radio" name="orchestra-brain" value="claude" checked /> Claude</label>
+                <label class="orchestra-pick"><input type="radio" name="orchestra-brain" value="codex" /> Codex</label>
+                <label class="orchestra-pick"><input type="radio" name="orchestra-brain" value="grok" /> Grok</label>
+              </div>
+              <p class="orchestra-workers-hint" id="orchestra-workers-hint">干活：Codex · Grok</p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="orchestra-modal-cancel" type="button">取消</button>
+            <button class="btn btn-primary" id="orchestra-modal-start" type="button">开始协作</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 历史会话预览 -->
+    <div class="modal-mask" id="session-preview-overlay">
+      <div class="modal-wrap">
+        <div class="modal modal-lg">
+          <div class="modal-header">
+            <span class="modal-title" id="session-preview-title">会话预览</span>
+            <button class="modal-x" id="session-preview-close" type="button">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="session-preview-meta" id="session-preview-meta"></div>
+            <pre class="session-preview-body" id="session-preview-body"></pre>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="session-preview-cancel" type="button">关闭</button>
+            <button class="btn btn-primary" id="session-preview-open" type="button">续接</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 删除确认 -->
     <div class="modal-mask" id="confirm-overlay">
       <div class="modal-wrap">
@@ -359,6 +410,10 @@
           <button class="term-tool-btn" id="terminal-snippet-btn" title="Prompt 片段库：一键注入常用指令">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><path d="M9 5a2 2 0 012-2h2a2 2 0 012 2v0a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/><path d="M9 12h6M9 16h4"/></svg>
           </button>
+          <button class="term-tool-btn" id="terminal-memory-btn" type="button"
+                  title="项目记忆：挂载 .memory，给所有 AI 同一份正本" aria-haspopup="menu" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.2 4.5h9.6A2.2 2.2 0 0118 6.7v12.1c0 .8-.9 1.3-1.6.9l-2.7-1.7a2 2 0 00-2.1 0l-2.7 1.7c-.7.4-1.6-.1-1.6-.9V6.7A2.2 2.2 0 016.2 4.5z"/><path d="M9 8.4h6M9 11.4h4.2"/></svg>
+          </button>
           <div class="workspace-mode-wrap">
             <button class="workspace-mode-btn" id="workspace-mode-btn" type="button"
                     title="工作区模式" aria-haspopup="menu" aria-expanded="false">
@@ -405,12 +460,17 @@
                 <span><strong>上下分屏</strong><small>最多 2 个会话</small></span>
                 <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
               </button>
+              <button class="terminal-layout-option" type="button" role="menuitemradio" data-layout="main">
+                <span class="terminal-layout-diagram layout-main"><i></i><i></i><i></i></span>
+                <span><strong>主从分屏</strong><small>左主窗 + 右上右下</small></span>
+                <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
+              </button>
               <button class="terminal-layout-option" type="button" role="menuitemradio" data-layout="grid">
                 <span class="terminal-layout-diagram layout-grid"><i></i><i></i><i></i><i></i></span>
                 <span><strong>四宫格</strong><small>最多 4 个会话</small></span>
                 <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
               </button>
-              <div class="terminal-layout-hint">更多会话继续在标签栏后台运行</div>
+              <div class="terminal-layout-hint">空窗格会收拢成左右或主从。更多会话继续在标签栏后台运行</div>
             </div>
           </div>
           <div class="term-theme-wrap">
@@ -427,6 +487,15 @@
           </button>
         </div>
       </div>
+      <div class="orchestra-bar" id="orchestra-bar" hidden>
+        <div class="orchestra-roles" id="orchestra-roles"></div>
+        <input class="orchestra-input" id="orchestra-input" type="text"
+               placeholder="这是一场协作：发给大脑拆活，或派给干活的人" autocomplete="off" />
+        <button class="orchestra-btn" id="orchestra-to-brain" type="button">发给大脑</button>
+        <button class="orchestra-btn orchestra-btn-primary" id="orchestra-to-workers" type="button">派活</button>
+        <button class="orchestra-btn" id="orchestra-broadcast" type="button">广播</button>
+        <button class="orchestra-close" id="orchestra-close" type="button" title="结束这场协作" aria-label="结束这场协作">&times;</button>
+      </div>
       <div class="terminal-main">
         <aside class="terminal-tree" id="terminal-tree">
           <div class="tree-head">
@@ -439,7 +508,7 @@
         </aside>
         <div class="tree-splitter" id="tree-splitter"></div>
         <div class="terminal-content">
-          <div class="terminal-bodies" id="terminal-bodies" data-layout="single">
+          <div class="terminal-bodies" id="terminal-bodies" data-layout="single" data-arrangement="single">
             <div class="terminal-pane-splitter vertical" id="terminal-pane-splitter-vertical" aria-hidden="true"></div>
             <div class="terminal-pane-splitter horizontal" id="terminal-pane-splitter-horizontal" aria-hidden="true"></div>
           </div>
@@ -639,6 +708,7 @@
 
     <!-- Prompt 片段库：快速注入下拉 -->
     <div class="snippet-menu" id="snippet-menu"></div>
+    <div class="memory-menu" id="terminal-memory-menu" role="menu" aria-label="项目记忆"></div>
 
     <!-- Prompt 片段库：管理 Modal -->
     <div class="modal-mask" id="snippet-modal-overlay">

@@ -50,6 +50,12 @@ CLAUDE.md
 AGENTS.md
 opencode.json
 
+# Project memory window (canonical store lives in ~/.claude/projects)
+.memory
+
+# Multi-CLI orchestra session files
+.vibe/
+
 # Generated Python bytecode and local-only 3D experiments.
 __pycache__/
 *.py[cod]

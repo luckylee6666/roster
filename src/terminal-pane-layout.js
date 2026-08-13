@@ -2,6 +2,7 @@ export const TERMINAL_PANE_LAYOUTS = Object.freeze({
   single: 1,
   columns: 2,
   rows: 2,
+  main: 3,
   grid: 4,
 });
 
@@ -11,6 +12,18 @@ export function normalizeTerminalPaneLayout(layout) {
 
 export function terminalPaneCapacity(layout) {
   return TERMINAL_PANE_LAYOUTS[normalizeTerminalPaneLayout(layout)];
+}
+
+export function terminalPaneArrangement(layout, visibleCount = 0) {
+  const normalized = normalizeTerminalPaneLayout(layout);
+  const count = Math.max(0, Math.min(Number(visibleCount) || 0, terminalPaneCapacity(normalized)));
+  if (count <= 1) return 'single';
+  if (normalized === 'rows') return 'rows';
+  if (normalized === 'columns') return 'columns';
+  if (normalized === 'main') return count === 2 ? 'columns' : 'main';
+  if (count === 2) return 'columns';
+  if (count === 3) return 'main';
+  return 'grid';
 }
 
 function emptyAssignments(capacity) {

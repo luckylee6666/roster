@@ -9,18 +9,52 @@ import {
   removeTerminalPaneSession,
   removeSessionFromTerminalPanes,
   selectTerminalPaneSession,
+  terminalPaneArrangement,
   terminalPaneCapacity,
   terminalSessionIdAtPoint,
   visibleTerminalSessionIds,
 } from '../src/terminal-pane-layout.js';
 
-test('终端布局只接受单窗、左右、上下和四宫格', () => {
+test('终端布局只接受单窗、左右、上下、主从和四宫格', () => {
   assert.equal(normalizeTerminalPaneLayout('grid'), 'grid');
+  assert.equal(normalizeTerminalPaneLayout('main'), 'main');
   assert.equal(normalizeTerminalPaneLayout('unknown'), 'single');
   assert.equal(terminalPaneCapacity('single'), 1);
   assert.equal(terminalPaneCapacity('columns'), 2);
   assert.equal(terminalPaneCapacity('rows'), 2);
+  assert.equal(terminalPaneCapacity('main'), 3);
   assert.equal(terminalPaneCapacity('grid'), 4);
+});
+
+test('可见窗格不足容量时收拢成单窗、左右或主从，不留空位', () => {
+  assert.equal(terminalPaneArrangement('columns', 1), 'single');
+  assert.equal(terminalPaneArrangement('rows', 1), 'single');
+  assert.equal(terminalPaneArrangement('main', 1), 'single');
+  assert.equal(terminalPaneArrangement('grid', 1), 'single');
+  assert.equal(terminalPaneArrangement('columns', 2), 'columns');
+  assert.equal(terminalPaneArrangement('rows', 2), 'rows');
+  assert.equal(terminalPaneArrangement('main', 2), 'columns');
+  assert.equal(terminalPaneArrangement('grid', 2), 'columns');
+  assert.equal(terminalPaneArrangement('main', 3), 'main');
+  assert.equal(terminalPaneArrangement('grid', 3), 'main');
+  assert.equal(terminalPaneArrangement('grid', 4), 'grid');
+  assert.equal(terminalPaneArrangement('unknown', 3), 'single');
+});
+
+test('切到主从分屏只保留三个槽位并按标签顺序填满', () => {
+  assert.deepEqual(reconcileTerminalPanes({
+    assignments: ['b'],
+    sessionIds: ['a', 'b', 'c', 'd'],
+    activeSessionId: 'b',
+    layout: 'main',
+  }), ['b', 'a', 'c']);
+});
+
+test('主从分屏下第四个会话替换聚焦槽位', () => {
+  assert.deepEqual(
+    assignSessionToTerminalPane(['a', 'b', 'c'], 'd', 'b', 'main'),
+    ['a', 'd', 'c'],
+  );
 });
 
 test('切到四宫格会保留当前会话并按标签顺序填满空槽', () => {

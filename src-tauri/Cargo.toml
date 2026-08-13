@@ -30,6 +30,7 @@ portable-pty = "0.8"
 base64 = "0.22"
 trash = "5"
 tempfile = "3.27"
+rusqlite = { version = "0.32", features = ["bundled"] }
 # 内嵌远程服务（手机端局域网控制终端）
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }

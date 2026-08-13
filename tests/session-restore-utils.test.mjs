@@ -4,9 +4,12 @@ import test from 'node:test';
 
 import {
   cliToolName,
-  restoredCliCommand,
+  extractResumedSessionId,
   restoreSessionLayout,
+  restoredCliCommand,
+  resumeCliCommand,
   sessionLayoutEntries,
+  sessionTitlePreview,
 } from '../src/session-restore-utils.js';
 
 test('重启恢复 Codex 标签时按当前项目目录续接最近会话', () => {
@@ -31,6 +34,24 @@ test('已是 Codex 恢复命令时不会重复追加参数', () => {
     restoredCliCommand('codex --profile work resume session-id'),
     'codex --profile work resume session-id',
   );
+});
+
+test('历史会话按工具生成指定 ID 的续接命令', () => {
+  assert.equal(resumeCliCommand('claude', 'abc-1'), 'claude --resume abc-1');
+  assert.equal(resumeCliCommand('grok', '019ff9ad'), 'grok --resume 019ff9ad');
+  assert.equal(resumeCliCommand('codex', 'abc-1'), 'codex resume abc-1');
+  assert.equal(resumeCliCommand('opencode', 'ses_1'), 'opencode --session ses_1');
+  assert.equal(
+    resumeCliCommand('gemini', '/tmp/session-1.json'),
+    'gemini --session-file /tmp/session-1.json',
+  );
+  assert.equal(resumeCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
+  assert.match(resumeCliCommand('gemini', "/tmp/it's.json"), /session-file '/);
+  assert.equal(resumeCliCommand('claude', ''), '');
+  assert.equal(extractResumedSessionId('claude --resume abc-1'), 'abc-1');
+  assert.equal(extractResumedSessionId('codex resume --last'), '');
+  assert.equal(sessionTitlePreview('  修好   分屏空窗格  '), '修好 分屏空窗格');
+  assert.equal(sessionTitlePreview('一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十'), '一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六…');
 });
 
 test('Claude 延续旧行为，其他终端命令保持不变', () => {
