@@ -1,16 +1,20 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.16 / 本版更新
+## What's new in v1.2.17 / 本版更新
 
 **English**
-- **Grok CLI launch** — start Grok from a project card; restored Grok tabs continue the most recent session in that directory with `--continue`.
-- **Escape reaches the built-in terminal on macOS** — vim, less, and Claude Code can receive `\x1b`. Open dialogs and menus still consume Escape first.
+- **Project history** — expand a project card to search, preview, resume, or delete each CLI's on-disk sessions. A **running** badge only appears for an explicit continue/resume.
+- **Open a set / Collaborate** — one click opens Claude + Codex + Grok in a main three-pane layout. Collaborate assigns one brain and two workers that share `.vibe/orchestra/` (not a merged chat).
+- **Unify memory to Claude** (opt-in) — a project `.memory` symlink points at Claude's project memory. Off by default; no auto-created `CLAUDE.md` / `AGENTS.md`.
+- Terminal **main** layout plus empty-slot collapse.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- **Grok CLI 启动**：可从项目卡片打开 Grok；恢复 Grok 标签时用 `--continue` 续接该目录最近一次会话。
-- **macOS 内置终端可收到 ESC**：vim / less / Claude Code 能收到 `\x1b`。已打开的弹窗和菜单仍优先消费 ESC。
+- **项目历史**：展开项目卡片即可搜索、预览、续接或删除各家 CLI 的磁盘会话。**运行中**只标明确的续接 / `--continue`。
+- **开一套 / 开协作**：一键打开 Claude + Codex + Grok 主从三窗。协作是一个大脑拆活、另外两个动手，共用 `.vibe/orchestra/`，不是合成聊天室。
+- **统一记忆到 Claude**（可选）：项目 `.memory` 链到 Claude 项目记忆。默认关闭，不会自动创建 `CLAUDE.md` / `AGENTS.md`。
+- 终端新增主从布局，可见会话不足时收拢空位。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装

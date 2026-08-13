@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.17
+
+### English
+
+**Added**
+- Project cards can expand each CLI's on-disk history (Claude, Codex, Grok, OpenCode, Gemini, agy), with search, preview, delete, and a **running** badge that only matches an explicit resume/`--continue`/`resume --last` command.
+- **Open a set** launches Claude + Codex + Grok in a three-pane main layout, reusing already-running tabs for that project.
+- **Collaborate** opens a conductor bar: one brain plans into `.vibe/orchestra/plan.md`, the other two implement. Collaborate always starts fresh terminals; it does not inject into an in-progress chat.
+- Optional **Unify memory to Claude** mounts a project `.memory` symlink to the Claude project memory store. It stays off until opted in, and never auto-creates `CLAUDE.md` / `AGENTS.md`.
+- Terminal layouts now include a **main** arrangement (large left pane + two stacked right panes). Fewer visible sessions collapse instead of leaving empty holes.
+
+**Improved / Fixed**
+- History delete stays inside the current project, rejects path escape, atomically rewrites the shared agy history log, and filters Claude sessions by jsonl `cwd` when encoded directories collide.
+
+**Tests**
+- Added coverage for history search/running-tab matching, preview/delete path boundaries, Claude cwd collisions, optional memory unify, and orchestra roles/file allowlists.
+
+### 中文
+
+**新增**
+- 项目卡片可展开各家 CLI 磁盘历史（Claude、Codex、Grok、OpenCode、Gemini、agy），支持搜索、预览、删除；**运行中**只对齐明确的续接 / `--continue` / `resume --last`，不会把「开一套」的裸启动误标成最新历史。
+- **开一套**同时打开 Claude + Codex + Grok 主从三窗，并复用该项目已在跑的标签。
+- **开协作**提供指挥条：一个大脑把计划写入 `.vibe/orchestra/plan.md`，另外两个动手。协作一律新开终端，不会把提示打进正在进行的对话。
+- 可选 **统一记忆到 Claude**：把项目 `.memory` 链到 Claude 项目记忆目录。默认关闭，且不会自动创建 `CLAUDE.md` / `AGENTS.md`。
+- 终端布局新增**主从**（左主窗 + 右上右下）；可见会话不足时收拢，不留空位。
+
+**改进 / 修复**
+- 历史删除只动当前项目、拒绝路径穿越；agy 共享日志原子替换；Claude 编码目录撞名时按 jsonl `cwd` 过滤。
+
+**测试**
+- 新增历史搜索/运行中对齐、预览删除边界、Claude cwd 撞名、可选记忆统一，以及协作角色与文件白名单的回归测试。
+
 ## v1.2.16
 
 ### English
