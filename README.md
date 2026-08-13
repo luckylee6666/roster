@@ -4,7 +4,7 @@
 
 A desktop app for managing your Vibe Coding projects, built with Tauri v2.
 
-Latest release: **v1.2.17** — project-card CLI history, optional Claude-canonical memory, one-click Claude+Codex+Grok set, and a brain/worker collaborate bar. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.18** — optional terminal proxy switch so new CLI sessions can use Clash/Surge without TUN. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -17,6 +17,7 @@ Latest release: **v1.2.17** — project-card CLI history, optional Claude-canoni
 - **Project history** — expand a card to search, preview, resume, or delete each CLI's on-disk sessions; running tabs only match an explicit continue/resume
 - **Open a set / Collaborate** — one click opens Claude + Codex + Grok in a three-pane main layout; Collaborate assigns one brain and two workers that share `.vibe/orchestra/`
 - **Unify memory to Claude** (opt-in) — a project `.memory` symlink to Claude's project memory store; off by default, never auto-creates `CLAUDE.md` / `AGENTS.md`
+- **Terminal proxy** — optional header switch writes `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` into newly started CLI terminals so a local Clash/Surge port works without TUN
 - **Session attention awareness** — when a terminal session goes quiet after a burst of output (an AI CLI likely finished or is waiting for input), you get a desktop notification + chime + an amber pulsing dot on the tab; the session you're actively watching won't interrupt you, and a bell icon in the toolbar toggles it
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
 - **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude, OpenCode, and Grok use `--continue`, while Codex uses `resume --last` in the saved project directory

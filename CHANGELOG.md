@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.18
+
+### English
+
+**Added**
+- A header **Proxy** switch applies `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` to newly started terminals so Claude, Codex, and Grok can use a local Clash/Surge port without TUN. SOCKS URLs go only to `ALL_PROXY`. Settings persist in `~/.vibe-coding-manage/proxy-settings.json`.
+
+**Improved / Fixed**
+- After the login shell finishes, the terminal sources a 0600 `proxy-env.sh` so `.zshrc` cannot wipe the app proxy. The header tooltip redacts credentials. Turning the switch off no longer clears inherited process environment.
+
+**Tests**
+- Added coverage for proxy URL normalization, SOCKS vs HTTP env assignment, and the header switch wiring.
+
+### 中文
+
+**新增**
+- 顶栏 **代理** 开关：打开后新启动的终端带上 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，Claude / Codex / Grok 可走 Clash、Surge 本地端口，不必开 TUN。`socks5://` 只写入 `ALL_PROXY`。设置保存在 `~/.vibe-coding-manage/proxy-settings.json`。
+
+**改进 / 修复**
+- 登录壳跑完后再 source 0600 的 `proxy-env.sh`，避免 `.zshrc` 冲掉代理。顶栏 tooltip 会隐藏账号密码。关掉开关不会清掉进程里原来的代理环境。
+
+**测试**
+- 新增代理地址规范化、SOCKS/HTTP 环境变量分配，以及顶栏开关接线的回归测试。
+
 ## v1.2.17
 
 ### English

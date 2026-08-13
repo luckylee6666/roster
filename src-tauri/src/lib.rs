@@ -21,6 +21,7 @@ mod native_esc;
 mod project_memory;
 mod project_sessions;
 mod orchestra;
+mod proxy_settings;
 
 /// 手机端远程服务监听端口（局域网）。
 const REMOTE_PORT: u16 = 8787;
@@ -138,7 +139,7 @@ struct AppState {
 /// 原子写：写同目录临时文件 + fsync，再 rename 覆盖目标。
 /// rename 在同一分区是原子操作——崩溃/断电后要么是旧文件、要么是新文件，
 /// 绝不会出现写到一半的半截文件（旧版 fs::write 先清空再写，中途被 kill 会损坏整文件）。
-fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
         let mut f = fs::File::create(&tmp)?;
@@ -160,7 +161,7 @@ fn preferred_data_dir() -> PathBuf {
 /// 回退旧目录，避免加载空数据后又把空表写进新目录。下次启动仍会重试迁移。
 static ACTIVE_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     ACTIVE_DATA_DIR
         .get()
         .cloned()
@@ -219,6 +220,7 @@ fn migrate_legacy_data_between(old: &Path, new: &Path) -> std::io::Result<()> {
         "snippets.json",
         "requirements.json",
         "term-themes.json",
+        "proxy-settings.json",
     ];
     for name in files {
         let src = old.join(name);
@@ -329,7 +331,7 @@ fn backup_prev(path: &Path, name: &str) {
 
 /// 加载 JSON 数据。解析失败时把损坏文件备份成 `*.bad`（避免随后的保存把它覆盖、
 /// 导致可恢复的数据彻底丢失），再返回默认空值。空文件视为默认值、不报错。
-fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path: &PathBuf) -> T {
+pub(crate) fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path: &PathBuf) -> T {
     if !path.exists() {
         return T::default();
     }
@@ -1881,6 +1883,25 @@ async fn read_orchestra_file(path: String, name: String) -> Result<String, Strin
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+fn get_proxy_settings() -> proxy_settings::ProxySettings {
+    proxy_settings::load_settings()
+}
+
+#[tauri::command]
+fn save_proxy_settings(
+    lock: State<proxy_settings::ProxySettingsLock>,
+    settings: proxy_settings::ProxySettings,
+) -> Result<proxy_settings::ProxySettings, String> {
+    let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+    proxy_settings::save_settings(settings)
+}
+
+#[tauri::command]
+fn get_proxy_shell_hook() -> proxy_settings::ProxyShellHook {
+    proxy_settings::shell_hook()
+}
+
 /// 找某项目对应的 Claude transcript 目录：先按编码规则猜，猜不中再扫 projects 下
 /// 各目录、读首行的 `cwd` 字段匹配。
 fn find_claude_project_dir(cwd: &str) -> Option<PathBuf> {
@@ -2349,6 +2370,7 @@ fn terminal_create(
         cmd.cwd(&cwd);
     }
     cmd.env("TERM", "xterm-256color");
+    proxy_settings::apply_to_command(&mut cmd);
 
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log_error!(
@@ -2360,9 +2382,17 @@ fn terminal_create(
     // slave 句柄在 spawn 后即可释放，否则子进程退出时读端不会收到 EOF
     drop(pair.slave);
     crate::log_info!(
-        "终端已创建：id={id} tool={} cwd={}",
+        "终端已创建：id={id} tool={} cwd={} proxy={}",
         tool.as_deref().unwrap_or(""),
-        if cwd.is_empty() { "(默认)" } else { cwd.as_str() }
+        if cwd.is_empty() { "(默认)" } else { cwd.as_str() },
+        {
+            let proxy = proxy_settings::load_settings();
+            if proxy.enabled && !proxy.url.is_empty() {
+                proxy_settings::redact_proxy_url(&proxy.url)
+            } else {
+                "off".into()
+            }
+        }
     );
 
     let mut reader = match pair.master.try_clone_reader() {
@@ -2802,6 +2832,7 @@ pub fn run() {
         .manage(state)
         .manage(term_state)
         .manage(TermThemeLock(Mutex::new(())))
+        .manage(proxy_settings::ProxySettingsLock(Mutex::new(())))
         .manage(EditorExitGuard::default())
         .setup(move |app| {
             // macOS WKWebView 会吞掉 ESC；本地 NSEvent 监听把裸 ESC 转成 native-esc。
@@ -2916,6 +2947,9 @@ pub fn run() {
             ensure_orchestra,
             write_orchestra_file,
             read_orchestra_file,
+            get_proxy_settings,
+            save_proxy_settings,
+            get_proxy_shell_hook,
             context_usage,
             get_snippets,
             save_snippets,

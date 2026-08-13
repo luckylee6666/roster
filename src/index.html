@@ -53,6 +53,14 @@
               </svg>
               <input id="search-input" type="text" placeholder="搜索项目名称、路径..." />
             </div>
+            <button class="btn" id="proxy-settings-entry" type="button" title="终端代理：开着时新启动的 CLI 走这个地址">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="8.2"/>
+                <path d="M3.8 12h16.4M12 3.8c2.4 2.6 3.6 5.4 3.6 8.2s-1.2 5.6-3.6 8.2c-2.4-2.6-3.6-5.4-3.6-8.2s1.2-5.6 3.6-8.2z"/>
+              </svg>
+              代理
+              <span class="proxy-switch-dot" id="proxy-switch-dot" data-on="0" aria-hidden="true"></span>
+            </button>
             <button class="btn" id="server-manage-entry">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/>
@@ -157,6 +165,38 @@
           <div class="modal-footer">
             <button class="btn btn-default" id="cancel-btn">取消</button>
             <button class="btn btn-primary" id="submit-btn">确定</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 终端代理 -->
+    <div class="modal-mask" id="proxy-overlay">
+      <div class="modal-wrap">
+        <div class="modal">
+          <div class="modal-header">
+            <span class="modal-title">终端代理</span>
+            <button class="modal-x" id="proxy-modal-close" type="button">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="proxy-lead">打开后，新启动的 Claude / Codex / Grok 等 CLI 会带上代理环境变量，不必再开 TUN。已打开的标签要关掉重开才生效。</p>
+            <label class="proxy-switch-row" for="proxy-enabled">
+              <span>
+                <strong>启用代理</strong>
+                <small>启动 CLI 时写入 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY</small>
+              </span>
+              <input id="proxy-enabled" type="checkbox" />
+            </label>
+            <label class="form-label" for="proxy-url">代理地址</label>
+            <input class="form-input" id="proxy-url" type="text" spellcheck="false"
+                   placeholder="127.0.0.1:7890 或 socks5://127.0.0.1:7891" />
+            <label class="form-label" for="proxy-noproxy">不走代理</label>
+            <input class="form-input" id="proxy-noproxy" type="text" spellcheck="false"
+                   placeholder="localhost,127.0.0.1,::1" />
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="proxy-modal-cancel" type="button">取消</button>
+            <button class="btn btn-primary" id="proxy-modal-save" type="button">保存</button>
           </div>
         </div>
       </div>

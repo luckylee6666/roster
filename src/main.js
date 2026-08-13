@@ -76,6 +76,12 @@ import {
   shouldMountProjectMemory,
 } from './project-memory-utils.js';
 import { createTerminalSessionCloseCoordinator } from './terminal-session-close.js';
+import {
+  DEFAULT_NO_PROXY,
+  isValidProxyUrl,
+  normalizeProxySettings,
+  redactProxyUrl,
+} from './proxy-settings-utils.js';
 
 let invoke;
 try {
@@ -160,6 +166,15 @@ const el = {
   orchestraModalClose: $('orchestra-modal-close'),
   orchestraModalCancel: $('orchestra-modal-cancel'),
   orchestraModalStart: $('orchestra-modal-start'),
+  proxyEntry: $('proxy-settings-entry'),
+  proxyDot: $('proxy-switch-dot'),
+  proxyOverlay: $('proxy-overlay'),
+  proxyEnabled: $('proxy-enabled'),
+  proxyUrl: $('proxy-url'),
+  proxyNoProxy: $('proxy-noproxy'),
+  proxyClose: $('proxy-modal-close'),
+  proxyCancel: $('proxy-modal-cancel'),
+  proxySave: $('proxy-modal-save'),
   toasts: $('toast-container'),
   serverModal: $('server-modal-overlay'),
   serverModalTitle: $('server-modal-title'),
@@ -195,6 +210,7 @@ const el = {
 async function init() {
   await load();
   bind();
+  void refreshProxyIndicator();
   try {
     await setupEditorExitGuard();
   } catch (e) {
@@ -893,6 +909,63 @@ function closeOrchestraModal() {
   el.orchestra?.classList.remove('active');
 }
 
+let currentProxySettings = { enabled: false, url: '', noProxy: DEFAULT_NO_PROXY };
+
+function paintProxyIndicator(settings) {
+  currentProxySettings = normalizeProxySettings(settings);
+  if (el.proxyDot) el.proxyDot.dataset.on = currentProxySettings.enabled ? '1' : '0';
+  if (el.proxyEntry) {
+    el.proxyEntry.title = currentProxySettings.enabled
+      ? `代理已开：新启动的 CLI 走 ${redactProxyUrl(currentProxySettings.url)}`
+      : '代理已关：新启动的 CLI 不走应用代理';
+  }
+}
+
+async function refreshProxyIndicator() {
+  try {
+    paintProxyIndicator(await invoke('get_proxy_settings'));
+  } catch (_) {
+    paintProxyIndicator({ enabled: false, url: '', noProxy: DEFAULT_NO_PROXY });
+  }
+}
+
+async function openProxyModal() {
+  await refreshProxyIndicator();
+  el.proxyEnabled.checked = currentProxySettings.enabled;
+  el.proxyUrl.value = currentProxySettings.url || '';
+  el.proxyNoProxy.value = currentProxySettings.noProxy || DEFAULT_NO_PROXY;
+  el.proxyOverlay.classList.add('active');
+  el.proxyUrl.focus();
+}
+
+function closeProxyModal() {
+  el.proxyOverlay?.classList.remove('active');
+}
+
+async function saveProxyModal() {
+  const enabled = Boolean(el.proxyEnabled.checked);
+  const url = String(el.proxyUrl.value || '').trim();
+  if (enabled && !isValidProxyUrl(url)) {
+    msg('代理地址不对，例如 127.0.0.1:7890 或 socks5://127.0.0.1:7891', 'error');
+    el.proxyUrl.focus();
+    return;
+  }
+  try {
+    const saved = await invoke('save_proxy_settings', {
+      settings: {
+        enabled,
+        url,
+        noProxy: el.proxyNoProxy.value,
+      },
+    });
+    paintProxyIndicator(saved);
+    closeProxyModal();
+    msg(saved.enabled ? '代理已开，新启动的 CLI 会走代理' : '代理已关', 'success');
+  } catch (error) {
+    msg('保存代理失败：' + (error?.message || error), 'error');
+  }
+}
+
 function bindOrchestraSessions(sessionIds, config) {
   const byTool = {};
   for (const id of sessionIds) {
@@ -1166,6 +1239,7 @@ function bind() {
     closeTerminalLayoutMenu();
     closeSessionPreview();
     closeOrchestraModal();
+    closeProxyModal();
   };
 
   // 运行环境切换时显示/隐藏服务器选择
@@ -1189,6 +1263,12 @@ function bind() {
   el.serverListClose.onclick = closeServerList;
   el.serverListOverlay.onclick = e => { if (e.target === el.serverListOverlay) closeServerList(); };
   el.addServerBtn.onclick = () => { closeServerList(); openServerModal(); };
+
+  el.proxyEntry.onclick = () => void openProxyModal();
+  el.proxyClose.onclick = closeProxyModal;
+  el.proxyCancel.onclick = closeProxyModal;
+  el.proxyOverlay.onclick = e => { if (e.target === el.proxyOverlay) closeProxyModal(); };
+  el.proxySave.onclick = () => void saveProxyModal();
 
   // 侧边栏服务器管理入口
   $('server-manage-entry').onclick = (e) => {
@@ -5259,10 +5339,16 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
       const memory = await mountProjectMemory(cwd, session);
       writeMemoryBanner(term, memory);
     }
-    if (autoCmd) {
+    let proxyHook = '';
+    try {
+      const hook = await invoke('get_proxy_shell_hook');
+      proxyHook = String(hook?.command || '').trim();
+    } catch (_) {}
+    if (autoCmd || proxyHook) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
-    await inputBuffer.markReady(autoCmd ? autoCmd + '\r' : '');
+    const startup = (proxyHook ? `${proxyHook}\r` : '') + (autoCmd ? `${autoCmd}\r` : '');
+    await inputBuffer.markReady(startup);
   } catch (e) {
     inputBuffer.markFailed();
     session.status = 'failed';
