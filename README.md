@@ -1,8 +1,14 @@
-# Roster
+<p align="center">
+  <img src="src/assets/logo.png" width="128" height="128" alt="Roster">
+</p>
 
-**English** | [中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
+<h1 align="center">Roster</h1>
 
-A desktop command center for multiple AI CLIs, built with Tauri v2.
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">中文</a> · <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+<p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
 Latest release: **v1.2.20** — larger chrome type, name-tag **R** icon, cleaner header. See the [changelog](CHANGELOG.md) for details.
 

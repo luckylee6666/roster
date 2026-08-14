@@ -1,8 +1,14 @@
-# Roster
+<p align="center">
+  <img src="src/assets/logo.png" width="128" height="128" alt="Roster">
+</p>
 
-[English](README.md) | **中文** · [更新日志](CHANGELOG.md)
+<h1 align="center">Roster</h1>
 
-多 AI CLI 指挥台桌面应用，基于 Tauri v2 构建。
+<p align="center">
+  <a href="README.md">English</a> | <strong>中文</strong> · <a href="CHANGELOG.md">更新日志</a>
+</p>
+
+<p align="center">多 AI CLI 指挥台桌面应用，基于 Tauri v2 构建。</p>
 
 最新版本：**v1.2.20** — 工作台字号加大、名牌 **R** 图标、顶栏精简。详情见[更新日志](CHANGELOG.md)。
 
