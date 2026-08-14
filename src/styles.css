@@ -272,31 +272,58 @@ body {
 }
 
 .header {
-  height: 56px;
+  min-height: 56px;
+  height: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   padding: 0 24px;
   background: var(--bg-0);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  min-width: 0;
+  container-type: inline-size;
+  container-name: app-header;
+}
+
+.header-title {
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .header-title h1 {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-1);
+  line-height: 22px;
+  white-space: nowrap;
 }
 
 .breadcrumb {
+  display: block;
   font-size: 12px;
+  line-height: 18px;
   color: var(--text-3);
+  white-space: nowrap;
 }
 
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.header-actions .btn {
+  padding: 0 12px;
+}
+
+.btn-label {
+  white-space: nowrap;
 }
 
 .proxy-switch-dot {
@@ -386,6 +413,8 @@ body {
   border-radius: var(--radius-sm);
   transition: all 0.2s;
   width: 220px;
+  min-width: 132px;
+  flex: 0 1 220px;
 }
 
 .search-wrap:focus-within {
@@ -417,6 +446,8 @@ body {
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  position: relative;
   gap: 6px;
   height: 32px;
   padding: 0 15px;
@@ -429,6 +460,7 @@ body {
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn svg {
@@ -1263,6 +1295,78 @@ body {
   background: var(--text-4);
 }
 
+/* 顶栏按实际可用宽度收拢，避免中文面包屑被挤成竖排。
+   窗口最小 900px，768px 媒体查询在桌面端不会触发；以 header 容器查询为准。 */
+@container app-header (max-width: 980px) {
+  .search-wrap {
+    flex-basis: 148px;
+    width: 148px;
+  }
+}
+
+@container app-header (max-width: 860px) {
+  .breadcrumb {
+    display: none;
+  }
+
+  .header-actions .btn-label:not(.btn-label-keep) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .header-actions .btn {
+    padding: 0 8px;
+  }
+
+  .header-actions .btn-primary {
+    padding: 0 10px;
+  }
+
+  .search-wrap {
+    flex-basis: 148px;
+    width: 148px;
+  }
+}
+
+/* 无容器查询时的回退：侧栏约 220px，1120 窗口时顶栏已不够排满文案按钮 */
+@media (max-width: 1120px) {
+  .header .breadcrumb {
+    display: none;
+  }
+
+  .header-actions .btn-label:not(.btn-label-keep) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .header-actions .btn {
+    padding: 0 8px;
+  }
+
+  .header-actions .btn-primary {
+    padding: 0 10px;
+  }
+
+  .search-wrap {
+    flex-basis: 148px;
+    width: 148px;
+  }
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
   .sider {
@@ -1295,10 +1399,11 @@ body {
 
   .header-actions {
     flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
   .search-wrap {
-    flex: 1;
+    flex: 1 1 160px;
     width: auto;
   }
 
