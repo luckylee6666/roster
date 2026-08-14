@@ -2,15 +2,34 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.20
+
+### English
+
+**Improved**
+- Replaced the generic `<>` mark with a name-tag **R** icon (sidebar, Dock, tray, `.icns` / `.ico`).
+- Chrome type is larger by default (16px body). The terminal toolbar **Aa** menu sets chrome Standard / Large and the terminal size (`⌘+/-` still works).
+- Removed the redundant **项目管理** header title and breadcrumb. Search sits on the left; action buttons stay on the right.
+
+**Tests**
+- Added coverage for chrome Standard / Large normalization, storage fallback, and the toolbar **Aa** menu wiring.
+
+### 中文
+
+**改进**
+- 应用图标从通用 `<>` 换成名牌 **R**（侧栏、Dock、托盘、`.icns` / `.ico`）。
+- 工作台默认字号加大（正文 16px）。终端顶栏 **Aa** 可调界面标准 / 偏大和终端字号（`⌘+/-` 仍可用）。
+- 去掉顶栏重复的「项目管理」标题和面包屑。搜索靠左，操作按钮仍在右侧。
+
+**测试**
+- 新增界面字号标准 / 偏大归一化、存储失败回退，以及顶栏 **Aa** 菜单接线的回归测试。
+
 ## v1.2.19
 
 ### English
 
 **Changed**
 - The app is now **Roster**. Window title, sidebar, tray, DMG/app bundle, crate, npm package, and bundle id (`com.lucky.roster`) all use the new name.
-- Replaced the generic `<>` mark with a name-tag **R** icon (sidebar, Dock, tray, `.icns` / `.ico`).
-- Chrome type is larger by default (16px body). The terminal toolbar **Aa** menu sets chrome Standard / Large and the terminal size (`⌘+/-` still works).
-- Removed the redundant **项目管理** header title and breadcrumb. Search sits on the left; action buttons stay on the right.
 - Data lives in `~/.roster/` (backups in `~/.roster-backups/`). The first launch copies `~/.vibe-coding-manage/` and the older Application Support directory if they still exist. Old folders are kept as a fallback.
 
 **Tests**
@@ -20,9 +39,6 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 **变更**
 - 产品更名为 **Roster**。窗口标题、侧栏、托盘、DMG/应用包、crate、npm 包名和 bundle id（`com.lucky.roster`）一并更换。
-- 应用图标从通用 `<>` 换成名牌 **R**（侧栏、Dock、托盘、`.icns` / `.ico`）。
-- 工作台默认字号加大（正文 16px）。终端顶栏 **Aa** 可调界面标准 / 偏大和终端字号（`⌘+/-` 仍可用）。
-- 去掉顶栏重复的「项目管理」标题和面包屑。搜索靠左，操作按钮仍在右侧。
 - 数据目录改为 `~/.roster/`（备份在 `~/.roster-backups/`）。首次启动会从 `~/.vibe-coding-manage/` 和更早的 Application Support 目录拷过来，旧目录保留作回退。
 
 **测试**

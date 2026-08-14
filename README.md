@@ -4,7 +4,7 @@
 
 A desktop command center for multiple AI CLIs, built with Tauri v2.
 
-Latest release: **v1.2.19** — renamed to **Roster**. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.20** — larger chrome type, name-tag **R** icon, cleaner header. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
