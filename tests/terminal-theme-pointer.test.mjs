@@ -70,6 +70,7 @@ class FakeWindow extends FakeEventTarget {
 const normalTarget = { closest: () => null };
 const resizeTarget = { closest: selector => selector.includes('.terminal-resize') ? {} : null };
 const companionTarget = { closest: selector => selector.includes('.companion-panel') ? {} : null };
+const sessionRailTarget = { closest: selector => selector.includes('.session-rail-splitter') ? {} : null };
 
 test('动态鼠标仅接受内置主题白名单', () => {
   assert.equal(normalizeThemePointer('sakura'), 'sakura');
@@ -169,5 +170,30 @@ test('减少动态效果时保留静态指针但不生成轨迹和点击粒子',
 
   assert.equal(document.body.children.length, 1);
   assert.equal(document.body.children[0].classList.contains('is-visible'), true);
+  controller.destroy();
+});
+
+test('拖会话条高度时恢复系统光标', () => {
+  const document = new FakeDocument();
+  const window = new FakeWindow();
+  const dock = new FakeElement();
+  const controller = installThemePointer(dock, {
+    document,
+    window,
+    now: () => 100,
+    random: () => 0.5,
+    setTimeout: () => {},
+  });
+  controller.applyTheme({ cursor: 'sakura', clickFx: false, effect: 'sakura' });
+  dock.dispatch('pointermove', {
+    pointerType: 'mouse', clientX: 40, clientY: 80, target: sessionRailTarget,
+  });
+  assert.equal(dock.classList.contains('is-theme-pointer-active'), false);
+  assert.equal(document.body.children[0].classList.contains('is-visible'), false);
+  dock.classList.add('is-session-rail-resizing');
+  dock.dispatch('pointermove', {
+    pointerType: 'mouse', clientX: 42, clientY: 90, target: normalTarget,
+  });
+  assert.equal(dock.classList.contains('is-theme-pointer-active'), false);
   controller.destroy();
 });

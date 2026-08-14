@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased
+
+### English
+
+**Added**
+- The terminal file tree now has a compact session rail under the files: running AI tabs for the current project first, then recent on-disk sessions. Click a running row to focus it; click a history row to resume. Search, preview, and delete stay on the project card. The rail height is resizable and can be collapsed on its own.
+
+**Tests**
+- Added coverage for rail ordering, resume-vs-focus actions, height/hidden fallbacks, in-flight loading, and the tree/rail wiring.
+
+### 中文
+
+**新增**
+- 终端文件树下方增加细会话条：先列当前项目正在跑的 AI 标签，再列最近磁盘会话。点进行中的一行聚焦，点历史一行续接。搜索、预览、删除仍在项目卡片。会话条可拖高度，也可单独收起。
+
+**测试**
+- 新增会话条排序、聚焦/续接动作、高度与收起回退、加载中不画成空，以及文件树接线的回归测试。
+
 ## v1.2.20
 
 ### English

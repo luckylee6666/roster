@@ -70,6 +70,7 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 - **Single-click a file** → preview on the right; use the pencil in the preview bar to edit code, config, and text (`⌘/Ctrl + S` saves); **double-click** → insert its path into the terminal
 - **Drag** a file/folder from the tree onto the terminal → inserts its path (handy for pointing an AI session at a directory)
 - Drag the middle splitter to resize the tree; the folder toolbar icon collapses/expands it
+- The lower half of the tree is a session rail for the current project: running AI tabs first (click to focus), then recent on-disk sessions (click to resume). Search, preview, and delete stay on the project card. Drag the horizontal splitter to resize; the chevron collapses just the rail
 
 **Supported preview formats**
 - **Code / config / text**: syntax highlighting (dozens of languages) and direct editing while preserving UTF-8 BOM, LF/CRLF line endings, permissions, ACLs, extended attributes, and supported platform metadata

@@ -27,7 +27,18 @@ import {
   findRunningProjectTool,
   runningHistoryLookup,
   runningTerminalIdForHistory,
+  sameProjectCwd,
 } from './project-history-utils.js';
+import {
+  SESSION_RAIL_HEIGHT_KEY,
+  SESSION_RAIL_HIDDEN_KEY,
+  buildSessionRailModel,
+  clampSessionRailHeight,
+  formatRailRelativeTime,
+  sessionRailAction,
+  sessionRailHiddenFromStorage,
+  sessionRailViewLoading,
+} from './session-rail-utils.js';
 import {
   DEFAULT_ORCHESTRA_BRAIN,
   ORCHESTRA_GOAL_FILE,
@@ -71,6 +82,7 @@ import {
   isProjectMemoryUnifyEnabled,
   loadProjectMemoryUnifyPaths,
   memoryBannerText,
+  normalizeProjectMemoryCwd,
   setProjectMemoryUnifyEnabled,
   shouldAutoMountProjectMemory,
   shouldMountProjectMemory,
@@ -558,6 +570,10 @@ const expandedProjectIds = new Set();
 const projectSessionCache = new Map();
 const projectSessionLoads = new Map();
 const projectSessionQueries = new Map();
+const sessionRailHistoryByCwd = new Map();
+const sessionRailLoads = new Map();
+let sessionRailRevision = 0;
+let sessionRailModel = null;
 let sessionPreviewContext = null;
 let projectKitOpening = false;
 
@@ -567,7 +583,13 @@ function listLiveTerminals() {
     cwd: session.cwd,
     tool: session.tool,
     status: session.status,
+    name: session.name,
+    startedAt: session.startedAt,
   }));
+}
+
+function findProjectByCwd(cwd) {
+  return projects.find(project => sameProjectCwd(project.localPath, cwd)) || null;
 }
 
 function historySessionPayload(row) {
@@ -708,6 +730,8 @@ async function expandProjectSessions(project, card) {
   try {
     const history = await pending;
     projectSessionCache.set(project.id, history);
+    sessionRailHistoryByCwd.set(normalizeProjectMemoryCwd(project.localPath), history);
+    if (sameProjectCwd(treeRoot, project.localPath)) refreshSessionRailView();
     if (!expandedProjectIds.has(project.id) || card.dataset.id !== project.id) return;
     renderProjectSessions(card, history);
   } catch (error) {
@@ -806,8 +830,10 @@ function deleteHistorySession(project, session) {
           id: session.id,
         });
         projectSessionCache.delete(project.id);
+        sessionRailHistoryByCwd.delete(normalizeProjectMemoryCwd(project.localPath));
         const card = el.list.querySelector(`.project-card[data-id="${project.id}"]`);
         if (card && expandedProjectIds.has(project.id)) await expandProjectSessions(project, card);
+        else if (sameProjectCwd(treeRoot, project.localPath)) void syncSessionRail(project.localPath, { reload: true });
         msg('已删除历史会话', 'success');
       } catch (error) {
         msg('删除失败：' + (error?.message || error), 'error');
@@ -821,6 +847,7 @@ function refreshExpandedHistoryCards() {
     const cached = projectSessionCache.get(card.dataset.id);
     if (cached) renderProjectSessions(card, cached);
   });
+  refreshSessionRailView();
 }
 
 function applyProjectKitLayout(sessionIds) {
@@ -1455,7 +1482,15 @@ function bind() {
   setupWorkspaceMode();
   // 文件树 + 内容预览
   termEl.treeBtn.onclick = toggleTree;
-  termEl.treeRefreshBtn.onclick = () => renderTree(treeRoot);
+  termEl.treeRefreshBtn.onclick = () => {
+    const key = normalizeProjectMemoryCwd(treeRoot);
+    if (key) {
+      sessionRailHistoryByCwd.delete(key);
+      const project = findProjectByCwd(key);
+      if (project) projectSessionCache.delete(project.id);
+    }
+    renderTree(treeRoot);
+  };
   termEl.previewInsert.onclick = () => insertPathToTerminal(termEl.previewInsert.dataset.path || '');
   termEl.previewToggle.onclick = togglePreviewMode;
   termEl.previewEdit.onclick = beginFileEdit;
@@ -1472,6 +1507,7 @@ function bind() {
     if (/^https?:\/\//i.test(href)) invoke('open_folder', { path: href }).catch(() => {});
   });
   setupTreeSplitter();
+  setupSessionRail();
   setupTreeDrag();
   // 文件树右键菜单
   el.treeCtxMenu.querySelectorAll('.ctx-item').forEach(item => {
@@ -1519,6 +1555,7 @@ function bind() {
     if (termEl.dock.classList.contains('maximized')) termEl.dock.style.height = window.innerHeight + 'px';
     closeTerminalLayoutMenu();
     closeFontMenu();
+    applySessionRailHeight({ persist: true });
     scheduleFitVisibleSessions();
   });
   renderTerminalPaneLayout();
@@ -2232,6 +2269,10 @@ const termEl = {
   treeRootName: $('tree-root-name'),
   treeRefreshBtn: $('tree-refresh-btn'),
   treeSplitter: $('tree-splitter'),
+  sessionRail: $('session-rail'),
+  sessionRailBody: $('session-rail-body'),
+  sessionRailToggle: $('session-rail-toggle'),
+  sessionRailSplitter: $('session-rail-splitter'),
   paneSplitterVertical: $('terminal-pane-splitter-vertical'),
   paneSplitterHorizontal: $('terminal-pane-splitter-horizontal'),
   main: document.querySelector('.terminal-main'),
@@ -3719,6 +3760,7 @@ async function bindTermEvents() {
         beep();
         invoke('notify', { title: `${s.name || '终端'} 已结束`, body: '终端会话已退出' }).catch(() => {});
       }
+      refreshExpandedHistoryCards();
     }
   });
   // 会话状态感知：某会话活跃后静默 → AI 可能跑完/在等你输入
@@ -4090,6 +4132,7 @@ function makeTreeRow(entry, depth) {
 async function renderTree(cwd) {
   treeRoot = cwd || null;
   treeActiveRow = null;
+  void syncSessionRail(cwd);
   if (!cwd) {
     termEl.treeRootName.textContent = '无目录';
     termEl.treeRootName.title = '';
@@ -4714,6 +4757,8 @@ function toggleTree() {
   termEl.treeBtn.classList.toggle('active', !hidden);
   localStorage.setItem('term-tree-hidden', hidden ? '1' : '0');
   if (!hidden && treeRoot === null && activeSession) renderTree(sessions.get(activeSession).cwd);
+  else if (!hidden) void syncSessionRail(treeRoot);
+  if (!hidden) requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
   scheduleFitVisibleSessions();
 }
 
@@ -4743,6 +4788,182 @@ function setupTreeSplitter() {
     document.addEventListener('mouseup', onUp);
     window.addEventListener('blur', onUp, { once: true });
   });
+}
+
+function getSessionRailHistory(cwd) {
+  const key = normalizeProjectMemoryCwd(cwd);
+  if (!key) return null;
+  if (sessionRailHistoryByCwd.has(key)) return sessionRailHistoryByCwd.get(key);
+  const project = findProjectByCwd(key);
+  if (project && projectSessionCache.has(project.id)) {
+    const history = projectSessionCache.get(project.id);
+    sessionRailHistoryByCwd.set(key, history);
+    return history;
+  }
+  return null;
+}
+
+function sessionRailItemHtml(item, activeId) {
+  const active = item.terminalId && item.terminalId === activeId;
+  const meta = item.running ? '运行中' : formatRailRelativeTime(item.atMs);
+  return `<button type="button" class="session-rail-item${active ? ' is-active' : ''}${item.running ? ' is-running' : ''}" data-rail-key="${escAttr(item.key)}" title="${escAttr(item.title)}">`
+    + `<span class="term-tab-tool tool-${esc(item.tool)}">${esc(item.tool)}</span>`
+    + `<span class="session-rail-name">${esc(item.title)}</span>`
+    + (meta ? `<span class="session-rail-meta">${esc(meta)}</span>` : '')
+    + `</button>`;
+}
+
+function renderSessionRail(cwd, history, { loading = false, error = '' } = {}) {
+  if (!termEl.sessionRailBody) return;
+  const model = buildSessionRailModel({
+    cwd,
+    runningSessions: listLiveTerminals(),
+    historyGroups: history?.groups || [],
+  });
+  sessionRailModel = model;
+  if (!normalizeProjectMemoryCwd(cwd)) {
+    termEl.sessionRailBody.innerHTML = '<div class="session-rail-empty">当前终端没有项目目录</div>';
+    return;
+  }
+  const parts = [];
+  if (model.live.length) {
+    parts.push('<div class="session-rail-label">进行中</div>');
+    parts.push(model.live.map(item => sessionRailItemHtml(item, activeSession)).join(''));
+  }
+  if (model.history.length) {
+    parts.push('<div class="session-rail-label">最近</div>');
+    parts.push(model.history.map(item => sessionRailItemHtml(item, activeSession)).join(''));
+  }
+  if (loading && !model.history.length) {
+    parts.push('<div class="session-rail-empty">加载历史会话…</div>');
+  } else if (error && !model.history.length) {
+    parts.push(`<div class="session-rail-empty">${esc(error)}</div>`);
+  } else if (!model.live.length && !model.history.length && !loading) {
+    parts.push('<div class="session-rail-empty">这个项目还没有 AI 会话</div>');
+  }
+  termEl.sessionRailBody.innerHTML = parts.join('');
+  termEl.sessionRailBody.querySelectorAll('.session-rail-item').forEach(button => {
+    button.onclick = () => openRailSession(button.dataset.railKey);
+  });
+}
+
+function refreshSessionRailView() {
+  const cwd = (activeSession && sessions.get(activeSession)?.cwd) || treeRoot || '';
+  const history = getSessionRailHistory(cwd);
+  renderSessionRail(cwd, history, {
+    loading: sessionRailViewLoading(cwd, history, sessionRailLoads),
+  });
+}
+
+async function syncSessionRail(cwd, { reload = false } = {}) {
+  const revision = ++sessionRailRevision;
+  const key = normalizeProjectMemoryCwd(cwd);
+  if (reload && key) sessionRailHistoryByCwd.delete(key);
+  const cached = reload ? null : getSessionRailHistory(cwd);
+  renderSessionRail(cwd, cached, { loading: Boolean(key && !cached) });
+  if (!key || cached) return;
+  let pending = sessionRailLoads.get(key);
+  if (!pending) {
+    pending = invoke('list_project_sessions', { path: cwd })
+      .finally(() => sessionRailLoads.delete(key));
+    sessionRailLoads.set(key, pending);
+  }
+  try {
+    const history = await pending;
+    if (revision !== sessionRailRevision) return;
+    sessionRailHistoryByCwd.set(key, history);
+    const project = findProjectByCwd(cwd);
+    if (project) {
+      projectSessionCache.set(project.id, history);
+      if (expandedProjectIds.has(project.id)) {
+        const card = el.list.querySelector(`.project-card[data-id="${project.id}"]`);
+        if (card) renderProjectSessions(card, history);
+      }
+    }
+    renderSessionRail(cwd, history);
+  } catch (error) {
+    if (revision !== sessionRailRevision) return;
+    renderSessionRail(cwd, null, { error: error?.message || String(error) });
+  }
+}
+
+function openRailSession(key) {
+  const item = [...(sessionRailModel?.live || []), ...(sessionRailModel?.history || [])]
+    .find(entry => entry.key === key);
+  const action = sessionRailAction(item);
+  if (action.type === 'focus') {
+    activateSession(action.terminalId);
+    return;
+  }
+  if (action.type !== 'resume') return;
+  const cwd = sessionRailModel?.cwd || '';
+  const autoCmd = resumeCliCommand(action.tool, action.sessionId);
+  if (!autoCmd) {
+    msg('还不支持续接这个工具的历史会话', 'info');
+    return;
+  }
+  const project = findProjectByCwd(cwd);
+  if (project) recordProjectActivity(project.id, autoCmd);
+  void createSession({ cwd, name: `${action.tool} · ${action.title}`, autoCmd });
+}
+
+function applySessionRailCollapsed(hidden) {
+  if (!termEl.sessionRail) return;
+  termEl.tree.classList.toggle('is-rail-collapsed', hidden);
+  termEl.sessionRail.classList.toggle('is-collapsed', hidden);
+  termEl.sessionRailToggle.setAttribute('aria-expanded', hidden ? 'false' : 'true');
+  termEl.sessionRailToggle.title = hidden ? '展开会话' : '收起会话';
+  try { localStorage.setItem(SESSION_RAIL_HIDDEN_KEY, hidden ? '1' : '0'); } catch (_) {}
+}
+
+function applySessionRailHeight({ persist = false } = {}) {
+  if (!termEl.tree || !termEl.sessionRail) return;
+  const laidOut = termEl.dock.classList.contains('active') && !termEl.tree.classList.contains('hidden');
+  const treeHeight = laidOut ? termEl.tree.clientHeight : 0;
+  const height = clampSessionRailHeight(localStorage.getItem(SESSION_RAIL_HEIGHT_KEY), treeHeight);
+  termEl.tree.style.setProperty('--session-rail-height', `${height}px`);
+  if (persist && laidOut && treeHeight > 0) {
+    try { localStorage.setItem(SESSION_RAIL_HEIGHT_KEY, String(height)); } catch (_) {}
+  }
+}
+
+function setupSessionRailSplitter() {
+  let startY = 0;
+  let startH = 0;
+  const onMove = (event) => {
+    const next = clampSessionRailHeight(startH - (event.clientY - startY), termEl.tree.clientHeight);
+    termEl.tree.style.setProperty('--session-rail-height', `${next}px`);
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onUp);
+    document.body.style.userSelect = '';
+    termEl.dock.classList.remove('is-session-rail-resizing');
+    try { localStorage.setItem(SESSION_RAIL_HEIGHT_KEY, String(termEl.sessionRail.offsetHeight)); } catch (_) {}
+  };
+  termEl.sessionRailSplitter.addEventListener('mousedown', (event) => {
+    if (termEl.sessionRail.classList.contains('is-collapsed')) return;
+    event.preventDefault();
+    startY = event.clientY;
+    startH = termEl.sessionRail.offsetHeight;
+    document.body.style.userSelect = 'none';
+    termEl.dock.classList.add('is-session-rail-resizing');
+    themePointer.hide();
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', onUp, { once: true });
+  });
+}
+
+function setupSessionRail() {
+  if (!termEl.sessionRail) return;
+  applySessionRailCollapsed(sessionRailHiddenFromStorage(localStorage.getItem(SESSION_RAIL_HIDDEN_KEY)));
+  applySessionRailHeight();
+  termEl.sessionRailToggle.onclick = () => {
+    applySessionRailCollapsed(!termEl.sessionRail.classList.contains('is-collapsed'));
+  };
+  setupSessionRailSplitter();
 }
 
 // ===== 树项拖入终端（自实现鼠标拖拽，绕开 Tauri 原生 drag-drop 对 HTML5 DnD 的干扰）=====
@@ -4887,6 +5108,7 @@ function openDock() {
   termEl.fab.classList.add('hidden');
   characterTheme.setDockOpen(true);
   workspaceController?.setDockOpen(true);
+  requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
   scheduleFitVisibleSessions();
 }
 
@@ -4910,7 +5132,10 @@ let dockPrevHeight = null;
 function setDockMaximized(maxed) {
   const wasMaxed = termEl.dock.classList.contains('maximized');
   if (maxed === wasMaxed) {
-    if (maxed) termEl.dock.style.height = window.innerHeight + 'px';
+    if (maxed) {
+      termEl.dock.style.height = window.innerHeight + 'px';
+      requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
+    }
     return;
   }
   termEl.dock.classList.toggle('maximized', maxed);
@@ -4923,6 +5148,7 @@ function setDockMaximized(maxed) {
     termEl.maximizeBtn.title = '最大化';
   }
   workspaceController?.scheduleBoundsSync();
+  requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
   scheduleFitVisibleSessions();
 }
 
@@ -5174,6 +5400,7 @@ function activateSession(id, force = false, onActivated = null) {
   activeSession = selected.activeSessionId;
   closePreview(true);
   if (rootChanged) renderTree(s.cwd);
+  else refreshSessionRailView();
   renderTerminalPaneLayout();
   // 标签栏可横向滚动：激活的标签可能在可视区外，滚进来
   s.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -5221,6 +5448,7 @@ function removeSessionFromPane(id, force = false) {
       termEl.treeRootName.textContent = '文件树';
       termEl.treeRootName.title = '';
       termEl.treeBody.innerHTML = '<div class="tree-empty">选择上方标签以显示会话</div>';
+      void syncSessionRail('');
     }
   }
   renderTerminalPaneLayout();
@@ -5281,13 +5509,16 @@ function finalizeSessionClose(id) {
   if (activeSession) {
     const next = sessions.get(activeSession);
     if (next && next.cwd !== treeRoot) renderTree(next.cwd);
+    else refreshSessionRailView();
     renderTerminalPaneLayout();
     requestAnimationFrame(() => next?.term.focus());
   } else if (!sessions.size) {
     renderTerminalPaneLayout();
+    void syncSessionRail('');
     collapseDock();
   } else {
     renderTerminalPaneLayout();
+    refreshSessionRailView();
   }
   updateFabBadge();
   persistSessionLayout();
@@ -5468,6 +5699,7 @@ function setupTermResize() {
     window.removeEventListener('blur', onUp);
     document.body.style.userSelect = '';
     termEl.dock.classList.remove('is-resizing');
+    applySessionRailHeight({ persist: true });
     scheduleFitVisibleSessions(true);
   };
   termEl.resize.addEventListener('mousedown', (e) => {

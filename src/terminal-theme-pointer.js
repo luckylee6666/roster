@@ -78,7 +78,8 @@ export function installThemePointer(dock, environment = {}) {
   };
   const usesNativeResizeCursor = target => dock.classList.contains('is-resizing')
     || dock.classList.contains('is-tree-resizing')
-    || !!target?.closest?.('.terminal-resize, .tree-splitter, .companion-splitter, .companion-panel');
+    || dock.classList.contains('is-session-rail-resizing')
+    || !!target?.closest?.('.terminal-resize, .tree-splitter, .session-rail-splitter, .companion-splitter, .companion-panel');
 
   const renderPosition = () => {
     framePending = false;
