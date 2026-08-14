@@ -77,6 +77,11 @@ import {
 } from './project-memory-utils.js';
 import { createTerminalSessionCloseCoordinator } from './terminal-session-close.js';
 import {
+  applyUiScale,
+  readUiScale,
+  writeUiScale,
+} from './ui-scale-utils.js';
+import {
   DEFAULT_NO_PROXY,
   isValidProxyUrl,
   normalizeProxySettings,
@@ -1167,7 +1172,25 @@ async function refreshGitStatus() {
   }
 }
 
+function installUiScale() {
+  const scale = applyUiScale(readUiScale());
+  const root = document.querySelector('.ui-scale-picks');
+  if (!root) return;
+  const sync = (current) => {
+    root.querySelectorAll('[data-ui-scale]').forEach((btn) => {
+      btn.setAttribute('aria-checked', btn.dataset.uiScale === current ? 'true' : 'false');
+    });
+  };
+  root.addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-ui-scale]');
+    if (!btn) return;
+    sync(applyUiScale(writeUiScale(btn.dataset.uiScale)));
+  });
+  sync(scale);
+}
+
 function bind() {
+  installUiScale();
   el.addBtn.onclick = () => openModal();
   el.exportBtn.onclick = exportExcel;
   el.modalClose.onclick = closeModal;
@@ -1237,6 +1260,7 @@ function bind() {
     closeSnippetMenu();
     closeMemoryMenu();
     closeTerminalLayoutMenu();
+    closeFontMenu();
     closeSessionPreview();
     closeOrchestraModal();
     closeProxyModal();
@@ -1316,12 +1340,14 @@ function bind() {
   termEl.snippetBtn.onclick = (ev) => {
     ev.stopPropagation();
     closeTerminalLayoutMenu();
+    closeFontMenu();
     closeMemoryMenu();
     toggleSnippetMenu(ev.currentTarget);
   };
   termEl.memoryBtn.onclick = (ev) => {
     ev.stopPropagation();
     closeTerminalLayoutMenu();
+    closeFontMenu();
     closeSnippetMenu();
     toggleMemoryMenu(ev.currentTarget);
   };
@@ -1383,12 +1409,31 @@ function bind() {
       ? closeTerminalLayoutMenu()
       : void openTerminalLayoutMenu();
   };
+  termEl.fontBtn.onclick = (e) => {
+    e.stopPropagation();
+    (fontMenuOpening || termEl.fontMenu.classList.contains('active'))
+      ? closeFontMenu()
+      : void openFontMenu();
+  };
+  $('term-font-dec').onclick = (e) => {
+    e.stopPropagation();
+    setTermFontSize(currentFontSize - 1);
+  };
+  $('term-font-inc').onclick = (e) => {
+    e.stopPropagation();
+    setTermFontSize(currentFontSize + 1);
+  };
+  $('term-font-reset').onclick = (e) => {
+    e.stopPropagation();
+    setTermFontSize(TERM_FONT_DEFAULT);
+  };
   termEl.layoutMenu.querySelectorAll('[data-layout]').forEach(option => {
     option.onclick = () => setTerminalPaneLayout(option.dataset.layout);
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.term-theme-wrap')) closeThemeMenu();
     if (!e.target.closest('.terminal-layout-wrap')) closeTerminalLayoutMenu();
+    if (!e.target.closest('.term-font-wrap')) closeFontMenu();
   });
   // 终端字号快捷键：⌘/Ctrl + 加号放大、减号缩小、0 复位（capture 阶段抢在 xterm 之前）
   document.addEventListener('keydown', (e) => {
@@ -1473,6 +1518,7 @@ function bind() {
   window.addEventListener('resize', () => {
     if (termEl.dock.classList.contains('maximized')) termEl.dock.style.height = window.innerHeight + 'px';
     closeTerminalLayoutMenu();
+    closeFontMenu();
     scheduleFitVisibleSessions();
   });
   renderTerminalPaneLayout();
@@ -2165,6 +2211,9 @@ const termEl = {
   memoryMenu: $('terminal-memory-menu'),
   layoutBtn: $('terminal-layout-btn'),
   layoutMenu: $('terminal-layout-menu'),
+  fontBtn: $('terminal-font-btn'),
+  fontMenu: $('terminal-font-menu'),
+  fontValue: $('term-font-value'),
   themeBtn: $('terminal-theme-btn'),
   themeMenu: $('terminal-theme-menu'),
   maximizeBtn: $('terminal-maximize-btn'),
@@ -3823,11 +3872,48 @@ let themeMenuRevision = 0;
 let themeMenuOpening = false;
 let terminalLayoutMenuRevision = 0;
 let terminalLayoutMenuOpening = false;
+let fontMenuRevision = 0;
+let fontMenuOpening = false;
+
+function syncTermFontMenu() {
+  if (termEl.fontValue) termEl.fontValue.textContent = String(currentFontSize);
+}
+
+async function openFontMenu() {
+  const revision = ++fontMenuRevision;
+  fontMenuOpening = true;
+  closeThemeMenu();
+  closeTerminalLayoutMenu();
+  closeSnippetMenu();
+  closeMemoryMenu();
+  const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-font-menu', true);
+  if (revision !== fontMenuRevision) return;
+  if (webviewHidden === false) {
+    fontMenuOpening = false;
+    return;
+  }
+  fontMenuOpening = false;
+  syncTermFontMenu();
+  termEl.fontMenu.classList.add('active');
+  termEl.fontBtn.classList.add('active');
+  termEl.fontBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeFontMenu() {
+  const wasOpen = fontMenuOpening || termEl.fontMenu.classList.contains('active');
+  fontMenuRevision += 1;
+  fontMenuOpening = false;
+  termEl.fontMenu.classList.remove('active');
+  termEl.fontBtn.classList.remove('active');
+  termEl.fontBtn.setAttribute('aria-expanded', 'false');
+  if (wasOpen) void workspaceController?.setFloatingUiOpen('terminal-font-menu', false);
+}
 
 async function openTerminalLayoutMenu() {
   const revision = ++terminalLayoutMenuRevision;
   terminalLayoutMenuOpening = true;
   closeThemeMenu();
+  closeFontMenu();
   closeSnippetMenu();
   closeMemoryMenu();
   const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-layout-menu', true);
@@ -3854,6 +3940,7 @@ async function openThemeMenu() {
   const revision = ++themeMenuRevision;
   themeMenuOpening = true;
   closeTerminalLayoutMenu();
+  closeFontMenu();
   closeMemoryMenu();
   const webviewHidden = await workspaceController?.setFloatingUiOpen('terminal-theme-menu', true);
   if (revision !== themeMenuRevision) return;
@@ -3877,11 +3964,13 @@ function closeThemeMenu() {
 // 调整终端字号：更新所有会话 + 重新 fit（行列数随字号变），并持久化
 function setTermFontSize(size) {
   size = Math.max(TERM_FONT_MIN, Math.min(TERM_FONT_MAX, size));
-  if (size === currentFontSize) return;
-  currentFontSize = size;
-  localStorage.setItem('term-fontsize', String(size));
-  sessions.forEach(s => { s.term.options.fontSize = size; clearTermAtlas(s.term); });
-  scheduleFitVisibleSessions();
+  if (size !== currentFontSize) {
+    currentFontSize = size;
+    localStorage.setItem('term-fontsize', String(size));
+    sessions.forEach(s => { s.term.options.fontSize = size; clearTermAtlas(s.term); });
+    scheduleFitVisibleSessions();
+  }
+  syncTermFontMenu();
 }
 
 // DPR 变化（窗口在不同缩放的显示器间移动）会让 WebGL 图集坐标错位 → 花屏。
@@ -4808,6 +4897,7 @@ function collapseDock() {
   closeSnippetMenu();
   closeMemoryMenu();
   closeTerminalLayoutMenu();
+  closeFontMenu();
   termEl.dock.classList.remove('active');
   termEl.fab.classList.remove('hidden');
   characterTheme.setDockOpen(false);

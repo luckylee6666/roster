@@ -89,7 +89,8 @@ The editor supports Tab/Shift+Tab indentation and warns before discarding unsave
 - On macOS, Escape is forwarded into the focused terminal so vim, less, and Claude Code can interrupt. Open dialogs and menus still consume Escape first.
 
 **Font size**
-- `⌘/Ctrl +` to enlarge, `⌘/Ctrl -` to shrink, `⌘/Ctrl 0` to reset, or `⌘/Ctrl + wheel`
+- App chrome and terminal: the **Aa** button in the terminal toolbar. Chrome is **Standard** / **Large** (Large by default); terminal size can be stepped or reset
+- Terminal shortcuts: `⌘/Ctrl +` to enlarge, `⌘/Ctrl -` to shrink, `⌘/Ctrl 0` to reset, or `⌘/Ctrl + wheel`
 
 **Drag to insert path**
 - Drag a file/folder from Finder / File Explorer onto the terminal panel → its path (quoted if it contains spaces) is written into the active terminal

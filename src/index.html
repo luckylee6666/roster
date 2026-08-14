@@ -1,9 +1,16 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-ui-scale="large">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Roster</title>
+    <script>
+      try {
+        var savedUiScale = localStorage.getItem('ui-scale');
+        document.documentElement.dataset.uiScale =
+          savedUiScale === 'standard' || savedUiScale === 'large' ? savedUiScale : 'large';
+      } catch (e) {}
+    </script>
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="vendor/highlight-atom-one-dark.css" />
     <link rel="stylesheet" href="styles.css" />
@@ -42,10 +49,6 @@
 
       <main class="main">
         <header class="header">
-          <div class="header-title">
-            <h1>项目管理</h1>
-            <span class="breadcrumb" title="工作台 / 项目管理">工作台 / 项目管理</span>
-          </div>
           <div class="header-actions">
             <div class="search-wrap">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -511,6 +514,35 @@
                 <svg class="terminal-layout-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5l4 4L19 7"/></svg>
               </button>
               <div class="terminal-layout-hint">空窗格会收拢成左右或主从。更多会话继续在标签栏后台运行</div>
+            </div>
+          </div>
+          <div class="term-font-wrap">
+            <button class="term-tool-btn" id="terminal-font-btn" type="button"
+                    title="字号" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M3.6 18L9 5.5 14.4 18"/>
+                <path d="M5.5 13.6h7"/>
+                <path d="M15.2 18L18.4 10 21.6 18"/>
+                <path d="M16.3 15.3h4.2"/>
+              </svg>
+            </button>
+            <div class="term-font-menu" id="terminal-font-menu" role="menu" aria-label="字号">
+              <div class="term-font-section">
+                <span class="term-font-label">终端字号</span>
+                <div class="term-font-stepper">
+                  <button type="button" id="term-font-dec" title="缩小">−</button>
+                  <span id="term-font-value">13</span>
+                  <button type="button" id="term-font-inc" title="放大">+</button>
+                </div>
+                <button type="button" class="term-font-reset" id="term-font-reset">复位</button>
+              </div>
+              <div class="term-font-section">
+                <span class="term-font-label">界面字号</span>
+                <div class="ui-scale-picks" role="radiogroup" aria-label="界面字号">
+                  <button type="button" role="radio" data-ui-scale="standard">标准</button>
+                  <button type="button" role="radio" data-ui-scale="large">偏大</button>
+                </div>
+              </div>
             </div>
           </div>
           <div class="term-theme-wrap">

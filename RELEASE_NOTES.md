@@ -5,11 +5,15 @@ Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 
 **English**
 - The app is now **Roster**. First launch copies existing data from `~/.vibe-coding-manage/` into `~/.roster/`.
+- The app icon is a name-tag **R**, replacing the old `<>` mark.
+- The project list and sidebar use a larger type size by default. Open the terminal toolbar **Aa** menu to switch **标准 / 偏大** or change the terminal size.
 - Bundle id is `com.lucky.roster`. macOS will treat this as a new app, so screen-recording / keychain prompts may appear again.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
 - 产品更名为 **Roster**。首次启动会把 `~/.vibe-coding-manage/` 拷到 `~/.roster/`。
+- 应用图标改为名牌 **R**，替换原来的 `<>`。
+- 工作台默认字号加大。终端顶栏 **Aa** 可切换「标准 / 偏大」并调整终端字号。
 - bundle id 改为 `com.lucky.roster`。macOS 会当成新 App，录屏 / 钥匙串可能要重新授权。
 - macOS 包仍使用 **adhoc 签名**。
 
