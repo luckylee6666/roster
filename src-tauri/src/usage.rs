@@ -396,10 +396,7 @@ fn now_ms() -> u64 {
 }
 
 fn cache_file(name: &str) -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".vibe-coding-manage")
-        .join(name)
+    crate::data_dir().join(name)
 }
 fn oauth_cache_path(endpoint: &str) -> PathBuf {
     let mut hasher = DefaultHasher::new();

@@ -1,8 +1,8 @@
 //! 极简文件日志：追加到
-//! `~/.vibe-coding-manage/logs/app.log`。
+//! `~/.roster/logs/app.log`。
 //!
 //! 设计取舍：不引 tracing/log 等框架（工具体量小、保持少依赖）。零额外依赖，
-//! 仅用已有的 chrono/dirs。超过 ~1MB 滚动一份（app.log → app.log.1，只留两份）。
+//! 仅用已有的 chrono。超过 ~1MB 滚动一份（app.log → app.log.1，只留两份）。
 //! 线程安全：全局 Mutex 串行写。同时回显 stderr，dev 模式终端可见。
 //!
 //! 安全红线：**绝不记录 token / 凭据 / 密码**。只记错误类型、HTTP 码、
@@ -20,10 +20,7 @@ const MAX_BYTES: u64 = 1_000_000;
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn log_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".vibe-coding-manage")
-        .join("logs")
+    crate::data_dir().join("logs")
 }
 
 pub fn log_path() -> PathBuf {

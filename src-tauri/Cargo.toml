@@ -1,12 +1,12 @@
 [package]
-name = "vibe-coding-manage"
-version = "1.2.18"
-description = "Vibe Coding Project Manager"
+name = "roster"
+version = "1.2.19"
+description = "Desktop command center for multiple AI CLIs"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "vibe_coding_manage_lib"
+name = "roster_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

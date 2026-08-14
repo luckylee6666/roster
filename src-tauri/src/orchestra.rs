@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const ORCHESTRA_DIR: &str = ".vibe/orchestra";
-const GITIGNORE_COMMENT: &str = "# Vibe Coding Manager — 协作会话";
+const GITIGNORE_COMMENT: &str = "# Roster — 协作会话";
 const GITIGNORE_ENTRY: &str = ".vibe/";
-const README: &str = "这是 Vibe Coding Manager 的协作会话目录。\n大脑写 plan.md，干活的人写 inbox/<工具>.md。不要提交这个目录。\n";
+const README: &str = "这是 Roster 的协作会话目录。\n大脑写 plan.md，干活的人写 inbox/<工具>.md。不要提交这个目录。\n";
 
 const ALLOWED_FILES: &[&str] = &[
     "goal.md",

@@ -1,6 +1,7 @@
 import { TETRIS_COLUMNS, TETRIS_ROWS, createTetrisEngine, dropIntervalForLevel } from './tetris-engine.js';
 
-const DEFAULT_STORAGE_KEY = 'vibe-coding-manage:tetris-best-score';
+const DEFAULT_STORAGE_KEY = 'roster:tetris-best-score';
+const LEGACY_STORAGE_KEY = 'vibe-coding-manage:tetris-best-score';
 const KEY_ACTIONS = Object.freeze({
   ArrowLeft: 'left',
   ArrowRight: 'right',
@@ -36,7 +37,12 @@ export function createTetrisGame({
 } = {}) {
   const savedStorage = getStorage(storage);
   let savedBest = 0;
-  try { savedBest = Math.max(0, Number.parseInt(savedStorage?.getItem(storageKey) || '0', 10) || 0); } catch { /* Storage can be unavailable. */ }
+  try {
+    savedBest = Math.max(0, Number.parseInt(savedStorage?.getItem(storageKey) || '0', 10) || 0);
+    if (!savedBest && storageKey === DEFAULT_STORAGE_KEY) {
+      savedBest = Math.max(0, Number.parseInt(savedStorage?.getItem(LEGACY_STORAGE_KEY) || '0', 10) || 0);
+    }
+  } catch { /* Storage can be unavailable. */ }
   const engine = createTetrisEngine({ random, initialBestScore: savedBest });
   let timer = null;
   let active = false;

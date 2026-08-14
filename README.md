@@ -1,10 +1,10 @@
-# Vibe Coding Manager
+# Roster
 
 **English** | [中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
 
-A desktop app for managing your Vibe Coding projects, built with Tauri v2.
+A desktop command center for multiple AI CLIs, built with Tauri v2.
 
-Latest release: **v1.2.18** — optional terminal proxy switch so new CLI sessions can use Clash/Surge without TUN. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.19** — renamed to **Roster**. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -142,21 +142,21 @@ The project root contains `CLAUDE.md`, `AGENTS.md`, and `opencode.json` — thes
 
 ## Data location
 
-- macOS: `~/.vibe-coding-manage/`（隐藏目录，避免清理软件误删）
-- Windows: `~\.vibe-coding-manage\`
-- Linux: `~/.vibe-coding-manage/`
+- macOS: `~/.roster/`（隐藏目录，避免清理软件误删）
+- Windows: `~\.roster\`
+- Linux: `~/.roster/`
 
-  首次启动自动从旧路径迁移。核心文件：
+  首次启动自动从 `~/.vibe-coding-manage/` 和更早的 Application Support 目录迁移。核心文件：
   - `projects.json` — project data
   - `servers.json` — server config
 
 ## Download
 
-Grab the build for your platform from [Releases](https://github.com/luckylee6666/vibe-coding-manage/releases):
+Grab the build for your platform from [Releases](https://github.com/luckylee6666/roster/releases):
 
 | Platform | File |
 | --- | --- |
-| macOS (Apple Silicon) | `VibeCodingManager_x.y.z_aarch64.dmg` |
+| macOS (Apple Silicon) | `Roster_x.y.z_aarch64.dmg` |
 | Windows x64 | `..._x64-setup.exe` (installer) or `..._x64_en-US.msi` |
 | Windows ARM64 | `..._arm64-setup.exe` (installer) or `..._arm64_en-US.msi` (Surface / Snapdragon ARM devices) |
 
@@ -164,10 +164,10 @@ Grab the build for your platform from [Releases](https://github.com/luckylee6666
 
 The published DMG is ad-hoc signed, so the first launch is blocked by macOS:
 
-1. Open the `.dmg` and drag `Vibe Coding Manager.app` into Applications
+1. Open the `.dmg` and drag `Roster.app` into Applications
 2. The first launch shows "cancelled" / "move to Trash"
 3. Open **System Settings → Privacy & Security** and scroll to the bottom
-4. Under "Security" you'll see `"Vibe Coding Manager" was blocked because it is from an unidentified developer`
+4. Under "Security" you'll see `"Roster" was blocked because it is from an unidentified developer`
 5. Click **Open Anyway**, confirm with your password
 
 ### Windows install

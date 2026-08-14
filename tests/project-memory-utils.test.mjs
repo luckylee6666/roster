@@ -20,8 +20,8 @@ import {
 
 test('Claude 项目目录编码与现有记忆路径一致', () => {
   assert.equal(
-    encodeClaudeProjectDir('/Users/lucky/git/smalltree/self/vibe-coding-manage'),
-    '-Users-lucky-git-smalltree-self-vibe-coding-manage',
+    encodeClaudeProjectDir('/Users/lucky/git/smalltree/self/roster'),
+    '-Users-lucky-git-smalltree-self-roster',
   );
   assert.equal(
     encodeClaudeProjectDir('/Users/lucky/foo.bar/'),

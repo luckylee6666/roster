@@ -31,6 +31,23 @@ test('系统退出始终回到前端本地状态确认，避免 dirty IPC 竞态
   );
 });
 
+test('产品显示名为 Roster，bundle 与 crate 已切走旧名', async () => {
+  const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
+  const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  const cargo = await readFile(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+
+  assert.equal(config.productName, 'Roster');
+  assert.equal(config.identifier, 'com.lucky.roster');
+  assert.equal(config.app.windows[0].title, 'Roster');
+  assert.match(html, /<title>Roster<\/title>/);
+  assert.match(html, /<span>Roster<\/span>/);
+  assert.match(cargo, /^name = "roster"$/m);
+  assert.match(cargo, /^name = "roster_lib"$/m);
+  assert.equal(pkg.name, 'roster');
+  assert.doesNotMatch(html, /Vibe Coding/);
+});
+
 test('启动菜单包含 Grok，macOS 发版固定 adhoc 签名', async () => {
   const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
   const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));

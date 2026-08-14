@@ -167,7 +167,7 @@ pub fn write_env_file(settings: &ProxySettings) -> Result<PathBuf, String> {
     }
     #[cfg(windows)]
     let body = {
-        let mut text = String::from("# Vibe Coding Manager terminal proxy\n");
+        let mut text = String::from("# Roster terminal proxy\n");
         for (key, value) in env_pairs(settings) {
             text.push_str(&format!(
                 "$env:{key} = '{}'\n",
@@ -178,7 +178,7 @@ pub fn write_env_file(settings: &ProxySettings) -> Result<PathBuf, String> {
     };
     #[cfg(not(windows))]
     let body = {
-        let mut text = String::from("# Vibe Coding Manager terminal proxy\n");
+        let mut text = String::from("# Roster terminal proxy\n");
         for (key, value) in env_pairs(settings) {
             text.push_str(&format!("export {key}={}\n", posix_single_quote(&value)));
         }

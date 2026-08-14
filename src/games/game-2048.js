@@ -1,5 +1,6 @@
 const DEFAULT_SIZE = 4;
-const DEFAULT_STORAGE_KEY = "vibe-coding-manage:2048-best-score";
+const DEFAULT_STORAGE_KEY = "roster:2048-best-score";
+const LEGACY_STORAGE_KEY = "vibe-coding-manage:2048-best-score";
 
 export const GAME_2048_SIZE = DEFAULT_SIZE;
 
@@ -110,7 +111,8 @@ export function create2048Game({ random = Math.random, storage, storageKey = DEF
   const savedStorage = getStorage(storage);
   let board = createEmptyBoard();
   let score = 0;
-  let bestScore = readBestScore(savedStorage, storageKey);
+  let bestScore = readBestScore(savedStorage, storageKey)
+    || (storageKey === DEFAULT_STORAGE_KEY ? readBestScore(savedStorage, LEGACY_STORAGE_KEY) : 0);
   let paused = false;
   let gameOver = false;
   let container = null;

@@ -20,7 +20,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Vibe Coding Manager ${{ github.ref_name }}
+          name: Roster ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
 
   build-macos-arm64:

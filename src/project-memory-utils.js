@@ -1,7 +1,7 @@
 export const WORKSPACE_MEMORY_LINK = '.memory';
 export const MEMORY_POINTER_START = '<!-- vibe-memory -->';
 export const MEMORY_POINTER_END = '<!-- /vibe-memory -->';
-export const MEMORY_GITIGNORE_COMMENT = '# Vibe Coding Manager — 项目记忆窗口';
+export const MEMORY_GITIGNORE_COMMENT = '# Roster — 项目记忆窗口';
 
 export const PROJECT_MEMORY_UNIFY_STORAGE_KEY = 'project-memory-unify-v1';
 

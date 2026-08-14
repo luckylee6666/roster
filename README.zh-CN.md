@@ -1,10 +1,10 @@
-# Vibe Coding Manager
+# Roster
 
 [English](README.md) | **中文** · [更新日志](CHANGELOG.md)
 
-一个用于管理 Vibe Coding 项目的桌面应用，基于 Tauri v2 构建。
+多 AI CLI 指挥台桌面应用，基于 Tauri v2 构建。
 
-最新版本：**v1.2.18** — 可选终端代理开关，新开的 CLI 可走 Clash/Surge 本地端口，不必开 TUN。详情见[更新日志](CHANGELOG.md)。
+最新版本：**v1.2.19** — 产品更名为 **Roster**。详情见[更新日志](CHANGELOG.md)。
 
 ## 功能特性
 
@@ -142,21 +142,21 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 数据存储位置
 
-- macOS: `~/.vibe-coding-manage/`（隐藏目录，避免清理软件误删）
-- Windows: `~\.vibe-coding-manage\`
-- Linux: `~/.vibe-coding-manage/`
+- macOS: `~/.roster/`（隐藏目录，避免清理软件误删）
+- Windows: `~\.roster\`
+- Linux: `~/.roster/`
 
-  首次启动自动从旧路径迁移。核心文件：
+  首次启动自动从 `~/.vibe-coding-manage/` 和更早的 Application Support 目录迁移。核心文件：
   - `projects.json` — 项目数据
   - `servers.json` — 服务器配置
 
 ## 下载
 
-前往 [Releases](https://github.com/luckylee6666/vibe-coding-manage/releases) 下载对应平台版本：
+前往 [Releases](https://github.com/luckylee6666/roster/releases) 下载对应平台版本：
 
 | 平台 | 文件 |
 | --- | --- |
-| macOS (Apple Silicon) | `VibeCodingManager_x.y.z_aarch64.dmg` |
+| macOS (Apple Silicon) | `Roster_x.y.z_aarch64.dmg` |
 | Windows x64 | `..._x64-setup.exe`（安装版）或 `..._x64_en-US.msi` |
 | Windows ARM64 | `..._arm64-setup.exe`（安装版）或 `..._arm64_en-US.msi`（Surface / 骁龙等 ARM 设备）|
 
@@ -164,10 +164,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 发布的 DMG 使用 adhoc 签名，首次打开会被 macOS 拦截，请按以下步骤授权：
 
-1. 双击 `.dmg` 文件，将 `Vibe Coding Manager.app` 拖入 Applications
+1. 双击 `.dmg` 文件，将 `Roster.app` 拖入 Applications
 2. 首次打开时会提示“已取消”或“移到废纸篓”
 3. 打开 **系统设置 → 隐私与安全性**，滚动到底部
-4. 在“安全性”区域会看到 `“Vibe Coding Manager”已被阻止打开，因为它来自未验证的开发者`
+4. 在“安全性”区域会看到 `“Roster”已被阻止打开，因为它来自未验证的开发者`
 5. 点击 **仍要打开**，输入密码确认即可
 
 ### Windows 安装说明

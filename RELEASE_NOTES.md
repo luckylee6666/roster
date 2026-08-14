@@ -1,16 +1,16 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.18 / 本版更新
+## What's new in v1.2.19 / 本版更新
 
 **English**
-- **Terminal proxy switch** — turn it on and newly launched Claude / Codex / Grok sessions use `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`. Point it at your Clash or Surge port; TUN is not required.
-- Login-shell rc files cannot wipe the app proxy; credentials stay out of the header tooltip.
+- The app is now **Roster**. First launch copies existing data from `~/.vibe-coding-manage/` into `~/.roster/`.
+- Bundle id is `com.lucky.roster`. macOS will treat this as a new app, so screen-recording / keychain prompts may appear again.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- **终端代理开关**：打开后新启动的 Claude / Codex / Grok 会走 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`。填 Clash、Surge 本地端口即可，不必开 TUN。
-- 登录壳的 rc 冲不掉应用代理；顶栏不会露出账号密码。
+- 产品更名为 **Roster**。首次启动会把 `~/.vibe-coding-manage/` 拷到 `~/.roster/`。
+- bundle id 改为 `com.lucky.roster`。macOS 会当成新 App，录屏 / 钥匙串可能要重新授权。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装

@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.2.19
+
+### English
+
+**Changed**
+- The app is now **Roster**. Window title, sidebar, tray, DMG/app bundle, crate, npm package, and bundle id (`com.lucky.roster`) all use the new name.
+- Data lives in `~/.roster/` (backups in `~/.roster-backups/`). The first launch copies `~/.vibe-coding-manage/` and the older Application Support directory if they still exist. Old folders are kept as a fallback.
+
+**Tests**
+- Added a config check that the product name, identifier, crate, and sidebar all say Roster.
+
+### 中文
+
+**变更**
+- 产品更名为 **Roster**。窗口标题、侧栏、托盘、DMG/应用包、crate、npm 包名和 bundle id（`com.lucky.roster`）一并更换。
+- 数据目录改为 `~/.roster/`（备份在 `~/.roster-backups/`）。首次启动会从 `~/.vibe-coding-manage/` 和更早的 Application Support 目录拷过来，旧目录保留作回退。
+
+**测试**
+- 新增产品名、identifier、crate 和侧栏都指向 Roster 的配置检查。
+
 ## v1.2.18
 
 ### English

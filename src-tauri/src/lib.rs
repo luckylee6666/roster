@@ -149,12 +149,12 @@ pub(crate) fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-/// 数据目录：优先用隐藏目录 ~/.vibe-coding-manage/，避免清理软件误删。
-/// 首次启动时自动从旧路径 ~/Library/Application Support/vibe-coding-manage/ 迁移。
+/// 数据目录：优先用隐藏目录 ~/.roster/，避免清理软件误删。
+/// 首次启动依次从 ~/.vibe-coding-manage/、旧 Application Support 目录迁移。
 fn preferred_data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".vibe-coding-manage")
+        .join(".roster")
 }
 
 /// 本次进程实际使用的数据目录。正常是新隐藏目录；若首次迁移失败，则本次运行
@@ -168,9 +168,24 @@ pub(crate) fn data_dir() -> PathBuf {
         .unwrap_or_else(preferred_data_dir)
 }
 
-/// 旧版数据目录（清理软件常扫的 ~/Library/Application Support/）。
-fn legacy_data_dir() -> Option<PathBuf> {
+/// 更名前的隐藏目录（v1.2.13–v1.2.18）。
+fn previous_hidden_data_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".vibe-coding-manage")
+}
+
+/// 更早的数据目录（清理软件常扫的 ~/Library/Application Support/）。
+fn oldest_legacy_data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("vibe-coding-manage"))
+}
+
+fn previous_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![previous_hidden_data_dir()];
+    if let Some(oldest) = oldest_legacy_data_dir() {
+        dirs.push(oldest);
+    }
+    dirs
 }
 
 fn copy_file_if_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -208,59 +223,63 @@ fn copy_dir_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// 从指定旧目录迁移到新目录。只有全部复制成功后才写完成标记；目录使用可重试的
 /// 逐项复制而非 rename，迁移中断后可安全补齐，也始终保留旧目录作为恢复来源。
+/// 核心文件包括 projects.json、servers.json、snippets.json、requirements.json、
+/// term-themes.json、proxy-settings.json，以及 theme-images/、logs/ 和用量缓存。
 fn migrate_legacy_data_between(old: &Path, new: &Path) -> std::io::Result<()> {
     let marker = new.join(".migrated-from-legacy");
     if marker.exists() {
         return Ok(());
     }
     fs::create_dir_all(new)?;
-    let files = [
-        "projects.json",
-        "servers.json",
-        "snippets.json",
-        "requirements.json",
-        "term-themes.json",
-        "proxy-settings.json",
-    ];
-    for name in files {
-        let src = old.join(name);
-        if src.is_file() {
-            copy_file_if_missing(&src, &new.join(name))?;
-        }
-    }
-    for name in ["theme-images", "logs"] {
-        let src = old.join(name);
-        if src.is_dir() {
-            copy_dir_missing(&src, &new.join(name))?;
-        }
-    }
+    copy_dir_missing(old, new)?;
     atomic_write(&marker, b"ok")
+}
+
+fn migrate_backup_dir_if_needed() {
+    let new = preferred_data_dir().with_file_name("roster-backups");
+    let old = previous_hidden_data_dir().with_file_name("vibe-coding-manage-backups");
+    if !old.is_dir() || new.exists() {
+        return;
+    }
+    if let Err(e) = copy_dir_missing(&old, &new) {
+        crate::log_error!("迁移旧备份目录失败：{e}");
+    }
 }
 
 /// 初始化进程级数据目录。迁移失败时继续使用旧目录，既不写完成标记，也不允许
 /// 当前进程把空数据保存到新目录；下次启动会再次尝试迁移。
 fn initialize_data_dir() -> PathBuf {
     let preferred = preferred_data_dir();
-    let Some(old) = legacy_data_dir().filter(|path| path.is_dir()) else {
+    if preferred.join(".migrated-from-legacy").exists() {
+        migrate_backup_dir_if_needed();
         return preferred;
-    };
-    match migrate_legacy_data_between(&old, &preferred) {
-        Ok(()) => preferred,
-        Err(e) => {
-            crate::log_error!(
-                "迁移旧数据目录失败，将继续使用旧目录 {}：{e}",
-                old.display()
-            );
-            old
-        }
     }
+    for old in previous_data_dirs() {
+        if !old.is_dir() || old == preferred {
+            continue;
+        }
+        return match migrate_legacy_data_between(&old, &preferred) {
+            Ok(()) => {
+                migrate_backup_dir_if_needed();
+                preferred
+            }
+            Err(e) => {
+                crate::log_error!(
+                    "迁移旧数据目录失败，将继续使用旧目录 {}：{e}",
+                    old.display()
+                );
+                old
+            }
+        };
+    }
+    preferred
 }
 
 /// 备份根目录：跟数据目录同级的 *独立* 目录。
 /// 故意放在数据目录外面——一旦数据目录整体被清理工具删除/误删，
 /// 备份仍然存活，可手动拷回恢复。
 fn backup_root_dir() -> PathBuf {
-    data_dir().with_file_name("vibe-coding-manage-backups")
+    data_dir().with_file_name("roster-backups")
 }
 
 /// 当前已存在的 4 个核心数据文件（仅返回磁盘上真实存在的）。
@@ -2843,7 +2862,7 @@ pub fn run() {
             // 版本号显示在原生标题栏（来自 Cargo.toml，单一来源）
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_title(&format!(
-                    "Vibe Coding Manager v{}",
+                    "Roster v{}",
                     env!("CARGO_PKG_VERSION")
                 ));
             }
@@ -2851,7 +2870,7 @@ pub fn run() {
             let show_i = MenuItem::with_id(
                 app,
                 "tray_show",
-                "打开 Vibe Coding Manager",
+                "打开 Roster",
                 true,
                 None::<&str>,
             )?;
@@ -2991,12 +3010,14 @@ mod tests {
         fs::create_dir_all(old.join("theme-images/nested")).unwrap();
         fs::create_dir_all(old.join("logs")).unwrap();
         fs::write(old.join("projects.json"), b"[1]").unwrap();
+        fs::write(old.join("oauth-usage-cache-test.json"), b"{}").unwrap();
         fs::write(old.join("theme-images/nested/bg.png"), b"image").unwrap();
         fs::write(old.join("logs/app.log"), b"log").unwrap();
 
         migrate_legacy_data_between(&old, &new).unwrap();
 
         assert_eq!(fs::read(new.join("projects.json")).unwrap(), b"[1]");
+        assert_eq!(fs::read(new.join("oauth-usage-cache-test.json")).unwrap(), b"{}");
         assert_eq!(
             fs::read(new.join("theme-images/nested/bg.png")).unwrap(),
             b"image"
@@ -3004,6 +3025,13 @@ mod tests {
         assert_eq!(fs::read(new.join("logs/app.log")).unwrap(), b"log");
         assert!(new.join(".migrated-from-legacy").is_file());
         assert!(old.join("projects.json").is_file());
+    }
+
+    #[test]
+    fn test_data_dir_names_use_roster_and_keep_vibe_as_legacy() {
+        assert!(preferred_data_dir().ends_with(".roster"));
+        assert!(previous_hidden_data_dir().ends_with(".vibe-coding-manage"));
+        assert!(backup_root_dir().ends_with("roster-backups"));
     }
 
     #[test]
@@ -3286,9 +3314,9 @@ mod tests {
             .open(&path)
             .unwrap();
         #[cfg(target_os = "macos")]
-        let attribute = "com.vibe-coding-manager.test";
+        let attribute = "com.roster.test";
         #[cfg(not(target_os = "macos"))]
-        let attribute = "user.vibe-coding-manager.test";
+        let attribute = "user.roster.test";
         file.set_xattr(attribute, b"kept").unwrap();
 
         write_file(

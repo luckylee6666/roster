@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 pub const WORKSPACE_MEMORY_LINK: &str = ".memory";
 pub const MEMORY_POINTER_START: &str = "<!-- vibe-memory -->";
 pub const MEMORY_POINTER_END: &str = "<!-- /vibe-memory -->";
-const MEMORY_GITIGNORE_COMMENT: &str = "# Vibe Coding Manager — 项目记忆窗口";
+const MEMORY_GITIGNORE_COMMENT: &str = "# Roster — 项目记忆窗口";
 const MEMORY_POINTER_BODY: &str = "长期记忆只在 `.memory/`（指向 Claude 项目记忆，不进 Git）。\n读：先看 `.memory/MEMORY.md`。写：用户说「更新记忆」时改专题；否则写入 `.memory/inbox/`。\n不要把记忆写进本文件或仓库里的 `memory/`。";
 
 #[derive(Clone, Serialize)]
@@ -515,8 +515,8 @@ mod tests {
     #[test]
     fn encode_matches_claude_project_dir_rules() {
         assert_eq!(
-            encode_claude_project_dir("/Users/lucky/git/smalltree/self/vibe-coding-manage"),
-            "-Users-lucky-git-smalltree-self-vibe-coding-manage"
+            encode_claude_project_dir("/Users/lucky/git/smalltree/self/roster"),
+            "-Users-lucky-git-smalltree-self-roster"
         );
         assert_eq!(
             encode_claude_project_dir("/Users/lucky/foo.bar/"),
