@@ -3424,6 +3424,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "roster"
+version = "1.2.20"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "block2",
+ "chrono",
+ "dirs 5.0.1",
+ "libc",
+ "local-ip-address",
+ "objc2-app-kit",
+ "opener",
+ "portable-pty",
+ "qrcode",
+ "rfd",
+ "rusqlite",
+ "rust_xlsxwriter",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tempfile",
+ "tokio",
+ "trash",
+ "uuid",
+ "windows-sys 0.61.2",
+ "xattr",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4982,38 +5014,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "roster"
-version = "1.2.20"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "block2",
- "chrono",
- "dirs 5.0.1",
- "libc",
- "local-ip-address",
- "objc2-app-kit",
- "opener",
- "portable-pty",
- "qrcode",
- "rfd",
- "rusqlite",
- "rust_xlsxwriter",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tempfile",
- "tokio",
- "trash",
- "uuid",
- "windows-sys 0.61.2",
- "xattr",
-]
 
 [[package]]
 name = "vswhom"

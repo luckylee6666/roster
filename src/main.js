@@ -39,6 +39,7 @@ import {
   sessionRailHiddenFromStorage,
   sessionRailViewLoading,
 } from './session-rail-utils.js';
+import { usageCommandForAgent, windowsFromUsagePayload } from './usage-panel-utils.js';
 import {
   DEFAULT_ORCHESTRA_BRAIN,
   ORCHESTRA_GOAL_FILE,
@@ -234,7 +235,6 @@ async function init() {
     appLog('error', `注册未保存退出保护失败：${e.message || e}`);
   }
   await initTermTheme(); // 自定义主题表 + 恢复上次主题（可能是 custom:*），先于会话还原
-  bindUsageEvents();
   await bindNativeEscListener();
   maybeRestoreSessions();
 }
@@ -266,17 +266,7 @@ async function bindNativeEscListener() {
   });
 }
 
-// 用量后台：探测 npx 是否可用 + 安装引导（与终端是否打开无关，启动即跑）
-async function bindUsageEvents() {
-  // 后台探一次 npx 是否可用（决定花费/Codex/OpenCode 是否降级），结果缓存
-  invoke('has_npx').then(v => { npxAvailable = v; }).catch(() => {});
-  // 「去安装 Node.js」按钮（降级块里，事件委托）
-  document.addEventListener('click', e => {
-    if (e.target.closest('.usage-install-node')) {
-      invoke('open_url', { url: 'https://nodejs.org/' }).catch(() => {});
-    }
-  });
-}
+
 
 async function load() {
   try {
@@ -1852,35 +1842,8 @@ function closeRemote() {
 }
 
 // ===== 用量统计 =====
-let usageAgent = 'claude';      // 当前用量 tab：claude / codex / opencode
-let npxAvailable = null;        // null=未知 / true / false：花费统计(ccusage)是否可用
-const usageWeeklyInflight = new Set(); // 查询在途的 agent：防连点/快速切 tab 并发起 ccusage
-
-// 没有 npx 时花费/Codex/OpenCode 的友好降级块（限流用量不受影响）
-function nodeNeededHTML(what) {
-  return `<div class="usage-node-needed">` +
-    `<div class="usage-node-title">${esc(what)}需要 Node.js</div>` +
-    `<div class="usage-node-sub">限流用量无需 Node、已正常显示。花费/多 CLI 统计经 <code>ccusage</code>（随 <code>npx</code> 自动下载）读取本地日志，需先装 Node.js。</div>` +
-    `<button class="btn btn-primary btn-sm usage-install-node">去安装 Node.js</button>` +
-    `</div>`;
-}
-
-const MODEL_NAMES = {
-  'claude-opus-4-8': 'Opus 4.8', 'claude-opus-4-7': 'Opus 4.7', 'claude-opus-4-6': 'Opus 4.6',
-  'claude-sonnet-4-6': 'Sonnet 4.6', 'claude-haiku-4-5': 'Haiku 4.5', 'claude-fable-5': 'Fable 5',
-};
-function shortModel(m) {
-  if (MODEL_NAMES[m]) return MODEL_NAMES[m];
-  return String(m).replace(/^claude-/, '').replace(/-\d{8}$/, '');
-}
-function fmtTokens(n) {
-  n = n || 0;
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
-  return String(n);
-}
-const pad2 = (n) => String(n).padStart(2, '0');
+let usageAgent = 'claude';      // 当前用量 tab：claude / codex
+const usageInflight = new Set();
 
 async function openUsage() {
   $('usage-overlay').classList.add('active');
@@ -1901,39 +1864,25 @@ function switchUsageTab(agent) {
 async function loadUsage() {
   const agent = usageAgent;
   const body = $('usage-body');
+  if (usageInflight.has(agent)) return;
+  usageInflight.add(agent);
+  body.innerHTML = '<div id="usage-oauth"><div class="usage-loading">查询限流用量…</div></div>';
   try {
-    if (agent === 'claude') {
-      // Claude tab 只展示 OAuth 限流用量（5h / 7d 使用率 + 重置倒计时）：和 /usage 同源，
-      // 零依赖秒出、不需要 Node。花费/燃烧速率/token/周用量等 ccusage 明细已按需求移除。
-      body.innerHTML = '<div id="usage-oauth"><div class="usage-loading">查询限流用量…</div></div>';
-      invoke('oauth_usage').then(o => {
-        if (usageAgent === 'claude') renderOAuth(o);
-      }).catch(() => {});
-    } else {
-      if (npxAvailable === false) {
-        body.innerHTML = nodeNeededHTML(agent === 'codex' ? 'Codex 用量' : 'OpenCode 用量');
-        return;
-      }
-      // 每单 agent_weekly 都是一棵吃内存的 ccusage/node 进程树（后端另有全局单飞锁兜底），
-      // 该 tab 已有一单在途就不再叠加
-      if (usageWeeklyInflight.has(agent)) return;
-      usageWeeklyInflight.add(agent);
-      body.innerHTML = '<div class="usage-loading">查询中…（首次走 npx 拉 ccusage，稍等）</div>';
-      try {
-        const w = await invoke('agent_weekly', { agent });
-        if (usageAgent !== agent) return;
-        body.innerHTML = renderAgentHTML(w, agent);
-      } finally {
-        usageWeeklyInflight.delete(agent);
-      }
-    }
+    const o = await invoke(usageCommandForAgent(agent));
+    if (usageAgent !== agent) return;
+    renderLimitUsage(o, windowsFromUsagePayload(agent, o));
   } catch (e) {
-    body.innerHTML = `<div class="usage-error">查询失败：${esc(String(e))}</div>`;
+    if (usageAgent !== agent) return;
+    const el = document.getElementById('usage-oauth');
+    const msg = `查询失败：${String(e)}`;
+    if (el) el.innerHTML = `<div class="usage-error">${esc(msg)}</div>`;
+    else body.innerHTML = `<div class="usage-error">${esc(msg)}</div>`;
+  } finally {
+    usageInflight.delete(agent);
   }
 }
 
-// OAuth 限流用量（Claude 专属，和 /usage 同源）：5h / 7d 使用百分比 + 重置倒计时。
-function renderOAuth(o) {
+function renderLimitUsage(o, windows) {
   const el = document.getElementById('usage-oauth');
   if (!el) return;
   if (!o || !o.ok) {
@@ -1945,11 +1894,11 @@ function renderOAuth(o) {
   const staleWarn = o.stale
     ? `<div class="usage-stale-warn">⚠ 实时刷新失败，下面是旧数据${o.error ? '：' + esc(o.error) : ''}</div>`
     : '';
+  const rows = (windows || []).map(w => oauthRow(w.label, w)).join('');
   el.innerHTML =
     `<div class="usage-oauth-head">限流用量${plan}${age}</div>` +
     staleWarn +
-    oauthRow('5 小时窗口', o.fiveHour) +
-    oauthRow('7 天窗口', o.sevenDay);
+    (rows || '<div class="usage-weekly-empty">暂无限流窗口</div>');
 }
 // 数据年龄文案（OAuth 限流用量底部"X 分钟前更新"）。
 function fmtUsageAge(secs) {
@@ -1983,50 +1932,6 @@ function oauthResetLabel(iso) {
   if (h >= 24) return `${Math.floor(h / 24)} 天 ${h % 24} 小时后重置`;
   if (h >= 1) return `${h} 小时 ${m} 分后重置`;
   return `${m} 分后重置`;
-}
-
-// Codex / OpenCode tab：只有周用量（这两个没有 5h 窗口概念）。
-function renderAgentHTML(w, agent) {
-  const name = agent === 'codex' ? 'Codex' : 'OpenCode';
-  if (!w || !w.ok) {
-    return `<div class="usage-error">${esc((w && w.error) || '查询失败')}<br><br>` +
-      `需本机装有 Node/npx 且用过 ${esc(name)}：经 <code>ccusage ${esc(agent)}</code> 读取本地日志统计，不上传任何数据。</div>`;
-  }
-  return renderWeeklyHTML(w, name + ' 周用量');
-}
-
-// 周用量区块：标题 + 累计 + 逐周条形。w 为 AgentWeekly。
-function renderWeeklyHTML(w, title) {
-  if (!w || !w.ok) {
-    return `<div class="usage-weekly" id="usage-weekly-sec"><div class="usage-weekly-head"><span>${esc(title)}</span></div>` +
-      `<div class="usage-weekly-empty">${esc((w && w.error) || '暂无数据')}</div></div>`;
-  }
-  if (!w.weeks || !w.weeks.length) {
-    return `<div class="usage-weekly" id="usage-weekly-sec"><div class="usage-weekly-head"><span>${esc(title)}</span></div>` +
-      `<div class="usage-weekly-empty">暂无周用量数据</div></div>`;
-  }
-  const max = Math.max(...w.weeks.map(x => x.costUsd || 0), 0.0001);
-  const rows = w.weeks.map(x => {
-    const pct = Math.max(3, (x.costUsd || 0) / max * 100);
-    const models = (x.models && x.models.length) ? x.models.map(shortModel).join('、') : '';
-    return `<div class="usage-week-row">` +
-      `<span class="usage-week-date">${esc(weekLabel(x.period))}</span>` +
-      `<div class="usage-week-barwrap"><div class="usage-week-bar" style="width:${pct.toFixed(0)}%"></div>` +
-        `<span class="usage-week-tok">${fmtTokens(x.totalTokens)}${models ? ' · ' + esc(models) : ''}</span></div>` +
-      `<span class="usage-week-cost">$${(x.costUsd || 0).toFixed(2)}</span>` +
-      `</div>`;
-  }).join('');
-  return `<div class="usage-weekly" id="usage-weekly-sec">` +
-    `<div class="usage-weekly-head"><span>${esc(title)}</span>` +
-      `<span class="usage-weekly-total">累计 $${(w.totalCost || 0).toFixed(2)} · ${fmtTokens(w.totalTokens)}</span></div>` +
-    rows + `</div>`;
-}
-
-// 周一日期 → "MM/DD 当周"
-function weekLabel(period) {
-  const d = new Date(period + 'T00:00:00');
-  if (isNaN(d.getTime())) return period || '—';
-  return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} 当周`;
 }
 
 function copyText(text) {

@@ -309,7 +309,7 @@
       </div>
     </div>
 
-    <!-- Claude 用量（5 小时窗口） -->
+    <!-- 用量统计（Claude OAuth / Codex app-server） -->
     <div class="modal-mask" id="usage-overlay">
       <div class="modal-wrap">
         <div class="modal modal-sm">
@@ -321,7 +321,6 @@
             <div class="usage-tabs" id="usage-tabs">
               <button class="usage-tab active" data-agent="claude">Claude</button>
               <button class="usage-tab" data-agent="codex">Codex</button>
-              <button class="usage-tab" data-agent="opencode">OpenCode</button>
             </div>
             <div class="usage-body" id="usage-body">
               <div class="usage-loading">查询中…</div>
@@ -444,7 +443,7 @@
           <button class="term-tool-btn" id="terminal-tree-btn" title="文件树">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5.25h7.5l1.5 2.25H21v11.25a.75.75 0 01-.75.75H3.75A.75.75 0 013 18.75z"/></svg>
           </button>
-          <button class="term-tool-btn" id="terminal-usage-btn" title="Claude 用量（5 小时窗口）">
+          <button class="term-tool-btn" id="terminal-usage-btn" title="用量统计">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1018 0 9 9 0 00-18 0z"/><path d="M12 7v5l3 2"/></svg>
           </button>
           <button class="term-tool-btn" id="terminal-bell-btn" title="会话提醒：AI 跑完/在等你时通知（点击开关）">

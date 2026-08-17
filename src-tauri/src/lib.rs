@@ -2691,21 +2691,13 @@ fn terminal_remote_stop(state: State<TerminalState>) {
     crate::log_info!("手机远程服务已停止");
 }
 
-/// 查询某个 CLI 的周用量（claude / codex / opencode），走 ccusage。
-/// async + spawn_blocking：ccusage 要跑几秒，绝不能阻塞主线程（否则 UI 冻住）。
+/// Codex 限流用量（ChatGPT 套餐窗口）：走本机 `codex app-server` 的
+/// `account/rateLimits/read`，带 60s 缓存。async + spawn_blocking，避免冻 UI。
 #[tauri::command]
-async fn agent_weekly(agent: String) -> Result<usage::AgentWeekly, String> {
-    tauri::async_runtime::spawn_blocking(move || usage::fetch_agent_weekly_cached(&agent))
+async fn codex_usage() -> Result<usage::CodexUsage, String> {
+    tauri::async_runtime::spawn_blocking(usage::fetch_codex_usage)
         .await
         .map_err(|e| e.to_string())
-}
-
-/// 检测本机是否有 npx（花费统计/Codex/OpenCode 经 ccusage 走 npx，没 npx 这些不可用）。
-#[tauri::command]
-async fn has_npx() -> bool {
-    tauri::async_runtime::spawn_blocking(usage::has_npx)
-        .await
-        .unwrap_or(false)
 }
 
 /// `.sh` 快捷命令依赖 Bash；仅探测可用性，不执行用户脚本。
@@ -2978,9 +2970,8 @@ pub fn run() {
             load_theme_image,
             get_requirements,
             save_requirements,
-            agent_weekly,
             oauth_usage,
-            has_npx,
+            codex_usage,
             has_bash,
             open_url,
             open_log,

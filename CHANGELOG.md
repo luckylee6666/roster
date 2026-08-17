@@ -9,16 +9,24 @@ All notable changes to this project are documented here. 本项目的更新记�
 **Added**
 - The terminal file tree now has a compact session rail under the files: running AI tabs for the current project first, then recent on-disk sessions. Click a running row to focus it; click a history row to resume. Search, preview, and delete stay on the project card. The rail height is resizable and can be collapsed on its own.
 
+**Changed**
+- The usage panel dropped the OpenCode tab. Codex now reads ChatGPT rate-limit windows from the official `codex app-server` `account/rateLimits/read` RPC (same % + reset countdown as Claude), instead of the slow `ccusage` weekly cost scan. Window labels follow the server duration, so a weekly-only Pro bucket is not forced into a fake 5-hour row.
+
 **Tests**
 - Added coverage for rail ordering, resume-vs-focus actions, height/hidden fallbacks, in-flight loading, and the tree/rail wiring.
+- Added usage-panel wiring tests (Claude/Codex only, no OpenCode, no `ccusage`) and Codex rate-limit JSON parsing (weekly-only, 5h+7d, named extra buckets).
 
 ### 中文
 
 **新增**
 - 终端文件树下方增加细会话条：先列当前项目正在跑的 AI 标签，再列最近磁盘会话。点进行中的一行聚焦，点历史一行续接。搜索、预览、删除仍在项目卡片。会话条可拖高度，也可单独收起。
 
+**变更**
+- 用量面板去掉 OpenCode 标签。Codex 改为走官方 `codex app-server` 的 `account/rateLimits/read`（百分比 + 重置倒计时，和 Claude 一样），不再用慢的 `ccusage` 周花费。窗口标题按服务端时长显示，只有周窗口时不会硬画一条假的 5 小时。
+
 **测试**
 - 新增会话条排序、聚焦/续接动作、高度与收起回退、加载中不画成空，以及文件树接线的回归测试。
+- 新增用量面板接线测试（只留 Claude/Codex、去掉 OpenCode 和 `ccusage`），以及 Codex 限流 JSON 解析（仅周窗口、5h+7d、具名额外桶）。
 
 ## v1.2.20
 
