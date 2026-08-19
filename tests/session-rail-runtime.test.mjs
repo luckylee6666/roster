@@ -49,5 +49,7 @@ test('会话条在退出、加载中、删除和打开坞时按状态刷新', ()
   assert.match(main, /else if \(sameProjectCwd\(treeRoot, project\.localPath\)\) void syncSessionRail/);
   assert.match(main, /if \(project\) projectSessionCache\.delete\(project\.id\)/);
   assert.match(main, /function applySessionRailHeight\(/);
-  assert.match(main, /function openDock\([\s\S]*?applySessionRailHeight\(\{ persist: true \}\)/);
+  assert.match(main, /function openDock\([\s\S]*?applySessionRailHeight\(\)/);
+  // 高度只在拖拽松开时落盘，布局变化不回写，避免把用户选的高度夹小
+  assert.doesNotMatch(main, /persist: true/);
 });

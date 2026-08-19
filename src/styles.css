@@ -3459,7 +3459,7 @@ body {
 }
 
 .session-rail {
-  flex: 0 0 var(--session-rail-height, 168px);
+  flex: 0 0 var(--session-rail-height, 320px);
   min-height: 0;
   display: flex;
   flex-direction: column;

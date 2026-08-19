@@ -1614,7 +1614,7 @@ function bind() {
     if (termEl.dock.classList.contains('maximized')) termEl.dock.style.height = window.innerHeight + 'px';
     closeTerminalLayoutMenu();
     closeFontMenu();
-    applySessionRailHeight({ persist: true });
+    applySessionRailHeight();
     scheduleFitVisibleSessions();
   });
   renderTerminalPaneLayout();
@@ -4741,7 +4741,7 @@ function toggleTree() {
   localStorage.setItem('term-tree-hidden', hidden ? '1' : '0');
   if (!hidden && treeRoot === null && activeSession) renderTree(sessions.get(activeSession).cwd);
   else if (!hidden) void syncSessionRail(treeRoot);
-  if (!hidden) requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
+  if (!hidden) requestAnimationFrame(() => applySessionRailHeight());
   scheduleFitVisibleSessions();
 }
 
@@ -4899,15 +4899,13 @@ function applySessionRailCollapsed(hidden) {
   try { localStorage.setItem(SESSION_RAIL_HIDDEN_KEY, hidden ? '1' : '0'); } catch (_) {}
 }
 
-function applySessionRailHeight({ persist = false } = {}) {
+// 高度只在拖拽mouseup时落盘；布局变化只做视觉夹取，避免把用户选的高度回写成夹小的值
+function applySessionRailHeight() {
   if (!termEl.tree || !termEl.sessionRail) return;
   const laidOut = termEl.dock.classList.contains('active') && !termEl.tree.classList.contains('hidden');
   const treeHeight = laidOut ? termEl.tree.clientHeight : 0;
   const height = clampSessionRailHeight(localStorage.getItem(SESSION_RAIL_HEIGHT_KEY), treeHeight);
   termEl.tree.style.setProperty('--session-rail-height', `${height}px`);
-  if (persist && laidOut && treeHeight > 0) {
-    try { localStorage.setItem(SESSION_RAIL_HEIGHT_KEY, String(height)); } catch (_) {}
-  }
 }
 
 function setupSessionRailSplitter() {
@@ -5091,7 +5089,7 @@ function openDock() {
   termEl.fab.classList.add('hidden');
   characterTheme.setDockOpen(true);
   workspaceController?.setDockOpen(true);
-  requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
+  requestAnimationFrame(() => applySessionRailHeight());
   scheduleFitVisibleSessions();
 }
 
@@ -5117,7 +5115,7 @@ function setDockMaximized(maxed) {
   if (maxed === wasMaxed) {
     if (maxed) {
       termEl.dock.style.height = window.innerHeight + 'px';
-      requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
+      requestAnimationFrame(() => applySessionRailHeight());
     }
     return;
   }
@@ -5131,7 +5129,7 @@ function setDockMaximized(maxed) {
     termEl.maximizeBtn.title = '最大化';
   }
   workspaceController?.scheduleBoundsSync();
-  requestAnimationFrame(() => applySessionRailHeight({ persist: true }));
+  requestAnimationFrame(() => applySessionRailHeight());
   scheduleFitVisibleSessions();
 }
 
@@ -5682,7 +5680,7 @@ function setupTermResize() {
     window.removeEventListener('blur', onUp);
     document.body.style.userSelect = '';
     termEl.dock.classList.remove('is-resizing');
-    applySessionRailHeight({ persist: true });
+    applySessionRailHeight();
     scheduleFitVisibleSessions(true);
   };
   termEl.resize.addEventListener('mousedown', (e) => {

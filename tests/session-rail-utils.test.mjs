@@ -105,6 +105,7 @@ test('相对时间和高度收起有稳定回退', () => {
   assert.equal(clampSessionRailHeight(999), SESSION_RAIL_MAX_HEIGHT);
   assert.equal(clampSessionRailHeight(200, 168), SESSION_RAIL_MIN_HEIGHT);
   assert.equal(clampSessionRailHeight('nope'), SESSION_RAIL_DEFAULT_HEIGHT);
+  assert.equal(SESSION_RAIL_DEFAULT_HEIGHT, SESSION_RAIL_MAX_HEIGHT);
   assert.equal(sessionRailHiddenFromStorage('1'), true);
   assert.equal(sessionRailHiddenFromStorage('0'), false);
   assert.equal(railLiveTitle({ tool: 'codex resume x', name: 'codex' }), 'codex');
