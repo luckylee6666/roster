@@ -68,6 +68,12 @@ export function resumeCliCommand(tool, sessionId) {
   return '';
 }
 
+export function launchCliCommand(tool, sessionId) {
+  const name = String(tool || '').trim();
+  if (!name) return '';
+  return resumeCliCommand(name, sessionId) || name;
+}
+
 function takeFlagValue(args, flags) {
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];

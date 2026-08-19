@@ -12,6 +12,7 @@ test('项目卡片可展开各家历史会话并续接指定 ID', () => {
   assert.match(html, /class="card-sessions"/);
   assert.match(html, /list_project_sessions/);
   assert.match(html, /resumeCliCommand\(session\.tool, session\.id\)/);
+  assert.match(html, /createSession\(\{ cwd: project\.localPath, name: project\.name, autoCmd \}\)/);
   assert.match(html, /function openHistorySession/);
   assert.match(rust, /list_project_sessions/);
   assert.match(styles, /\.card-session-item:hover/);
@@ -37,4 +38,14 @@ test('项目卡片可一键打开 Claude Codex Grok 主从套装', () => {
   assert.match(html, /class="action-btn kit-btn"/);
   assert.match(html, /开一套/);
   assert.match(styles, /\.card-session-kit/);
+});
+
+test('打开任一 CLI 先聚焦运行中标签，否则续接最近会话，没有历史才新开', () => {
+  assert.match(html, /function fetchProjectSessions/);
+  assert.match(html, /launchCommandForProjectTool/);
+  assert.match(html, /isRailCliTool\(tool\)/);
+  assert.match(html, /findRunningProjectTool\(listLiveTerminals\(\), p\.localPath, tool\)/);
+  assert.match(html, /name: p\.name/);
+  assert.match(html, /forceNew \? \{ autoCmd: tool \} : launchCommandForProjectTool/);
+  assert.match(html, /name: project\.name/);
 });

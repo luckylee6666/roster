@@ -32,6 +32,7 @@ test('会话条只做聚焦和续接，不复制卡片上的搜索预览删除',
   assert.match(main, /function openRailSession\(/);
   assert.match(main, /activateSession\(action\.terminalId\)/);
   assert.match(main, /resumeCliCommand\(action\.tool, action\.sessionId\)/);
+  assert.match(main, /projectTabName\(cwd, action\.tool\)/);
   assert.match(main, /list_project_sessions/);
   assert.match(main, /进行中/);
   assert.match(main, /最近/);

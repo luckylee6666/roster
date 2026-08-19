@@ -19,7 +19,7 @@ Latest release: **v1.2.21** — session rail under the file tree, Codex official
 - **Server management** — configure SSH servers (host, port, user, password/key login method)
 - **Grouping** — group projects, collapsible sidebar, click to locate, rename a group inline (hover → pencil; all projects in it move together)
 - **Built-in terminal** — in-app bottom-drawer tabbed terminal managing all sessions; file tree, file preview and editing, color themes, font size, drag-to-insert path; closing a tab asks first and reminds you to let the AI update its memory (see [Using the terminal](#using-the-built-in-terminal))
-- **Multi AI CLI launch** — start **Claude / Grok / Codex / opencode / Gemini / agy** in a project directory from the project card, with a tool badge on the tab
+- **Multi AI CLI launch** — start **Claude / Grok / Codex / opencode / Gemini / agy** in a project directory from the project card, with a tool badge on the tab. Opening a CLI focuses a running tab for that tool, otherwise resumes the latest on-disk session; a new session starts only when there is no history
 - **Project history** — expand a card to search, preview, resume, or delete each CLI's on-disk sessions; running tabs only match an explicit continue/resume
 - **Open a set / Collaborate** — one click opens Claude + Codex + Grok in a three-pane main layout; Collaborate assigns one brain and two workers that share `.vibe/orchestra/`
 - **Unify memory to Claude** (opt-in) — a project `.memory` symlink to Claude's project memory store; off by default, never auto-creates `CLAUDE.md` / `AGENTS.md`
@@ -59,8 +59,8 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 - Workspace modes and color themes are independent: themes can be switched in any mode, and their backgrounds and character effects apply to the left Coding area
 
 **Launch an AI CLI**
-- Click the terminal icon on a project card → a menu pops up: **Open Claude / Open Grok / Open Codex / Open opencode / Open Gemini / Open agy**
-- A new tab is created, `cd`s into the project directory and runs the command; the tab shows a tool badge (claude orange / grok gold / codex blue / opencode green / gemini purple / agy cyan)
+- Each project card shows one-click **Open CLI** buttons for locally installed tools
+- If that tool is already running for the project, Roster focuses it. Otherwise it resumes the latest on-disk session; a new session starts only when there is no history. The tab shows a tool badge (claude orange / grok gold / codex blue / opencode green / gemini purple / agy cyan)
 - The **+** at the top-left opens a blank terminal (no CLI)
 - Prerequisite: the corresponding CLI (`grok` / `codex` / `opencode` / `gemini` / `agy`) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
 

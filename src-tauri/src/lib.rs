@@ -22,6 +22,7 @@ mod project_memory;
 mod project_sessions;
 mod orchestra;
 mod proxy_settings;
+mod cli_detect;
 
 /// 手机端远程服务监听端口（局域网）。
 const REMOTE_PORT: u16 = 8787;
@@ -2700,6 +2701,14 @@ async fn codex_usage() -> Result<usage::CodexUsage, String> {
         .map_err(|e| e.to_string())
 }
 
+/// 探测本机 PATH 上已安装的登记 CLI。走登录壳，才能看到 nvm / Homebrew。
+#[tauri::command]
+async fn list_installed_clis(names: Vec<String>) -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(move || cli_detect::list_installed_cli_names(&names))
+        .await
+        .unwrap_or_default()
+}
+
 /// `.sh` 快捷命令依赖 Bash；仅探测可用性，不执行用户脚本。
 #[tauri::command]
 async fn has_bash() -> bool {
@@ -2972,6 +2981,7 @@ pub fn run() {
             save_requirements,
             oauth_usage,
             codex_usage,
+            list_installed_clis,
             has_bash,
             open_url,
             open_log,

@@ -53,7 +53,9 @@ test('启动菜单包含 Grok，macOS 发版固定 adhoc 签名', async () => {
   const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
   const workflow = await readFile(new URL('../.github/workflows/build.yml', import.meta.url), 'utf8');
 
-  assert.match(html, /data-cmd="grok"/);
+  const tools = await readFile(new URL('../src/cli-tools.js', import.meta.url), 'utf8');
+  assert.match(html, /id="launch-search"/);
+  assert.match(tools, /id: 'grok'/);
   assert.equal(config.bundle.macOS.signingIdentity, '-');
   assert.equal(config.bundle.macOS.entitlements, undefined);
   assert.doesNotMatch(workflow, /APPLE_CERTIFICATE/);

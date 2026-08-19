@@ -1,3 +1,4 @@
+import { CLI_TOOL_IDS, isKnownCliTool } from './cli-tools.js';
 import { normalizeProjectMemoryCwd } from './project-memory-utils.js';
 import { cliToolName } from './session-restore-utils.js';
 import {
@@ -15,17 +16,10 @@ export const SESSION_RAIL_MIN_TREE_BODY = 72;
 export const SESSION_RAIL_HEIGHT_KEY = 'term-session-rail-height';
 export const SESSION_RAIL_HIDDEN_KEY = 'term-session-rail-hidden';
 
-export const RAIL_CLI_TOOLS = Object.freeze([
-  'claude',
-  'grok',
-  'codex',
-  'opencode',
-  'gemini',
-  'agy',
-]);
+export const RAIL_CLI_TOOLS = CLI_TOOL_IDS;
 
 export function isRailCliTool(commandOrName) {
-  return RAIL_CLI_TOOLS.includes(cliToolName(commandOrName));
+  return isKnownCliTool(commandOrName);
 }
 
 export function sessionRailHiddenFromStorage(raw) {

@@ -739,32 +739,17 @@
       </div>
     </div>
 
-    <!-- 项目「打开终端」的 AI CLI 选择菜单 -->
+    <!-- 项目「打开终端」的 AI CLI 选择器：条目由 src/cli-tools.js 渲染 -->
     <div class="launch-menu" id="launch-menu">
-      <div class="launch-item" data-cmd="claude">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
-        <span>打开 Claude</span>
-      </div>
-      <div class="launch-item" data-cmd="grok">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
-        <span>打开 Grok</span>
-      </div>
-      <div class="launch-item" data-cmd="codex">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
-        <span>打开 Codex</span>
-      </div>
-      <div class="launch-item" data-cmd="opencode">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
-        <span>打开 opencode</span>
-      </div>
-      <div class="launch-item" data-cmd="gemini">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
-        <span>打开 Gemini</span>
-      </div>
-      <div class="launch-item" data-cmd="agy">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
-        <span>打开 agy</span>
-      </div>
+      <label class="launch-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.2"/>
+          <path d="M16.2 16.2L20 20"/>
+        </svg>
+        <input id="launch-search" type="text" placeholder="搜索 Claude、Grok…" autocomplete="off" spellcheck="false" />
+      </label>
+      <div class="launch-list" id="launch-list" role="listbox" aria-label="CLI"></div>
+      <div class="launch-empty" id="launch-empty" hidden>没有匹配的 CLI</div>
     </div>
 
     <!-- 项目"恢复现场" Modal -->

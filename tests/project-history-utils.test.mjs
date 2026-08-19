@@ -6,6 +6,8 @@ import {
   PROJECT_KIT_LAYOUT,
   filterHistoryGroups,
   findRunningProjectTool,
+  latestHistorySession,
+  launchCommandForProjectTool,
   projectKitSessionIds,
   runningHistoryLookup,
   runningTerminalIdForHistory,
@@ -83,6 +85,36 @@ test('Gemini 历史 ID 可用完整路径或文件名对齐', () => {
     true,
   );
   assert.equal(sameProjectCwd('/Users/lucky/git/app/', '/Users/lucky/git/app'), true);
+});
+
+test('打开 CLI 用该工具最近一条历史续接，没有历史才新开', () => {
+  const lastGrok = latestHistorySession([
+    {
+      tool: 'grok',
+      sessions: [
+        { id: 'g-new', title: '下架整改：下线小程序', atMs: 200 },
+        { id: 'g-old', title: '更早的会话', atMs: 100 },
+      ],
+    },
+    { tool: 'claude', sessions: [{ id: 'c-new', title: '修好分屏' }] },
+  ], 'grok');
+  assert.equal(lastGrok.id, 'g-new');
+  assert.deepEqual(launchCommandForProjectTool('grok', [
+    { tool: 'grok', sessions: [{ id: 'g-new', title: '下架整改：下线小程序' }] },
+  ]), {
+    last: { id: 'g-new', title: '下架整改：下线小程序' },
+    autoCmd: 'grok --resume g-new',
+  });
+  assert.deepEqual(launchCommandForProjectTool('codex', groups), {
+    last: { id: 'x-1', title: '打tag吧', preview: '给当前版本打 tag' },
+    autoCmd: 'codex resume x-1',
+  });
+  assert.deepEqual(launchCommandForProjectTool('agy', groups), {
+    last: null,
+    autoCmd: 'agy',
+  });
+  assert.equal(latestHistorySession(groups, 'opencode'), null);
+  assert.equal(latestHistorySession([], 'claude'), null);
 });
 
 test('一键套装复用同项目仍在跑的 Claude/Codex/Grok', () => {

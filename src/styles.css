@@ -901,6 +901,61 @@ body {
   flex-wrap: wrap;
 }
 
+.card-cli-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.card-cli-row:empty {
+  display: none;
+}
+
+.card-cli-label {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: 4px;
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.card-cli-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 100%);
+  color: var(--text-1);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+
+.card-cli-btn:hover {
+  border-color: var(--blue-border);
+  background: var(--blue-bg);
+}
+
+.card-cli-btn.is-recent {
+  border-color: var(--blue-border);
+  box-shadow: 0 0 0 2px var(--blue-bg);
+}
+
+.card-cli-name {
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  line-height: 1;
+}
+
 /* ===== 项目 Git 状态徽标 ===== */
 .card-git { display: inline-flex; }
 .card-git:empty { display: none; }
@@ -1558,49 +1613,121 @@ body {
   white-space: nowrap;
 }
 
-/* 项目「打开终端」AI CLI 选择菜单 */
+/* 项目「打开终端」AI CLI 选择器 */
 .launch-menu {
   position: fixed;
   z-index: 1600;
-  min-width: 172px;
-  padding: 4px;
+  width: 280px;
+  padding: 8px;
   background: var(--bg-0);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 12px;
   box-shadow: var(--shadow-md);
   display: none;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .launch-menu.active {
-  display: block;
+  display: flex;
+}
+
+.launch-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-1);
+}
+
+.launch-search:focus-within {
+  border-color: var(--blue);
+  background: var(--bg-0);
+  box-shadow: 0 0 0 2px var(--blue-bg);
+}
+
+.launch-search svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.launch-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: var(--fs-tiny);
+  color: var(--text-1);
+}
+
+.launch-search input::placeholder {
+  color: var(--text-3);
+}
+
+.launch-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
 }
 
 .launch-item {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 14px;
+  gap: 8px;
+  min-height: 40px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--bg-1);
   color: var(--text-1);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  transition: all 0.12s;
+  transition: background 0.12s, border-color 0.12s;
 }
 
-.launch-item:hover {
+.launch-item:hover,
+.launch-item.is-active {
   background: var(--blue-bg);
-  color: var(--blue);
+  border-color: var(--blue-border);
 }
 
-.launch-item svg {
-  width: 16px;
-  height: 16px;
+.launch-item-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launch-item-recent {
   flex-shrink: 0;
-  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--blue);
+  line-height: 1;
 }
 
-.launch-item:hover svg {
-  color: var(--blue);
+.launch-empty {
+  padding: 18px 8px;
+  color: var(--text-3);
+  font-size: var(--fs-tiny);
+  text-align: center;
+}
+
+.launch-empty[hidden],
+.launch-list:empty {
+  display: none;
 }
 
 /* ===== Prompt 片段库 ===== */

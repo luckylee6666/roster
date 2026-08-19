@@ -14,6 +14,7 @@ import { installThemePointer } from './terminal-theme-pointer.js';
 import { installTerminalCharacterTheme } from './terminal-theme-character.js';
 import { normalizeProjectMachine, projectMachineTag } from './project-form-utils.js';
 import { seedThemePresets } from './terminal-theme-presets.js';
+import { CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds, visibleCliTools, stepCliToolId } from './cli-tools.js';
 import {
   cliToolName,
   restoreSessionLayout,
@@ -25,6 +26,7 @@ import {
   PROJECT_KIT_LAYOUT,
   filterHistoryGroups,
   findRunningProjectTool,
+  launchCommandForProjectTool,
   runningHistoryLookup,
   runningTerminalIdForHistory,
   sameProjectCwd,
@@ -35,6 +37,7 @@ import {
   buildSessionRailModel,
   clampSessionRailHeight,
   formatRailRelativeTime,
+  isRailCliTool,
   sessionRailAction,
   sessionRailHiddenFromStorage,
   sessionRailViewLoading,
@@ -222,12 +225,16 @@ const el = {
   scanCancelBtn: $('scan-cancel-btn'),
   scanImportBtn: $('scan-import-btn'),
   launchMenu: $('launch-menu'),
+  launchSearch: $('launch-search'),
+  launchList: $('launch-list'),
+  launchEmpty: $('launch-empty'),
   treeCtxMenu: $('tree-context-menu'),
 };
 
 async function init() {
   await load();
   bind();
+  void refreshInstalledClis();
   void refreshProxyIndicator();
   try {
     await setupEditorExitGuard();
@@ -450,6 +457,52 @@ function machineTagHtml(machine) {
   return tag ? `<span class="tag ${tag.className}">${tag.label}</span>` : '';
 }
 
+let installedCliIds = null;
+let installedCliAt = 0;
+const INSTALLED_CLI_TTL_MS = 60_000;
+
+function cardCliButtonsHtml(project) {
+  const last = cliToolName(getProjectActivity(project?.id)?.cli);
+  const buttons = installedCliTools(installedCliIds).map(tool => {
+    const recent = tool.id === last;
+    return `<button type="button" class="card-cli-btn${recent ? ' is-recent' : ''}" data-cmd="${escAttr(tool.id)}" title="打开 ${escAttr(tool.label)}，续上一次会话">`
+      + `<span class="term-tab-tool tool-${esc(tool.id)}">${esc(tool.id)}</span>`
+      + `<span class="card-cli-name">${esc(tool.label)}</span>`
+      + `</button>`;
+  }).join('');
+  if (!buttons) return '';
+  return `<span class="card-cli-label" title="一点打开该工具；已有会话会续上一次">打开 CLI</span>${buttons}`;
+}
+
+function paintCardCliRows() {
+  document.querySelectorAll('.card-cli-row[data-cli-id]').forEach(row => {
+    const project = projects.find(item => item.id === row.dataset.cliId);
+    if (!project) return;
+    row.innerHTML = cardCliButtonsHtml(project);
+    row.querySelectorAll('.card-cli-btn').forEach(btn => {
+      btn.onclick = event => {
+        event.stopPropagation();
+        void openTerminal(project, btn.dataset.cmd);
+      };
+    });
+  });
+}
+
+async function refreshInstalledClis({ force = false } = {}) {
+  if (!force && installedCliIds && Date.now() - installedCliAt < INSTALLED_CLI_TTL_MS) {
+    paintCardCliRows();
+    return;
+  }
+  try {
+    const found = await invoke('list_installed_clis', { names: [...CLI_TOOL_IDS] });
+    installedCliIds = normalizeInstalledCliIds(found);
+  } catch (_) {
+    installedCliIds = [...CLI_TOOL_IDS];
+  }
+  installedCliAt = Date.now();
+  paintCardCliRows();
+}
+
 function render(list) {
   if (!list.length) {
     el.empty.style.display = 'flex';
@@ -491,9 +544,6 @@ function render(list) {
           <button class="action-btn context-btn" title="恢复现场（git/改动/CLAUDE.md）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 106 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>
           </button>
-          <button class="action-btn terminal-btn" title="打开终端">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
-          </button>
           <button class="action-btn kit-btn" title="开一套（Claude + Codex + Grok 主从）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.2" y="4.2" width="10.2" height="15.6" rx="1.4"/><rect x="10.6" y="7.2" width="10.2" height="6.2" rx="1.2"/><rect x="10.6" y="14.4" width="10.2" height="5.4" rx="1.2"/></svg>
           </button>
@@ -508,6 +558,7 @@ function render(list) {
           </button>
         </div>
       </div>
+      <div class="card-cli-row" data-cli-id="${p.id}">${cardCliButtonsHtml(p)}</div>
       <div class="card-sessions" hidden></div>
     </div>
   `).join('');
@@ -528,10 +579,6 @@ function render(list) {
       ev.stopPropagation();
       openContextModal(p);
     };
-    card.querySelector('.terminal-btn').onclick = (ev) => {
-      ev.stopPropagation();
-      openLaunchMenu(p, ev.currentTarget);
-    };
     card.querySelector('.kit-btn').onclick = (ev) => {
       ev.stopPropagation();
       void openProjectKit(p);
@@ -542,6 +589,12 @@ function render(list) {
     };
     card.querySelector('.edit-btn').onclick = () => openModal(p);
     card.querySelector('.del-btn').onclick = () => del(p.id, p.name);
+    card.querySelectorAll('.card-cli-btn').forEach(btn => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        void openTerminal(p, btn.dataset.cmd);
+      };
+    });
     const remoteLink = card.querySelector('.card-remote-link');
     if (remoteLink) remoteLink.onclick = (ev) => {
       ev.preventDefault();
@@ -580,6 +633,10 @@ function listLiveTerminals() {
 
 function findProjectByCwd(cwd) {
   return projects.find(project => sameProjectCwd(project.localPath, cwd)) || null;
+}
+
+function projectTabName(cwd, fallback = '') {
+  return String(findProjectByCwd(cwd)?.name || fallback || '').trim();
 }
 
 function historySessionPayload(row) {
@@ -764,8 +821,7 @@ function openHistorySession(project, session) {
     return;
   }
   recordProjectActivity(project.id, autoCmd);
-  const name = `${session.tool} · ${session.title}`;
-  void createSession({ cwd: project.localPath, name, autoCmd });
+  void createSession({ cwd: project.localPath, name: project.name, autoCmd });
 }
 
 function closeSessionPreview() {
@@ -864,6 +920,26 @@ function applyProjectKitLayout(sessionIds) {
   }
 }
 
+async function fetchProjectSessions(project) {
+  if (!project?.localPath) return { groups: [] };
+  const cached = projectSessionCache.get(project.id) || getSessionRailHistory(project.localPath);
+  if (cached) {
+    projectSessionCache.set(project.id, cached);
+    return cached;
+  }
+  let pending = projectSessionLoads.get(project.id);
+  if (!pending) {
+    pending = invoke('list_project_sessions', { path: project.localPath })
+      .finally(() => projectSessionLoads.delete(project.id));
+    projectSessionLoads.set(project.id, pending);
+  }
+  const history = await pending;
+  projectSessionCache.set(project.id, history);
+  sessionRailHistoryByCwd.set(normalizeProjectMemoryCwd(project.localPath), history);
+  if (sameProjectCwd(treeRoot, project.localPath)) refreshSessionRailView();
+  return history;
+}
+
 async function openProjectKit(project, { forceNew = false } = {}) {
   if (!project?.localPath) {
     msg('这个项目没有本地路径', 'info');
@@ -872,6 +948,14 @@ async function openProjectKit(project, { forceNew = false } = {}) {
   if (projectKitOpening) return [];
   projectKitOpening = true;
   try {
+    let history = { groups: [] };
+    if (!forceNew) {
+      try {
+        history = await fetchProjectSessions(project);
+      } catch (_) {
+        history = { groups: [] };
+      }
+    }
     const ids = [];
     for (const tool of DEFAULT_PROJECT_KIT) {
       if (!forceNew) {
@@ -881,8 +965,10 @@ async function openProjectKit(project, { forceNew = false } = {}) {
           continue;
         }
       }
-      recordProjectActivity(project.id, tool);
-      const id = await createSession({ cwd: project.localPath, name: tool, autoCmd: tool });
+      const launch = forceNew ? { autoCmd: tool } : launchCommandForProjectTool(tool, history.groups);
+      const autoCmd = launch.autoCmd || tool;
+      recordProjectActivity(project.id, autoCmd);
+      const id = await createSession({ cwd: project.localPath, name: project.name, autoCmd });
       const created = sessions.get(id);
       if (created && created.status !== 'failed') ids.push(id);
     }
@@ -1281,6 +1367,7 @@ function bind() {
     closeSessionPreview();
     closeOrchestraModal();
     closeProxyModal();
+    closeLaunchMenu();
   };
 
   // 运行环境切换时显示/隐藏服务器选择
@@ -1331,14 +1418,36 @@ function bind() {
   el.scanModal.onclick = e => { if (e.target === el.scanModal) closeScanModal(); };
   el.scanImportBtn.onclick = importScanned;
 
-  // 「打开终端」AI CLI 选择菜单
-  el.launchMenu.querySelectorAll('.launch-item').forEach(item => {
-    item.onclick = () => {
-      const cmd = item.dataset.cmd;
-      const p = launchMenuProject;
+  // 「打开终端」AI CLI 选择器：登记表渲染，搜索过滤，方向键 + 回车
+  el.launchList.onclick = event => {
+    const item = event.target.closest('.launch-item');
+    if (item?.dataset.cmd) pickLaunchTool(item.dataset.cmd);
+  };
+  el.launchSearch.addEventListener('input', () => {
+    launchMenuQuery = el.launchSearch.value;
+    launchMenuActiveId = '';
+    renderLaunchMenu();
+  });
+  el.launchMenu.addEventListener('keydown', event => {
+    if (!el.launchMenu.classList.contains('active') || event.isComposing) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
       closeLaunchMenu();
-      if (p) openTerminal(p, cmd);
-    };
+      return;
+    }
+    const tools = launchMenuTools();
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (launchMenuActiveId) pickLaunchTool(launchMenuActiveId);
+      return;
+    }
+    const delta = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1
+      : event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1
+      : 0;
+    if (!delta) return;
+    event.preventDefault();
+    launchMenuActiveId = stepCliToolId(tools, launchMenuActiveId, delta);
+    renderLaunchMenu();
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#launch-menu') && !e.target.closest('.terminal-btn')) closeLaunchMenu();
@@ -1402,7 +1511,10 @@ function bind() {
     }
     restoreTerminalFocus = false;
     clearTimeout(gitFocusTimer);
-    gitFocusTimer = setTimeout(refreshGitStatus, 400); // 防抖：回到窗口稍候再扫
+    gitFocusTimer = setTimeout(() => {
+      refreshGitStatus();
+      void refreshInstalledClis();
+    }, 400); // 防抖：回到窗口稍候再扫
   });
   termEl.usageBtn.onclick = openUsage;
   $('usage-close').onclick = closeUsage;
@@ -1624,6 +1736,30 @@ async function browse() {
 
 async function openTerminal(p, cmd) {
   try {
+    const tool = cliToolName(cmd);
+    if (tool && isRailCliTool(tool)) {
+      const existing = findRunningProjectTool(listLiveTerminals(), p.localPath, tool);
+      if (existing) {
+        openDock();
+        activateSession(existing.id);
+        return;
+      }
+      let history = { groups: [] };
+      try {
+        history = await fetchProjectSessions(p);
+      } catch (_) {
+        history = { groups: [] };
+      }
+      const launch = launchCommandForProjectTool(tool, history.groups);
+      const autoCmd = launch.autoCmd || tool;
+      recordProjectActivity(p.id, autoCmd);
+      await createSession({
+        cwd: p.localPath,
+        name: p.name,
+        autoCmd,
+      });
+      return;
+    }
     recordProjectActivity(p.id, cmd);
     await createSession({ cwd: p.localPath, name: p.name, autoCmd: cmd });
   } catch (e) {
@@ -1632,22 +1768,76 @@ async function openTerminal(p, cmd) {
   }
 }
 
-// 「打开终端」AI CLI 选择菜单（固定定位，锚到点击的按钮）
+// 「打开终端」AI CLI 选择器（固定定位，锚到点击的按钮）
 let launchMenuProject = null;
-function openLaunchMenu(p, anchorEl) {
-  launchMenuProject = p;
+let launchMenuAnchor = null;
+let launchMenuQuery = '';
+let launchMenuActiveId = '';
+
+function launchMenuTools() {
+  return visibleCliTools(launchMenuQuery, getProjectActivity(launchMenuProject?.id)?.cli);
+}
+
+function renderLaunchMenu() {
+  const tools = launchMenuTools();
+  const lastUsed = cliToolName(getProjectActivity(launchMenuProject?.id)?.cli);
+  if (!tools.some(tool => tool.id === launchMenuActiveId)) {
+    launchMenuActiveId = tools[0]?.id || '';
+  }
+  if (el.launchList) {
+    el.launchList.innerHTML = tools.map(tool => {
+      const active = tool.id === launchMenuActiveId;
+      const recent = !launchMenuQuery.trim() && tool.id === lastUsed;
+      return `<button type="button" class="launch-item${active ? ' is-active' : ''}" data-cmd="${escAttr(tool.id)}" role="option" aria-selected="${active ? 'true' : 'false'}">`
+        + `<span class="term-tab-tool tool-${esc(tool.id)}">${esc(tool.id)}</span>`
+        + `<span class="launch-item-name">${esc(tool.label)}</span>`
+        + (recent ? '<span class="launch-item-recent">最近</span>' : '')
+        + `</button>`;
+    }).join('');
+  }
+  if (el.launchEmpty) el.launchEmpty.hidden = tools.length > 0;
+}
+
+function positionLaunchMenu(anchorEl) {
   const menu = el.launchMenu;
-  menu.classList.add('active'); // 先显示以测量尺寸
-  const r = anchorEl.getBoundingClientRect();
+  const r = (anchorEl || launchMenuAnchor)?.getBoundingClientRect();
+  if (!r) return;
   let left = Math.max(8, r.right - menu.offsetWidth);
   let top = r.bottom + 4;
   if (top + menu.offsetHeight > window.innerHeight - 8) top = r.top - menu.offsetHeight - 4;
-  menu.style.left = left + 'px';
-  menu.style.top = top + 'px';
+  if (left + menu.offsetWidth > window.innerWidth - 8) left = Math.max(8, window.innerWidth - menu.offsetWidth - 8);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
 }
+
+function pickLaunchTool(cmd) {
+  const project = launchMenuProject;
+  closeLaunchMenu();
+  if (project && cmd) void openTerminal(project, cmd);
+}
+
+function openLaunchMenu(p, anchorEl) {
+  launchMenuProject = p;
+  launchMenuAnchor = anchorEl;
+  launchMenuQuery = '';
+  launchMenuActiveId = cliToolName(getProjectActivity(p?.id)?.cli);
+  if (el.launchSearch) el.launchSearch.value = '';
+  renderLaunchMenu();
+  el.launchMenu.classList.add('active');
+  positionLaunchMenu(anchorEl);
+  requestAnimationFrame(() => {
+    positionLaunchMenu(anchorEl);
+    el.launchSearch?.focus();
+    el.launchSearch?.select();
+  });
+}
+
 function closeLaunchMenu() {
-  el.launchMenu.classList.remove('active');
+  el.launchMenu?.classList.remove('active');
   launchMenuProject = null;
+  launchMenuAnchor = null;
+  launchMenuQuery = '';
+  launchMenuActiveId = '';
 }
 
 let submitting = false;
@@ -2815,7 +3005,10 @@ function maybeRestoreSessions() {
   });
 }
 async function restoreSessions(layout) {
-  await restoreSessionLayout(layout, createSession);
+  await restoreSessionLayout(layout, options => createSession({
+    ...options,
+    name: projectTabName(options.cwd, options.name),
+  }));
 }
 
 // ===== Prompt/Snippet 库：常用指令一键注入当前终端 =====
@@ -4809,7 +5002,7 @@ function openRailSession(key) {
   }
   const project = findProjectByCwd(cwd);
   if (project) recordProjectActivity(project.id, autoCmd);
-  void createSession({ cwd, name: `${action.tool} · ${action.title}`, autoCmd });
+  void createSession({ cwd, name: projectTabName(cwd, action.tool), autoCmd });
 }
 
 function applySessionRailCollapsed(hidden) {
