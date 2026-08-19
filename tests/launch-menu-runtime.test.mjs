@@ -8,16 +8,20 @@ const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8
 const tools = readFileSync(new URL('../src/cli-tools.js', import.meta.url), 'utf8');
 
 test('项目卡片底部列出本机已装 CLI，一点即开', () => {
+  assert.match(main, /class="card-foot"/);
   assert.match(main, /class="card-cli-row"/);
-  assert.match(main, /打开 CLI/);
   assert.match(main, /function cardCliButtonsHtml/);
   assert.match(main, /function refreshInstalledClis/);
   assert.match(main, /invoke\('list_installed_clis'/);
   assert.match(main, /void openTerminal\(p, btn\.dataset\.cmd\)/);
   assert.doesNotMatch(main, /class="action-btn terminal-btn"/);
+  // 按钮只保留工具色标，去掉重复文字、前缀标签和外层盒
+  assert.doesNotMatch(main, /card-cli-label/);
+  assert.doesNotMatch(main, /card-cli-name/);
+  assert.match(styles, /\.card-foot\b/);
   assert.match(styles, /\.card-cli-row\b/);
   assert.match(styles, /\.card-cli-btn\b/);
-  assert.match(styles, /\.card-cli-label\b/);
+  assert.doesNotMatch(styles, /\.card-cli-label\b/);
   const rust = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
   const detect = readFileSync(new URL('../src-tauri/src/cli_detect.rs', import.meta.url), 'utf8');
   assert.match(rust, /async fn list_installed_clis/);
@@ -26,16 +30,12 @@ test('项目卡片底部列出本机已装 CLI，一点即开', () => {
   assert.match(detect, /-ilc/);
 });
 
-test('启动菜单从 CLI 登记表渲染，支持搜索和键盘选择', () => {
-  assert.match(page, /id="launch-search"/);
-  assert.match(page, /id="launch-list"/);
-  assert.doesNotMatch(page, /data-cmd="claude"/);
+test('搜索式启动菜单已移除，卡片色标是唯一 CLI 入口', () => {
+  assert.doesNotMatch(page, /id="launch-menu"/);
+  assert.doesNotMatch(page, /id="launch-search"/);
+  assert.doesNotMatch(main, /openLaunchMenu/);
+  assert.doesNotMatch(main, /renderLaunchMenu/);
+  assert.doesNotMatch(styles, /\.launch-menu\b/);
   assert.match(tools, /id: 'grok'/);
   assert.match(main, /from '\.\/cli-tools\.js'/);
-  assert.match(main, /function renderLaunchMenu/);
-  assert.match(main, /function pickLaunchTool/);
-  assert.match(main, /visibleCliTools\(launchMenuQuery/);
-  assert.match(main, /stepCliToolId\(tools, launchMenuActiveId, delta\)/);
-  assert.match(styles, /\.launch-search\b/);
-  assert.match(styles, /grid-template-columns: 1fr 1fr/);
 });

@@ -1,6 +1,5 @@
 export const NATIVE_ESC_OVERLAY_SELECTORS = [
   '.modal-mask.active',
-  '#launch-menu.active',
   '#snippet-menu.active',
   '#terminal-memory-menu.active',
   '#terminal-theme-menu.active',

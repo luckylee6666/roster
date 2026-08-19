@@ -48,13 +48,14 @@ test('产品显示名为 Roster，bundle 与 crate 已切走旧名', async () =>
   assert.doesNotMatch(html, /Vibe Coding/);
 });
 
-test('启动菜单包含 Grok，macOS 发版固定 adhoc 签名', async () => {
+test('CLI 登记表包含 Grok，macOS 发版固定 adhoc 签名', async () => {
   const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
   const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
   const workflow = await readFile(new URL('../.github/workflows/build.yml', import.meta.url), 'utf8');
 
   const tools = await readFile(new URL('../src/cli-tools.js', import.meta.url), 'utf8');
-  assert.match(html, /id="launch-search"/);
+  // 搜索式启动菜单已移除，卡片色标按钮直接开终端
+  assert.doesNotMatch(html, /id="launch-menu"/);
   assert.match(tools, /id: 'grok'/);
   assert.equal(config.bundle.macOS.signingIdentity, '-');
   assert.equal(config.bundle.macOS.entitlements, undefined);
