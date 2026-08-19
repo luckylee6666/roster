@@ -4,6 +4,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ## Unreleased
 
+## v1.2.21
+
 ### English
 
 **Added**

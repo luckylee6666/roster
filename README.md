@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.2.20** — larger chrome type, name-tag **R** icon, cleaner header. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.21** — session rail under the file tree, Codex official rate limits. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
