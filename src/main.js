@@ -515,11 +515,12 @@ function render(list) {
             </button>
             ${esc(p.name)}
             ${p.group ? `<span class="card-group">${esc(p.group)}</span>` : ''}
+            <span class="card-git" data-git-id="${p.id}"></span>
           </div>
           <div class="card-info">
             <div class="info-item">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
-              <span title="${escAttr(p.localPath)}">${esc(short(p.localPath))}</span>
+              <span class="path-clip" title="${escAttr(p.localPath)}"><span class="path-text">${esc(p.localPath)}</span></span>
             </div>
             ${p.remoteUrl ? `<div class="info-item">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg>
@@ -551,7 +552,6 @@ function render(list) {
         </div>
       </div>
       <div class="card-foot">
-        <span class="card-git" data-git-id="${p.id}"></span>
         <span class="card-cli-row" data-cli-id="${p.id}">${cardCliButtonsHtml(p)}</span>
       </div>
       <div class="card-sessions" hidden></div>

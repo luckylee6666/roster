@@ -866,9 +866,18 @@ body {
   color: var(--text-4);
 }
 
-.info-item span {
+/* 路径按可用宽度自适应：溢出裁头部、保留尾部目录名；空余时靠左 */
+.info-item .path-clip {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
   overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.info-item .path-text {
+  flex-shrink: 0;
+  margin-right: auto;
   white-space: nowrap;
 }
 
@@ -952,6 +961,8 @@ body {
 /* ===== 项目 Git 状态徽标 ===== */
 .card-git { display: inline-flex; }
 .card-git:empty { display: none; }
+/* 标题行里的分支徽标不被挤压 */
+.card-title .card-git { flex-shrink: 0; }
 .git-badge {
   display: inline-flex;
   align-items: center;
