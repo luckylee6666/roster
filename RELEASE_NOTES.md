@@ -1,16 +1,20 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.21 / 本版更新
+## What's new in v1.2.22 / 本版更新
 
 **English**
-- The file tree now has a compact session rail: running AI tabs for the current project first, then recent on-disk sessions. Click to focus or resume. Search, preview, and delete stay on the project card.
-- The usage panel dropped OpenCode. Codex now reads official ChatGPT rate-limit windows (`codex app-server` `account/rateLimits/read`) with the same % + reset countdown as Claude.
+- One-click CLI launch on project cards: installed AI CLIs (Claude / Grok / Codex / OpenCode / Gemini / agy) show as colored chips; clicking focuses the running session for that project or resumes the latest on-disk one.
+- Slimmer cards: branch badge next to the name, full adaptive paths, single footer row of CLI chips; tabs opened from cards are named after the project.
+- The session rail opens at maximum height by default and remembers dragged heights reliably.
+- Removed the floating search-style launch menu; card chips are the single launch entry.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- 文件树下方增加细会话条：先列当前项目正在跑的 AI 标签，再列最近磁盘会话。点一下聚焦或续接。搜索、预览、删除仍在项目卡片。
-- 用量面板去掉 OpenCode。Codex 改为走官方 ChatGPT 限流窗口（`codex app-server` 的 `account/rateLimits/read`），百分比和重置倒计时与 Claude 一致。
+- 项目卡片底部一键打开 CLI：本机已装的 AI CLI（Claude / Grok / Codex / OpenCode / Gemini / agy）以色标显示，点击先聚焦运行中会话，没有则续接最近一次。
+- 卡片收整：分支徽标并入标题行，路径全量自适应宽度，色标底行一行收尾；卡片打开的标签改用项目名。
+- 会话条默认最大高度，拖过的高度可靠记住。
+- 移除无入口的搜索式启动菜单，卡片色标为唯一入口。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装

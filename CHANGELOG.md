@@ -4,6 +4,38 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ## Unreleased
 
+## v1.2.22
+
+### English
+
+**Added**
+- One-click CLI launch on project cards: a login-shell probe detects which registered AI CLIs (Claude / Grok / Codex / OpenCode / Gemini / agy) are installed and shows them as colored chips on each card. Clicking one focuses the running session for that project, or resumes the latest on-disk session when none is running.
+
+**Changed**
+- Slimmer card layout: the git branch badge sits next to the project name, paths render in full and adapt to the card width (leading part elided on overflow), and CLI chips share a single footer row. Terminal tabs opened from a card or the kit are named after the project instead of the tool / session title.
+- The session rail opens at maximum height by default, and dragged heights now persist reliably across launches.
+
+**Removed**
+- The floating search-style launch menu; the card chips are now the single launch entry.
+
+**Tests**
+- Coverage for the CLI registry, install probe, and launch-focus/resume flow; rail height persistence regressions.
+
+### 中文
+
+**新增**
+- 项目卡片底部一键打开 CLI：登录壳探测本机已装的登记 AI CLI（Claude / Grok / Codex / OpenCode / Gemini / agy），以色标显示在卡片上；点击先聚焦该项目运行中的会话，没有则续接最近一次磁盘会话。
+
+**变更**
+- 卡片布局收整：分支徽标并入标题行，路径不再固定截断成 `/.../xxx`，全路径随宽度自适应（溢出裁头保尾），色标在底行一行收尾；卡片与「开一套」打开的终端标签改用项目名。
+- 会话条默认顶到最大高度；拖过的高度现在能可靠记住，不再每次启动被压小。
+
+**移除**
+- 无入口的搜索式启动菜单；卡片色标成为打开 CLI 的唯一入口。
+
+**测试**
+- 登记表、安装探测、点击聚焦/续接的回归测试；会话条高度持久化测试。
+
 ## v1.2.21
 
 ### English
