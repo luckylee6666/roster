@@ -14,7 +14,8 @@ export const SESSION_RAIL_MAX_HEIGHT = 320;
 /** 默认顶到最大（仍受树高夹取）；嫌高的用户自行拖小并记住。 */
 export const SESSION_RAIL_DEFAULT_HEIGHT = SESSION_RAIL_MAX_HEIGHT;
 export const SESSION_RAIL_MIN_TREE_BODY = 72;
-export const SESSION_RAIL_HEIGHT_KEY = 'term-session-rail-height';
+// v2：旧键的值被 persist 回写退化污染过，弃用，让默认最大生效
+export const SESSION_RAIL_HEIGHT_KEY = 'term-session-rail-height-v2';
 export const SESSION_RAIL_HIDDEN_KEY = 'term-session-rail-hidden';
 
 export const RAIL_CLI_TOOLS = CLI_TOOL_IDS;
