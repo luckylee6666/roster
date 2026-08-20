@@ -676,6 +676,137 @@ fn list_gemini_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     finalize_sessions(sessions)
 }
 
+fn qwen_first_user_text(value: &serde_json::Value) -> String {
+    value
+        .get("message")
+        .and_then(|message| message.get("parts"))
+        .and_then(|parts| parts.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+        .find(|text| !text.trim().is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn qwen_session_from_jsonl(path: &Path, cwd: &str, allow_missing_cwd: bool) -> Option<ProjectHistorySession> {
+    // qwen 的行式 jsonl 与 Claude 同款（每行带 cwd），复用其匹配逻辑
+    if !claude_file_matches_cwd(path, cwd, allow_missing_cwd) {
+        return None;
+    }
+    let id = path.file_stem()?.to_str()?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?;
+    let mut buf = String::new();
+    let _ = file
+        .by_ref()
+        .take(CLAUDE_TITLE_READ_LIMIT)
+        .read_to_string(&mut buf);
+    let mut raw_title = String::new();
+    for line in buf.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(|value| value.as_str()) != Some("user") {
+            continue;
+        }
+        let text = qwen_first_user_text(&value);
+        if text.trim().is_empty() || is_noise_user_text(&text) {
+            continue;
+        }
+        raw_title = text;
+        break;
+    }
+    let at_ms = path
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .map(millis)
+        .unwrap_or(0);
+    Some(history_session(id, "qwen", &raw_title, at_ms))
+}
+
+fn find_qwen_project_dir(home: &Path, cwd: &str) -> Option<PathBuf> {
+    let projects = home.join(".qwen").join("projects");
+    let encoded = projects.join(encode_claude_project_dir(cwd));
+    if encoded.is_dir() {
+        return Some(encoded);
+    }
+    for entry in fs::read_dir(&projects).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() && dir_has_matching_claude_cwd(&path.join("chats"), cwd) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn list_qwen_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
+    let Some(dir) = find_qwen_project_dir(home, cwd) else {
+        return Vec::new();
+    };
+    let allow_missing = is_encoded_claude_dir(&dir, cwd);
+    let mut sessions = Vec::new();
+    let entries = match fs::read_dir(dir.join("chats")) {
+        Ok(entries) => entries,
+        Err(_) => return sessions,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Some(session) = qwen_session_from_jsonl(&path, cwd, allow_missing) {
+            sessions.push(session);
+        }
+    }
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.at_ms));
+    sessions.truncate(MAX_SESSIONS_PER_TOOL);
+    sessions
+}
+
+fn qwen_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
+    let id = require_component_id(session_id)?;
+    let dir = find_qwen_project_dir(home, cwd).ok_or_else(|| "找不到这个 Qwen 会话".to_string())?;
+    let path = dir.join("chats").join(format!("{id}.jsonl"));
+    let allow_missing = is_encoded_claude_dir(&dir, cwd);
+    if path.is_file() && is_within_dir(&dir, &path) && claude_file_matches_cwd(&path, cwd, allow_missing) {
+        Ok(path)
+    } else {
+        Err("找不到这个 Qwen 会话".into())
+    }
+}
+
+fn collect_qwen_preview_parts(buf: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    for line in buf.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let kind = value.get("type").and_then(|value| value.as_str()).unwrap_or("");
+        if kind != "user" && kind != "assistant" {
+            continue;
+        }
+        let text = value
+            .get("message")
+            .and_then(|message| message.get("parts"))
+            .and_then(|parts| parts.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !text.trim().is_empty() {
+            parts.push(text);
+            if parts.len() >= 8 {
+                break;
+            }
+        }
+    }
+    parts
+}
+
 fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     let history = home.join(".gemini/antigravity-cli/history.jsonl");
     let mut by_id: std::collections::BTreeMap<String, (String, u64)> = std::collections::BTreeMap::new();
@@ -744,6 +875,7 @@ pub fn list_project_history_with_home(project_path: &str, home: &Path) -> Projec
     push_group(&mut groups, "opencode", "OpenCode", list_opencode_sessions(home, &cwd));
     push_group(&mut groups, "gemini", "Gemini", list_gemini_sessions(home, &cwd));
     push_group(&mut groups, "agy", "agy", list_agy_sessions(home, &cwd));
+    push_group(&mut groups, "qwen", "Qwen", list_qwen_sessions(home, &cwd));
     ProjectHistory { groups }
 }
 
@@ -1307,6 +1439,14 @@ pub fn preview_project_session_with_home(
             Ok(preview_result(session, preview_body(&collect_gemini_preview_parts(&value))))
         }
         "agy" => preview_agy(home, &cwd, session_id),
+        "qwen" => {
+            let path = qwen_session_path(home, &cwd, session_id)?;
+            let session = qwen_session_from_jsonl(&path, &cwd, true)
+                .ok_or_else(|| "找不到这个 Qwen 会话".to_string())?;
+            let mut file = fs::File::open(&path).map_err(|error| error.to_string())?;
+            let buf = read_lossy_prefix(&mut file, PREVIEW_FILE_READ_LIMIT);
+            Ok(preview_result(session, preview_body(&collect_qwen_preview_parts(&buf))))
+        }
         _ => Err("还不支持预览这个工具的历史会话".into()),
     }
 }
@@ -1337,6 +1477,19 @@ pub fn delete_project_session_with_home(
             fs::remove_file(path).map_err(|error| error.to_string())
         }
         "agy" => delete_agy(home, &cwd, session_id),
+        "qwen" => {
+            let path = qwen_session_path(home, &cwd, session_id)?;
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+            // 伴生的运行时状态文件，删不掉无所谓
+            let runtime = path.with_file_name(format!(
+                "{}.runtime.json",
+                path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default()
+            ));
+            if runtime.is_file() {
+                let _ = fs::remove_file(runtime);
+            }
+            Ok(())
+        }
         _ => Err("还不支持删除这个工具的历史会话".into()),
     }
 }
@@ -1461,6 +1614,55 @@ mod tests {
         delete_project_session_with_home(cwd, "claude", "sess-this", &home).unwrap();
         assert!(!dir.join("sess-this.jsonl").exists());
         assert!(dir.join("sess-other.jsonl").exists());
+    }
+
+    #[test]
+    fn qwen_lists_previews_and_deletes_only_same_project() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/app";
+        let chats = home
+            .join(".qwen")
+            .join("projects")
+            .join(encode_claude_project_dir(cwd))
+            .join("chats");
+        fs::create_dir_all(&chats).unwrap();
+        let id = "22222222-2222-2222-2222-222222222222";
+        fs::write(
+            chats.join(format!("{id}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                r#"{"cwd":"/Users/lucky/git/app","type":"user","message":{"role":"user","parts":[{"text":"部署到服务器"}]}}"#,
+                r#"{"cwd":"/Users/lucky/git/app","type":"assistant","message":{"role":"model","parts":[{"text":"好的，先看部署方式"}]}}"#,
+            ),
+        )
+        .unwrap();
+        fs::write(chats.join(format!("{id}.runtime.json")), "{}").unwrap();
+        let other_id = "33333333-3333-3333-3333-333333333333";
+        fs::write(
+            chats.join(format!("{other_id}.jsonl")),
+            r#"{"cwd":"/Users/lucky/git.app","type":"user","message":{"role":"user","parts":[{"text":"撞名项目会话"}]}}
+"#,
+        )
+        .unwrap();
+        fs::write(chats.join(format!("{other_id}.runtime.json")), "{}").unwrap();
+
+        let history = list_project_history_with_home(cwd, &home);
+        let qwen = history.groups.iter().find(|group| group.tool == "qwen").unwrap();
+        assert_eq!(qwen.sessions.len(), 1);
+        assert_eq!(qwen.sessions[0].id, id);
+        assert_eq!(qwen.sessions[0].title, "部署到服务器");
+
+        let preview = preview_project_session_with_home(cwd, "qwen", id, &home).unwrap();
+        assert!(preview.body.contains("部署到服务器"));
+        assert!(preview.body.contains("好的，先看部署方式"));
+        assert!(preview_project_session_with_home(cwd, "qwen", other_id, &home).is_err());
+        assert!(delete_project_session_with_home(cwd, "qwen", other_id, &home).is_err());
+        assert!(chats.join(format!("{other_id}.jsonl")).exists());
+        assert!(chats.join(format!("{other_id}.runtime.json")).exists());
+
+        delete_project_session_with_home(cwd, "qwen", id, &home).unwrap();
+        assert!(!chats.join(format!("{id}.jsonl")).exists());
+        assert!(!chats.join(format!("{id}.runtime.json")).exists());
     }
 
     #[test]

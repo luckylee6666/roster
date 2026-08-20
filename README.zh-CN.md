@@ -26,7 +26,7 @@
 - **终端代理** — 顶栏可选开关，新启动的 CLI 带上 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，Clash/Surge 本地端口即可，不必 TUN
 - **会话状态感知** — 终端会话「持续输出后突然安静」即判定 AI 跑完 / 在等你输入，弹桌面通知 + 提示音 + 标签琥珀呼吸点；正盯着看的会话不打扰，工具栏铃铛可开关
 - **Git 状态徽标** — 本地项目卡片显示当前分支、工作区改动（● 已追踪 / + 未追踪）、相对上游领先/落后（↑/↓），干净则绿色 ✓；后台并行扫描，启动 + 窗口聚焦时刷新
-- **会话恢复** — 记住上次终端标签布局（目录 + CLI），重开应用询问是否恢复；Claude、OpenCode 与 Grok 用 `--continue`，Codex 在原项目目录用 `resume --last` 接回最近对话
+- **会话恢复** — 记住上次终端标签布局（目录 + CLI），重开应用询问是否恢复；Claude、OpenCode、Grok 与 Qwen 用 `--continue` 接回最近对话，Codex 在原项目目录用 `resume --last`；从历史列表指定 Qwen 会话时使用 `qwen --resume <id>`
 - **Prompt 片段库** — 终端工具栏书签图标，存常用 Prompt/命令，点一条注入当前终端（仅文本、不自动回车，可先检查再发送）；管理弹窗增删改，存于 `snippets.json`
 - **恢复现场** — 项目卡片历史图标，一张速览接回上次工作：git 概览 + 最近提交 + 改动文件 + CLAUDE.md 摘要 + 上次启动的 CLI；底部一键打开终端 / Claude
 - **限流用量（零 Node）** — 用量面板：Claude 走官方 `api/oauth/usage`（5 小时 / 7 天，钥匙串 token，首次弹授权）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`（ChatGPT 套餐窗口，时长由服务端决定）。缓存 60 秒、秒出
@@ -62,7 +62,7 @@
 - 项目卡片底部「打开 CLI」列出本机已装工具，一点即开
 - 该工具已在这个项目跑着就切过去；否则续接最近一次磁盘会话。没有历史才新开。标签上显示工具色标（claude 橙 / grok 金 / codex 蓝 / opencode 绿 / gemini 紫 / agy 青 / qwen 粉）
 - 面板左上「＋」开一个空白终端（不跑任何 CLI）
-- 前提：对应 CLI（`grok` / `codex` / `opencode` / `gemini` / `agy`）需已安装并在 PATH 中（终端走登录 shell，能找到）
+- 前提：对应 CLI（`grok` / `codex` / `opencode` / `gemini` / `agy` / `qwen`）需已安装并在 PATH 中（终端走登录 shell，能找到）
 
 **文件树 + 预览**（左侧）
 - 树根为当前标签所在项目目录，切换标签自动跟随；点文件夹懒加载展开

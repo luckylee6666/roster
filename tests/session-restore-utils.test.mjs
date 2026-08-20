@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   cliToolName,
   extractResumedSessionId,
+  isGenericContinueCommand,
   restoreSessionLayout,
   restoredCliCommand,
   launchCliCommand,
@@ -142,4 +143,15 @@ test('主流程调用可测试的恢复编排', async () => {
   assert.match(main, /projectTabName\(options\.cwd, options\.name\)/);
   assert.match(main, /Codex 标签会按项目目录续接最近一次对话/);
   assert.match(main, /Grok 标签会用 --continue 接上次对话/);
+});
+
+test('Qwen 续接：--resume 指定会话，--continue 视为通用续接', () => {
+  assert.equal(resumeCliCommand('qwen', 's-1'), 'qwen --resume s-1');
+  assert.equal(launchCliCommand('qwen', ''), 'qwen');
+  assert.equal(extractResumedSessionId('qwen --resume s-1'), 's-1');
+  assert.equal(extractResumedSessionId('qwen --resume'), '');
+  assert.equal(isGenericContinueCommand('qwen --continue'), true);
+  assert.equal(isGenericContinueCommand('qwen --resume s-1'), false);
+  assert.equal(restoredCliCommand('qwen'), 'qwen --continue');
+  assert.equal(restoredCliCommand('qwen --resume s-1'), 'qwen --resume s-1');
 });

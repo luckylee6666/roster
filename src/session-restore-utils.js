@@ -65,6 +65,7 @@ export function resumeCliCommand(tool, sessionId) {
   if (name === 'opencode') return `opencode --session ${quoteCliArg(id)}`;
   if (name === 'gemini') return `gemini --session-file ${quoteCliArg(id)}`;
   if (name === 'agy') return `agy --conversation ${quoteCliArg(id)}`;
+  if (name === 'qwen') return `qwen --resume ${quoteCliArg(id)}`;
   return '';
 }
 
@@ -105,6 +106,7 @@ export function extractResumedSessionId(command) {
   if (tool === 'opencode') return takeFlagValue(args, new Set(['--session', '-s']));
   if (tool === 'gemini') return takeFlagValue(args, new Set(['--session-file']));
   if (tool === 'agy') return takeFlagValue(args, new Set(['--conversation']));
+  if (tool === 'qwen') return takeFlagValue(args, new Set(['--resume', '-r']));
   return '';
 }
 
@@ -113,7 +115,7 @@ export function isGenericContinueCommand(command) {
   if (!words.length) return false;
   const tool = cliToolName(words[0]);
   const args = words.slice(1);
-  if (tool === 'claude' || tool === 'grok' || tool === 'opencode') {
+  if (tool === 'claude' || tool === 'grok' || tool === 'opencode' || tool === 'qwen') {
     return args.includes('--continue') || args.includes('-c');
   }
   if (tool === 'codex') {
@@ -162,6 +164,12 @@ export function restoredCliCommand(command) {
   }
 
   if (tool === 'grok') {
+    return /(^|\s)(--continue|--resume|-c|-r)(\s|$)/.test(trimmed)
+      ? trimmed
+      : `${trimmed} --continue`;
+  }
+
+  if (tool === 'qwen') {
     return /(^|\s)(--continue|--resume|-c|-r)(\s|$)/.test(trimmed)
       ? trimmed
       : `${trimmed} --continue`;

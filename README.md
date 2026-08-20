@@ -26,7 +26,7 @@ Latest release: **v1.2.22** — one-click CLI launch on project cards, slimmer c
 - **Terminal proxy** — optional header switch writes `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` into newly started CLI terminals so a local Clash/Surge port works without TUN
 - **Session attention awareness** — when a terminal session goes quiet after a burst of output (an AI CLI likely finished or is waiting for input), you get a desktop notification + chime + an amber pulsing dot on the tab; the session you're actively watching won't interrupt you, and a bell icon in the toolbar toggles it
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
-- **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude, OpenCode, and Grok use `--continue`, while Codex uses `resume --last` in the saved project directory
+- **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude, OpenCode, Grok, and Qwen use `--continue`, while Codex uses `resume --last` in the saved project directory. Picking a specific Qwen history row uses `qwen --resume <id>`
 - **Prompt/snippet library** — a toolbar bookmark icon holds reusable prompts/commands; click one to inject it into the current terminal (text only, no auto-Enter, so you can review before sending); add/edit/delete via a management dialog, stored in `snippets.json`
 - **Restore context** — a history icon on each project card opens a one-glance snapshot to resume work: git overview + recent commits + changed files + CLAUDE.md summary + the CLI you last launched there; footer buttons jump back in (open terminal / Claude)
 - **Rate-limit usage (no Node)** — usage panel: Claude uses the official `api/oauth/usage` endpoint (5-hour / 7-day, Keychain token; first read prompts authorization); Codex uses the local `codex app-server` `account/rateLimits/read` RPC (ChatGPT plan windows, duration from the server). Cached 60s, near-instant
@@ -62,7 +62,7 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 - Each project card shows one-click **Open CLI** buttons for locally installed tools
 - If that tool is already running for the project, Roster focuses it. Otherwise it resumes the latest on-disk session; a new session starts only when there is no history. The tab shows a tool badge (claude orange / grok gold / codex blue / opencode green / gemini purple / agy cyan / qwen pink)
 - The **+** at the top-left opens a blank terminal (no CLI)
-- Prerequisite: the corresponding CLI (`grok` / `codex` / `opencode` / `gemini` / `agy`) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
+- Prerequisite: the corresponding CLI (`grok` / `codex` / `opencode` / `gemini` / `agy` / `qwen`) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
 
 **File tree + preview** (left)
 - The tree is rooted at the active tab's project directory and follows tab switches; folders load lazily on click
