@@ -21,6 +21,7 @@ test('项目卡片底部列出本机已装 CLI，一点即开', () => {
   assert.match(styles, /\.card-foot\b/);
   assert.match(styles, /\.card-cli-row\b/);
   assert.match(styles, /\.card-cli-btn\b/);
+  assert.match(styles, /\.term-tab-tool\.tool-mimo\b/);
   assert.doesNotMatch(styles, /\.card-cli-label\b/);
   const rust = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
   const detect = readFileSync(new URL('../src-tauri/src/cli_detect.rs', import.meta.url), 'utf8');

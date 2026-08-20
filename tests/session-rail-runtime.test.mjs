@@ -43,11 +43,13 @@ test('会话条只做聚焦和续接，不复制卡片上的搜索预览删除',
 });
 
 test('会话条在退出、加载中、删除和打开坞时按状态刷新', () => {
-  assert.match(main, /s\.status = 'exited'[\s\S]{0,400}refreshExpandedHistoryCards\(\)/);
+  assert.match(main, /s\.status = 'exited'[\s\S]{0,200}invalidateTerminalProjectSessionHistory\(s\)/);
+  assert.match(main, /if \(historyCwd\) reloadVisibleProjectSessionHistory\(historyCwd\)/);
   assert.match(main, /sessionRailViewLoading\(cwd, history, sessionRailLoads\)/);
   assert.match(main, /if \(card && expandedProjectIds\.has\(project\.id\)\) await expandProjectSessions/);
   assert.match(main, /else if \(sameProjectCwd\(treeRoot, project\.localPath\)\) void syncSessionRail/);
-  assert.match(main, /if \(project\) projectSessionCache\.delete\(project\.id\)/);
+  assert.match(main, /function invalidateProjectSessionHistory\([\s\S]*projectSessionCache\.delete\(project\.id\)/);
+  assert.match(main, /const sessionRailLoads = projectSessionLoads/);
   assert.match(main, /function applySessionRailHeight\(/);
   assert.match(main, /function openDock\([\s\S]*?applySessionRailHeight\(\)/);
   // 高度只在拖拽松开时落盘，布局变化不回写，避免把用户选的高度夹小

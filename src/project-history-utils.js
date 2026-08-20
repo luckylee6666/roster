@@ -4,6 +4,48 @@ import { cliToolName, extractResumedSessionId, isGenericContinueCommand, launchC
 export const DEFAULT_PROJECT_KIT = Object.freeze(['claude', 'codex', 'grok']);
 export const PROJECT_KIT_LAYOUT = 'main';
 
+export function createProjectSessionHistoryLoader(loadHistory) {
+  if (typeof loadHistory !== 'function') throw new TypeError('loadHistory must be a function');
+  const pending = new Map();
+  const revisions = new Map();
+
+  const revisionFor = key => revisions.get(key) || 0;
+
+  function invalidate(cwd) {
+    const key = normalizeProjectMemoryCwd(cwd);
+    if (!key) return '';
+    revisions.set(key, revisionFor(key) + 1);
+    return key;
+  }
+
+  function load(cwd) {
+    const key = normalizeProjectMemoryCwd(cwd);
+    if (!key) return Promise.resolve({ groups: [] });
+    const revision = revisionFor(key);
+    const current = pending.get(key);
+    if (current?.revision === revision) return current.promise;
+
+    const entry = { revision, promise: null };
+    entry.promise = Promise.resolve()
+      .then(() => loadHistory(cwd))
+      .then(
+        history => (revision === revisionFor(key) ? history : load(cwd)),
+        error => {
+          if (revision !== revisionFor(key)) return load(cwd);
+          throw error;
+        },
+      )
+      .finally(() => {
+        // 旧请求失效后可能已有新请求在跑，不能由旧请求的 finally 把它删掉。
+        if (pending.get(key) === entry) pending.delete(key);
+      });
+    pending.set(key, entry);
+    return entry.promise;
+  }
+
+  return { invalidate, load, pending };
+}
+
 export function sameProjectCwd(left, right) {
   const a = normalizeProjectMemoryCwd(left);
   const b = normalizeProjectMemoryCwd(right);

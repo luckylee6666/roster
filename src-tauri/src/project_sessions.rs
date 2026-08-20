@@ -580,6 +580,85 @@ fn list_opencode_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> 
     Vec::new()
 }
 
+fn mimo_db_paths(home: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![home.join(".local/share/mimocode/mimocode.db")];
+    if let Some(dir) = dirs::data_dir() {
+        paths.push(dir.join("mimocode").join("mimocode.db"));
+    }
+    if let Some(dir) = dirs::data_local_dir() {
+        paths.push(dir.join("mimocode").join("mimocode.db"));
+    }
+    paths
+}
+
+fn list_mimo_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
+    let Ok(connection) = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return Vec::new();
+    };
+    let normalized = crate::project_memory::normalize_project_cwd(cwd);
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+    let slash = format!("{normalized}/");
+    let backslash = format!("{normalized}\\");
+    let Ok(mut statement) = connection.prepare(
+        "SELECT id, title, time_updated, directory
+         FROM session
+         WHERE (parent_id IS NULL OR parent_id = '')
+           AND directory IN (?1, ?2, ?3)
+         ORDER BY time_updated DESC
+         LIMIT ?4",
+    ) else {
+        return Vec::new();
+    };
+    let rows = statement.query_map(
+        rusqlite::params![normalized, slash, backslash, MAX_SESSIONS_PER_TOOL as i64],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    );
+    let Ok(rows) = rows else {
+        return Vec::new();
+    };
+    let mut sessions = Vec::new();
+    for row in rows.flatten() {
+        let (id, title, time_updated, directory) = row;
+        if !same_project_cwd(&directory, cwd) {
+            continue;
+        }
+        sessions.push(history_session(
+            id,
+            "mimo",
+            &title,
+            time_updated.max(0) as u64,
+        ));
+        if sessions.len() >= MAX_SESSIONS_PER_TOOL {
+            break;
+        }
+    }
+    sessions
+}
+
+fn list_mimo_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
+    for path in mimo_db_paths(home) {
+        if path.is_file() {
+            let sessions = list_mimo_sessions_from_db(&path, cwd);
+            if !sessions.is_empty() || path.exists() {
+                return sessions;
+            }
+        }
+    }
+    Vec::new()
+}
+
 fn gemini_first_user_text(value: &serde_json::Value) -> String {
     for message in value.get("messages").and_then(|value| value.as_array()).into_iter().flatten() {
         if message.get("type").and_then(|value| value.as_str()) != Some("user") {
@@ -876,6 +955,7 @@ pub fn list_project_history_with_home(project_path: &str, home: &Path) -> Projec
     push_group(&mut groups, "gemini", "Gemini", list_gemini_sessions(home, &cwd));
     push_group(&mut groups, "agy", "agy", list_agy_sessions(home, &cwd));
     push_group(&mut groups, "qwen", "Qwen", list_qwen_sessions(home, &cwd));
+    push_group(&mut groups, "mimo", "MiMo Code", list_mimo_sessions(home, &cwd));
     ProjectHistory { groups }
 }
 
@@ -1276,6 +1356,198 @@ fn delete_opencode(home: &Path, cwd: &str, session_id: &str) -> Result<(), Strin
     Ok(())
 }
 
+fn find_mimo_db(home: &Path) -> Option<PathBuf> {
+    mimo_db_paths(home).into_iter().find(|path| path.is_file())
+}
+
+fn preview_mimo(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectHistoryPreview, String> {
+    let id = require_component_id(session_id)?;
+    let db_path = find_mimo_db(home).ok_or_else(|| "找不到 MiMo Code 会话库".to_string())?;
+    let connection = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|error| error.to_string())?;
+    let normalized = crate::project_memory::normalize_project_cwd(cwd);
+    let slash = format!("{normalized}/");
+    let backslash = format!("{normalized}\\");
+    let mut statement = connection
+        .prepare(
+            "SELECT title, time_updated, directory
+             FROM session
+             WHERE id = ?1
+               AND (parent_id IS NULL OR parent_id = '')
+               AND directory IN (?2, ?3, ?4)
+             LIMIT 1",
+        )
+        .map_err(|error| error.to_string())?;
+    let row = statement
+        .query_row(
+            rusqlite::params![id, normalized, slash, backslash],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|_| "找不到这个 MiMo Code 会话".to_string())?;
+    let (title, time_updated, directory) = row;
+    if !same_project_cwd(&directory, cwd) {
+        return Err("找不到这个 MiMo Code 会话".into());
+    }
+    Ok(ProjectHistoryPreview {
+        id,
+        tool: "mimo".into(),
+        title: preview_title(&title),
+        at_ms: time_updated.max(0) as u64,
+        body: preview_excerpt(&title, PREVIEW_BODY_LIMIT),
+    })
+}
+
+fn mimo_table_has_column(
+    connection: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2
+             )",
+            rusqlite::params![table, column],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|exists| exists != 0)
+        .map_err(|error| error.to_string())
+}
+
+fn delete_mimo(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
+    let id = require_component_id(session_id)?;
+    let db_path = find_mimo_db(home).ok_or_else(|| "找不到 MiMo Code 会话库".to_string())?;
+    let mut connection = rusqlite::Connection::open(&db_path).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|error| error.to_string())?;
+    let normalized = crate::project_memory::normalize_project_cwd(cwd);
+    let slash = format!("{normalized}/");
+    let backslash = format!("{normalized}\\");
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let session_ids = {
+        let mut statement = transaction
+            .prepare(
+            "WITH RECURSIVE target(id, depth) AS (
+                 SELECT id, 0
+                 FROM session
+                 WHERE id = ?1
+                   AND (parent_id IS NULL OR parent_id = '')
+                   AND directory IN (?2, ?3, ?4)
+                 UNION ALL
+                 SELECT child.id, target.depth + 1
+                 FROM session AS child
+                 JOIN target ON child.parent_id = target.id
+                 WHERE child.directory IN (?2, ?3, ?4)
+             )
+             SELECT id FROM target ORDER BY depth DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![id, normalized, slash, backslash],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    if session_ids.is_empty() {
+        return Err("找不到这个 MiMo Code 会话".into());
+    }
+
+    let has_history_fts = mimo_table_has_column(&transaction, "history_fts", "session_id")?;
+    let has_permission_parent =
+        mimo_table_has_column(&transaction, "permission_grant", "parent_session_id")?;
+    let has_permission_target = mimo_table_has_column(&transaction, "permission_grant", "target")?;
+    let has_event = mimo_table_has_column(&transaction, "event", "aggregate_id")?;
+    let has_event_sequence =
+        mimo_table_has_column(&transaction, "event_sequence", "aggregate_id")?;
+
+    for target_id in &session_ids {
+        if has_history_fts {
+            transaction
+                .execute(
+                    "DELETE FROM history_fts WHERE session_id = ?1",
+                    rusqlite::params![target_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        match (has_permission_parent, has_permission_target) {
+            (true, true) => {
+                transaction
+                    .execute(
+                        "DELETE FROM permission_grant WHERE parent_session_id = ?1 OR target = ?1",
+                        rusqlite::params![target_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            (true, false) => {
+                transaction
+                    .execute(
+                        "DELETE FROM permission_grant WHERE parent_session_id = ?1",
+                        rusqlite::params![target_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            (false, true) => {
+                transaction
+                    .execute(
+                        "DELETE FROM permission_grant WHERE target = ?1",
+                        rusqlite::params![target_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            (false, false) => {}
+        }
+        if has_event {
+            transaction
+                .execute(
+                    "DELETE FROM event WHERE aggregate_id = ?1",
+                    rusqlite::params![target_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        if has_event_sequence {
+            transaction
+                .execute(
+                    "DELETE FROM event_sequence WHERE aggregate_id = ?1",
+                    rusqlite::params![target_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    for target_id in &session_ids {
+        let deleted = transaction
+            .execute(
+                "DELETE FROM session
+                 WHERE id = ?1 AND directory IN (?2, ?3, ?4)",
+                rusqlite::params![target_id, normalized, slash, backslash],
+            )
+            .map_err(|error| error.to_string())?;
+        if deleted != 1 {
+            return Err("MiMo Code 会话在删除前发生变化".into());
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn preview_agy(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectHistoryPreview, String> {
     let id = require_component_id(session_id)?;
     let history = home.join(".gemini/antigravity-cli/history.jsonl");
@@ -1428,6 +1700,7 @@ pub fn preview_project_session_with_home(
             Ok(preview_result(session, preview_body(&collect_codex_preview_parts(&buf))))
         }
         "opencode" => preview_opencode(home, &cwd, session_id),
+        "mimo" => preview_mimo(home, &cwd, session_id),
         "gemini" => {
             let path = resolve_gemini_session_file(home, &cwd, session_id)?;
             let session = gemini_session_from_file(&path).ok_or_else(|| "找不到这个 Gemini 会话".to_string())?;
@@ -1472,6 +1745,7 @@ pub fn delete_project_session_with_home(
             fs::remove_file(path).map_err(|error| error.to_string())
         }
         "opencode" => delete_opencode(home, &cwd, session_id),
+        "mimo" => delete_mimo(home, &cwd, session_id),
         "gemini" => {
             let path = resolve_gemini_session_file(home, &cwd, session_id)?;
             fs::remove_file(path).map_err(|error| error.to_string())
@@ -1663,6 +1937,249 @@ mod tests {
         delete_project_session_with_home(cwd, "qwen", id, &home).unwrap();
         assert!(!chats.join(format!("{id}.jsonl")).exists());
         assert!(!chats.join(format!("{id}.runtime.json")).exists());
+    }
+
+    #[test]
+    fn mimo_lists_previews_and_deletes_only_same_project() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/app";
+        let db_dir = home.join(".local/share/mimocode");
+        fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("mimocode.db");
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    slug TEXT NOT NULL,
+                    directory TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+                    data TEXT NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated)
+                 VALUES ('ses_old', 'p1', NULL, 'old', '/Users/lucky/git/app', '本项目旧会话', '1', 1, 100),
+                        ('ses_latest', 'p1', NULL, 'latest', '/Users/lucky/git/app/', '本项目最新会话', '1', 1, 300),
+                        ('ses_child', 'p1', 'ses_latest', 'child', '/Users/lucky/git/app', '子会话', '1', 1, 400),
+                        ('ses_other', 'p2', NULL, 'other', '/Users/lucky/git/app-other', '别的项目', '1', 1, 500)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, data)
+                 VALUES ('msg_latest', 'ses_latest', '{}'),
+                        ('msg_child', 'ses_child', '{}'),
+                        ('msg_other', 'ses_other', '{}')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let history = list_project_history_with_home(cwd, &home);
+        let mimo = history.groups.iter().find(|group| group.tool == "mimo").unwrap();
+        assert_eq!(mimo.label, "MiMo Code");
+        assert_eq!(mimo.sessions.len(), 2);
+        assert_eq!(mimo.sessions[0].id, "ses_latest");
+        assert_eq!(mimo.sessions[0].title, "本项目最新会话");
+        assert_eq!(mimo.sessions[1].id, "ses_old");
+
+        let preview = preview_project_session_with_home(cwd, "mimo", "ses_latest", &home).unwrap();
+        assert_eq!(preview.tool, "mimo");
+        assert_eq!(preview.title, "本项目最新会话");
+        assert!(preview.body.contains("本项目最新会话"));
+        assert!(preview_project_session_with_home(cwd, "mimo", "ses_other", &home).is_err());
+        assert!(delete_project_session_with_home(cwd, "mimo", "ses_other", &home).is_err());
+
+        // 旧版/最小 schema 没有辅助表时也能删除。
+        delete_project_session_with_home(cwd, "mimo", "ses_old", &home).unwrap();
+
+        let setup = rusqlite::Connection::open(&db).unwrap();
+        setup
+            .execute_batch(
+                "CREATE TABLE history_fts (
+                    part_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL
+                 );
+                 CREATE TABLE permission_grant (
+                    parent_session_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    PRIMARY KEY (parent_session_id, target)
+                 );
+                 CREATE TABLE event_sequence (
+                    aggregate_id TEXT PRIMARY KEY,
+                    seq INTEGER NOT NULL
+                 );
+                 CREATE TABLE event (
+                    id TEXT PRIMARY KEY,
+                    aggregate_id TEXT NOT NULL REFERENCES event_sequence(aggregate_id) ON DELETE CASCADE
+                 );
+                 CREATE TABLE external_import (
+                    source TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    PRIMARY KEY (source, source_key)
+                 );
+                 CREATE TABLE claude_import (
+                    source_uuid TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL
+                 );
+                 CREATE TABLE inbox (
+                    id TEXT PRIMARY KEY,
+                    receiver_session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+                    sender_session_id TEXT
+                 );
+                 INSERT INTO history_fts (part_id, session_id)
+                    VALUES ('part_latest', 'ses_latest'),
+                           ('part_child', 'ses_child'),
+                           ('part_other', 'ses_other');
+                 INSERT INTO permission_grant (parent_session_id, target)
+                    VALUES ('ses_latest', 'file'),
+                           ('holder', 'ses_child'),
+                           ('ses_other', 'other'),
+                           ('holder', 'ses_other');
+                 INSERT INTO event_sequence (aggregate_id, seq)
+                    VALUES ('ses_latest', 1), ('ses_child', 1), ('ses_other', 1);
+                 INSERT INTO event (id, aggregate_id)
+                    VALUES ('event_latest', 'ses_latest'),
+                           ('event_child', 'ses_child'),
+                           ('event_other', 'ses_other');
+                 INSERT INTO external_import (source, source_key, session_id)
+                    VALUES ('external', 'latest', 'ses_latest');
+                 INSERT INTO claude_import (source_uuid, session_id)
+                    VALUES ('claude-latest', 'ses_latest');
+                 INSERT INTO inbox (id, receiver_session_id, sender_session_id)
+                    VALUES ('inbox-sender', 'ses_other', 'ses_latest');",
+            )
+            .unwrap();
+        drop(setup);
+
+        delete_project_session_with_home(cwd, "mimo", "ses_latest", &home).unwrap();
+        let remaining = rusqlite::Connection::open(&db).unwrap();
+        let old_count: i64 = remaining
+            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_old'", [], |row| row.get(0))
+            .unwrap();
+        let latest_count: i64 = remaining
+            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_latest'", [], |row| row.get(0))
+            .unwrap();
+        let child_count: i64 = remaining
+            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_child'", [], |row| row.get(0))
+            .unwrap();
+        let other_count: i64 = remaining
+            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_other'", [], |row| row.get(0))
+            .unwrap();
+        let deleted_message_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM message WHERE id IN ('msg_latest', 'msg_child')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let other_message_count: i64 = remaining
+            .query_row("SELECT COUNT(*) FROM message WHERE id = 'msg_other'", [], |row| row.get(0))
+            .unwrap();
+        let deleted_history_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM history_fts WHERE session_id IN ('ses_latest', 'ses_child')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let other_history_count: i64 = remaining
+            .query_row("SELECT COUNT(*) FROM history_fts WHERE session_id = 'ses_other'", [], |row| row.get(0))
+            .unwrap();
+        let deleted_permission_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM permission_grant
+                 WHERE parent_session_id IN ('ses_latest', 'ses_child')
+                    OR target IN ('ses_latest', 'ses_child')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let other_permission_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM permission_grant
+                 WHERE parent_session_id = 'ses_other' OR target = 'ses_other'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let deleted_event_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM event WHERE aggregate_id IN ('ses_latest', 'ses_child')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let deleted_sequence_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM event_sequence WHERE aggregate_id IN ('ses_latest', 'ses_child')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let other_event_count: i64 = remaining
+            .query_row("SELECT COUNT(*) FROM event WHERE aggregate_id = 'ses_other'", [], |row| row.get(0))
+            .unwrap();
+        let other_sequence_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM event_sequence WHERE aggregate_id = 'ses_other'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let import_count: i64 = remaining
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM external_import WHERE session_id = 'ses_latest')
+                    + (SELECT COUNT(*) FROM claude_import WHERE session_id = 'ses_latest')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let sender_inbox_count: i64 = remaining
+            .query_row(
+                "SELECT COUNT(*) FROM inbox
+                 WHERE receiver_session_id = 'ses_other' AND sender_session_id = 'ses_latest'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_count, 0);
+        assert_eq!(latest_count, 0);
+        assert_eq!(child_count, 0);
+        assert_eq!(other_count, 1);
+        assert_eq!(deleted_message_count, 0);
+        assert_eq!(other_message_count, 1);
+        assert_eq!(deleted_history_count, 0);
+        assert_eq!(other_history_count, 1);
+        assert_eq!(deleted_permission_count, 0);
+        assert_eq!(other_permission_count, 2);
+        assert_eq!(deleted_event_count, 0);
+        assert_eq!(deleted_sequence_count, 0);
+        assert_eq!(other_event_count, 1);
+        assert_eq!(other_sequence_count, 1);
+        assert_eq!(import_count, 2);
+        assert_eq!(sender_inbox_count, 1);
     }
 
     #[test]
@@ -2001,4 +2518,5 @@ mod tests {
             .unwrap();
         assert_eq!(leftover, 1);
     }
+
 }

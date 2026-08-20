@@ -19,14 +19,14 @@
 - **服务器管理** — 配置 SSH 服务器（IP、端口、用户名、密码/秘钥登录方式）
 - **分组管理** — 项目分组，侧边栏展开/折叠，点击定位，分组就地重命名（hover → 铅笔，组内项目一起迁移）
 - **内置终端** — 应用内底部抽屉多标签终端，集中管理所有会话；支持文件树导览、文件预览与编辑、配色主题、字号调整、拖拽插路径；关标签前先确认并提醒让 AI 更新记忆（详见下方[内置终端使用](#内置终端使用)）
-- **多 AI CLI 启动** — 项目卡片一键在项目目录启动 **Claude / Grok / Codex / opencode / Gemini / agy / Qwen**，标签上有工具色标区分。打开时先聚焦该工具已在跑的标签，否则续接最近一次磁盘会话；没有历史才新开
+- **多 AI CLI 启动** — 项目卡片一键在项目目录启动 **Claude / Grok / Codex / opencode / Gemini / agy / Qwen / MiMo Code**，标签上有工具色标区分。打开时先聚焦该工具已在跑的标签，否则续接最近一次磁盘会话；没有历史才新开
 - **项目历史** — 展开卡片即可搜索、预览、续接或删除各家 CLI 磁盘会话；运行中只对齐明确续接
 - **开一套 / 开协作** — 一键打开 Claude + Codex + Grok 主从三窗；协作由一个大脑拆活、另外两个动手，共用 `.vibe/orchestra/`
 - **统一记忆到 Claude**（可选）— 项目 `.memory` 链到 Claude 项目记忆，默认关闭，不会自动创建 `CLAUDE.md` / `AGENTS.md`
 - **终端代理** — 顶栏可选开关，新启动的 CLI 带上 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，Clash/Surge 本地端口即可，不必 TUN
 - **会话状态感知** — 终端会话「持续输出后突然安静」即判定 AI 跑完 / 在等你输入，弹桌面通知 + 提示音 + 标签琥珀呼吸点；正盯着看的会话不打扰，工具栏铃铛可开关
 - **Git 状态徽标** — 本地项目卡片显示当前分支、工作区改动（● 已追踪 / + 未追踪）、相对上游领先/落后（↑/↓），干净则绿色 ✓；后台并行扫描，启动 + 窗口聚焦时刷新
-- **会话恢复** — 记住上次终端标签布局（目录 + CLI），重开应用询问是否恢复；Claude、OpenCode、Grok 与 Qwen 用 `--continue` 接回最近对话，Codex 在原项目目录用 `resume --last`；从历史列表指定 Qwen 会话时使用 `qwen --resume <id>`
+- **会话恢复** — 记住上次终端标签布局（目录 + CLI），重开应用询问是否恢复；Claude、OpenCode、Grok、Qwen 与 MiMo Code 用 `--continue` 接回最近对话，Codex 在原项目目录用 `resume --last`；从历史列表指定 Qwen 或 MiMo Code 会话时分别使用 `qwen --resume <id>`、`mimo --session <id>`
 - **Prompt 片段库** — 终端工具栏书签图标，存常用 Prompt/命令，点一条注入当前终端（仅文本、不自动回车，可先检查再发送）；管理弹窗增删改，存于 `snippets.json`
 - **恢复现场** — 项目卡片历史图标，一张速览接回上次工作：git 概览 + 最近提交 + 改动文件 + CLAUDE.md 摘要 + 上次启动的 CLI；底部一键打开终端 / Claude
 - **限流用量（零 Node）** — 用量面板：Claude 走官方 `api/oauth/usage`（5 小时 / 7 天，钥匙串 token，首次弹授权）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`（ChatGPT 套餐窗口，时长由服务端决定）。缓存 60 秒、秒出
@@ -60,9 +60,9 @@
 
 **启动 AI CLI**
 - 项目卡片底部「打开 CLI」列出本机已装工具，一点即开
-- 该工具已在这个项目跑着就切过去；否则续接最近一次磁盘会话。没有历史才新开。标签上显示工具色标（claude 橙 / grok 金 / codex 蓝 / opencode 绿 / gemini 紫 / agy 青 / qwen 粉）
+- 该工具已在这个项目跑着就切过去；否则续接最近一次磁盘会话。没有历史才新开。标签上显示工具色标（claude 橙 / grok 金 / codex 蓝 / opencode 绿 / gemini 紫 / agy 青 / qwen 粉 / mimo 橙）
 - 面板左上「＋」开一个空白终端（不跑任何 CLI）
-- 前提：对应 CLI（`grok` / `codex` / `opencode` / `gemini` / `agy` / `qwen`）需已安装并在 PATH 中（终端走登录 shell，能找到）
+- 前提：对应 CLI（`grok` / `codex` / `opencode` / `gemini` / `agy` / `qwen` / `mimo`）需已安装并在 PATH 中（终端走登录 shell，能找到）
 
 **文件树 + 预览**（左侧）
 - 树根为当前标签所在项目目录，切换标签自动跟随；点文件夹懒加载展开

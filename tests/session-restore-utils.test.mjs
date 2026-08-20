@@ -155,3 +155,17 @@ test('Qwen 续接：--resume 指定会话，--continue 视为通用续接', () =
   assert.equal(restoredCliCommand('qwen'), 'qwen --continue');
   assert.equal(restoredCliCommand('qwen --resume s-1'), 'qwen --resume s-1');
 });
+
+test('MiMo Code 续接：--session 指定会话，--continue 续最近会话', () => {
+  assert.equal(resumeCliCommand('mimo', 's-1'), 'mimo --session s-1');
+  assert.equal(launchCliCommand('mimo', ''), 'mimo');
+  assert.equal(extractResumedSessionId('mimo --session s-1'), 's-1');
+  assert.equal(extractResumedSessionId('mimo -s s-2'), 's-2');
+  assert.equal(extractResumedSessionId('mimo --session'), '');
+  assert.equal(isGenericContinueCommand('mimo --continue'), true);
+  assert.equal(isGenericContinueCommand('mimo -c'), true);
+  assert.equal(isGenericContinueCommand('mimo --session s-1'), false);
+  assert.equal(restoredCliCommand('mimo'), 'mimo --continue');
+  assert.equal(restoredCliCommand('mimo --session s-1'), 'mimo --session s-1');
+  assert.equal(restoredCliCommand('mimo --session=s-1'), 'mimo --session=s-1');
+});

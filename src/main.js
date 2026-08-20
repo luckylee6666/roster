@@ -24,6 +24,7 @@ import {
 import {
   DEFAULT_PROJECT_KIT,
   PROJECT_KIT_LAYOUT,
+  createProjectSessionHistoryLoader,
   filterHistoryGroups,
   findRunningProjectTool,
   launchCommandForProjectTool,
@@ -606,10 +607,14 @@ function render(list) {
 
 const expandedProjectIds = new Set();
 const projectSessionCache = new Map();
-const projectSessionLoads = new Map();
+const projectSessionHistoryLoader = createProjectSessionHistoryLoader(
+  path => invoke('list_project_sessions', { path }),
+);
+const projectSessionLoads = projectSessionHistoryLoader.pending;
 const projectSessionQueries = new Map();
 const sessionRailHistoryByCwd = new Map();
-const sessionRailLoads = new Map();
+// 卡片与左侧会话条共用一次磁盘读取；同 cwd 不各发一遍 IPC。
+const sessionRailLoads = projectSessionLoads;
 let sessionRailRevision = 0;
 let sessionRailModel = null;
 let sessionPreviewContext = null;
@@ -628,6 +633,49 @@ function listLiveTerminals() {
 
 function findProjectByCwd(cwd) {
   return projects.find(project => sameProjectCwd(project.localPath, cwd)) || null;
+}
+
+function cacheProjectSessionHistory(cwd, history) {
+  const key = normalizeProjectMemoryCwd(cwd);
+  if (!key) return;
+  sessionRailHistoryByCwd.set(key, history);
+  const project = findProjectByCwd(key);
+  if (project) projectSessionCache.set(project.id, history);
+}
+
+async function loadProjectSessionHistory(cwd) {
+  const history = await projectSessionHistoryLoader.load(cwd);
+  cacheProjectSessionHistory(cwd, history);
+  return history;
+}
+
+function invalidateProjectSessionHistory(cwd) {
+  const key = projectSessionHistoryLoader.invalidate(cwd);
+  if (!key) return '';
+  sessionRailHistoryByCwd.delete(key);
+  const project = findProjectByCwd(key);
+  if (project) projectSessionCache.delete(project.id);
+  return key;
+}
+
+function invalidateTerminalProjectSessionHistory(session) {
+  if (!session || session.historyCacheInvalidated || session.status === 'failed') return '';
+  const tool = cliToolName(session.tool);
+  if (!tool || !isRailCliTool(tool) || !normalizeProjectMemoryCwd(session.cwd)) return '';
+  session.historyCacheInvalidated = true;
+  return invalidateProjectSessionHistory(session.cwd);
+}
+
+function reloadVisibleProjectSessionHistory(cwd) {
+  const key = normalizeProjectMemoryCwd(cwd);
+  if (!key) return;
+  const project = findProjectByCwd(key);
+  if (project && expandedProjectIds.has(project.id)) {
+    const card = el.list?.querySelector(`.project-card[data-id="${project.id}"]`);
+    if (card) void expandProjectSessions(project, card);
+  }
+  const visibleCwd = (activeSession && sessions.get(activeSession)?.cwd) || treeRoot || '';
+  if (sameProjectCwd(visibleCwd, key)) void syncSessionRail(key);
 }
 
 function projectTabName(cwd, fallback = '') {
@@ -763,16 +811,8 @@ async function expandProjectSessions(project, card) {
     renderProjectSessions(card, { groups: [] });
     return;
   }
-  let pending = projectSessionLoads.get(project.id);
-  if (!pending) {
-    pending = invoke('list_project_sessions', { path: project.localPath })
-      .finally(() => projectSessionLoads.delete(project.id));
-    projectSessionLoads.set(project.id, pending);
-  }
   try {
-    const history = await pending;
-    projectSessionCache.set(project.id, history);
-    sessionRailHistoryByCwd.set(normalizeProjectMemoryCwd(project.localPath), history);
+    const history = await loadProjectSessionHistory(project.localPath);
     if (sameProjectCwd(treeRoot, project.localPath)) refreshSessionRailView();
     if (!expandedProjectIds.has(project.id) || card.dataset.id !== project.id) return;
     renderProjectSessions(card, history);
@@ -870,11 +910,10 @@ function deleteHistorySession(project, session) {
           tool: session.tool,
           id: session.id,
         });
-        projectSessionCache.delete(project.id);
-        sessionRailHistoryByCwd.delete(normalizeProjectMemoryCwd(project.localPath));
+        invalidateProjectSessionHistory(project.localPath);
         const card = el.list.querySelector(`.project-card[data-id="${project.id}"]`);
         if (card && expandedProjectIds.has(project.id)) await expandProjectSessions(project, card);
-        else if (sameProjectCwd(treeRoot, project.localPath)) void syncSessionRail(project.localPath, { reload: true });
+        else if (sameProjectCwd(treeRoot, project.localPath)) void syncSessionRail(project.localPath);
         msg('已删除历史会话', 'success');
       } catch (error) {
         msg('删除失败：' + (error?.message || error), 'error');
@@ -922,15 +961,7 @@ async function fetchProjectSessions(project) {
     projectSessionCache.set(project.id, cached);
     return cached;
   }
-  let pending = projectSessionLoads.get(project.id);
-  if (!pending) {
-    pending = invoke('list_project_sessions', { path: project.localPath })
-      .finally(() => projectSessionLoads.delete(project.id));
-    projectSessionLoads.set(project.id, pending);
-  }
-  const history = await pending;
-  projectSessionCache.set(project.id, history);
-  sessionRailHistoryByCwd.set(normalizeProjectMemoryCwd(project.localPath), history);
+  const history = await loadProjectSessionHistory(project.localPath);
   if (sameProjectCwd(treeRoot, project.localPath)) refreshSessionRailView();
   return history;
 }
@@ -1543,11 +1574,7 @@ function bind() {
   termEl.treeBtn.onclick = toggleTree;
   termEl.treeRefreshBtn.onclick = () => {
     const key = normalizeProjectMemoryCwd(treeRoot);
-    if (key) {
-      sessionRailHistoryByCwd.delete(key);
-      const project = findProjectByCwd(key);
-      if (project) projectSessionCache.delete(project.id);
-    }
+    if (key) invalidateProjectSessionHistory(key);
     renderTree(treeRoot);
   };
   termEl.previewInsert.onclick = () => insertPathToTerminal(termEl.previewInsert.dataset.path || '');
@@ -3735,6 +3762,7 @@ async function bindTermEvents() {
     const s = sessions.get(e.payload);
     if (s) {
       s.status = 'exited';
+      const historyCwd = invalidateTerminalProjectSessionHistory(s);
       s.tabEl.classList.add('exited');
       updateTerminalPaneStatus(s);
       s.term.write('\r\n\x1b[90m[会话已结束]\x1b[0m\r\n');
@@ -3743,6 +3771,7 @@ async function bindTermEvents() {
         beep();
         invoke('notify', { title: `${s.name || '终端'} 已结束`, body: '终端会话已退出' }).catch(() => {});
       }
+      if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
       refreshExpandedHistoryCards();
     }
   });
@@ -4841,23 +4870,15 @@ function refreshSessionRailView() {
 async function syncSessionRail(cwd, { reload = false } = {}) {
   const revision = ++sessionRailRevision;
   const key = normalizeProjectMemoryCwd(cwd);
-  if (reload && key) sessionRailHistoryByCwd.delete(key);
+  if (reload && key) invalidateProjectSessionHistory(key);
   const cached = reload ? null : getSessionRailHistory(cwd);
   renderSessionRail(cwd, cached, { loading: Boolean(key && !cached) });
   if (!key || cached) return;
-  let pending = sessionRailLoads.get(key);
-  if (!pending) {
-    pending = invoke('list_project_sessions', { path: cwd })
-      .finally(() => sessionRailLoads.delete(key));
-    sessionRailLoads.set(key, pending);
-  }
   try {
-    const history = await pending;
+    const history = await loadProjectSessionHistory(cwd);
     if (revision !== sessionRailRevision) return;
-    sessionRailHistoryByCwd.set(key, history);
     const project = findProjectByCwd(cwd);
     if (project) {
-      projectSessionCache.set(project.id, history);
       if (expandedProjectIds.has(project.id)) {
         const card = el.list.querySelector(`.project-card[data-id="${project.id}"]`);
         if (card) renderProjectSessions(card, history);
@@ -5471,6 +5492,7 @@ function setSessionClosingState(session, closing) {
 function finalizeSessionClose(id) {
   const session = sessions.get(id);
   if (!session) return;
+  const historyCwd = invalidateTerminalProjectSessionHistory(session);
   if (activeSession === id) closePreview(true);
   if (session.resizeTimer) clearTimeout(session.resizeTimer);
   try { session.term.dispose(); } catch (_) {}
@@ -5503,6 +5525,7 @@ function finalizeSessionClose(id) {
   }
   updateFabBadge();
   persistSessionLayout();
+  if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
   refreshExpandedHistoryCards();
   if (activeOrchestra) {
     const tool = cliToolName(session.tool);

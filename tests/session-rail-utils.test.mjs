@@ -34,6 +34,7 @@ const groups = [
 test('会话条只认已知 AI CLI，空白终端不进列表', () => {
   assert.equal(isRailCliTool('claude --resume abc'), true);
   assert.equal(isRailCliTool('codex resume --last'), true);
+  assert.equal(isRailCliTool('mimo --session ses-new'), true);
   assert.equal(isRailCliTool(''), false);
   assert.equal(isRailCliTool('bash'), false);
 });
@@ -92,6 +93,21 @@ test('最近会话按时间倒序并截断，无目录时两边都空', () => {
   assert.equal(model.history.length, 8);
   assert.equal(model.history[0].sessionId, 'g-11');
   assert.deepEqual(buildSessionRailModel({ cwd: '' }), { cwd: '', live: [], history: [] });
+
+  const mimo = buildSessionRailModel({
+    cwd,
+    historyGroups: [{
+      tool: 'mimo',
+      sessions: [{ id: 'ses-new', title: 'MiMo 最新会话', atMs: 99 }],
+    }],
+  });
+  assert.equal(mimo.history[0].tool, 'mimo');
+  assert.deepEqual(sessionRailAction(mimo.history[0]), {
+    type: 'resume',
+    tool: 'mimo',
+    sessionId: 'ses-new',
+    title: 'MiMo 最新会话',
+  });
 });
 
 test('相对时间和高度收起有稳定回退', () => {

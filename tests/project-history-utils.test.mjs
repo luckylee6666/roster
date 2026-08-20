@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   DEFAULT_PROJECT_KIT,
   PROJECT_KIT_LAYOUT,
+  createProjectSessionHistoryLoader,
   filterHistoryGroups,
   findRunningProjectTool,
   latestHistorySession,
@@ -109,6 +110,12 @@ test('打开 CLI 用该工具最近一条历史续接，没有历史才新开', 
     last: { id: 'x-1', title: '打tag吧', preview: '给当前版本打 tag' },
     autoCmd: 'codex resume x-1',
   });
+  assert.deepEqual(launchCommandForProjectTool('mimo', [
+    { tool: 'mimo', sessions: [{ id: 'ses-new', title: 'MiMo 最新会话', atMs: 300 }] },
+  ]), {
+    last: { id: 'ses-new', title: 'MiMo 最新会话', atMs: 300 },
+    autoCmd: 'mimo --session ses-new',
+  });
   assert.deepEqual(launchCommandForProjectTool('agy', groups), {
     last: null,
     autoCmd: 'agy',
@@ -129,4 +136,36 @@ test('一键套装复用同项目仍在跑的 Claude/Codex/Grok', () => {
     projectKitSessionIds(running, '/proj', { codex: 'term-codex' }),
     ['term-claude', 'term-codex', 'term-grok'],
   );
+});
+
+test('历史加载按项目合并请求，失效中的旧请求不能覆盖或删除新请求', async () => {
+  const requests = [];
+  const loader = createProjectSessionHistoryLoader(cwd => new Promise((resolve, reject) => {
+    requests.push({ cwd, resolve, reject });
+  }));
+
+  const first = loader.load('/Users/lucky/git/app/');
+  const duplicate = loader.load('/Users/lucky/git/app');
+  await Promise.resolve();
+  assert.equal(requests.length, 1);
+  assert.equal(loader.pending.has('/Users/lucky/git/app'), true);
+
+  loader.invalidate('/Users/lucky/git/app');
+  const fresh = loader.load('/Users/lucky/git/app');
+  const freshDuplicate = loader.load('/Users/lucky/git/app/');
+  await Promise.resolve();
+  assert.equal(requests.length, 2);
+
+  requests[0].resolve({ groups: [{ tool: 'mimo', sessions: [{ id: 'old' }] }] });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(loader.pending.has('/Users/lucky/git/app'), true);
+
+  const expected = { groups: [{ tool: 'mimo', sessions: [{ id: 'new' }] }] };
+  requests[1].resolve(expected);
+  assert.deepEqual(await first, expected);
+  assert.deepEqual(await duplicate, expected);
+  assert.deepEqual(await fresh, expected);
+  assert.deepEqual(await freshDuplicate, expected);
+  assert.equal(loader.pending.has('/Users/lucky/git/app'), false);
 });
