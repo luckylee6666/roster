@@ -1,6 +1,6 @@
 [package]
 name = "roster"
-version = "1.2.22"
+version = "1.2.23"
 description = "Desktop command center for multiple AI CLIs"
 authors = ["you"]
 edition = "2021"

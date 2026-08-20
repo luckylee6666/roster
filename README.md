@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.2.22** — one-click CLI launch on project cards, slimmer card layout, session rail at full height. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.23** — Qwen and MiMo Code history/resume, configurable one-brain/multi-worker collaboration, transactional startup, and hardened shared files. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -21,7 +21,7 @@ Latest release: **v1.2.22** — one-click CLI launch on project cards, slimmer c
 - **Built-in terminal** — in-app bottom-drawer tabbed terminal managing all sessions; file tree, file preview and editing, color themes, font size, drag-to-insert path; closing a tab asks first and reminds you to let the AI update its memory (see [Using the terminal](#using-the-built-in-terminal))
 - **Multi AI CLI launch** — start **Claude / Grok / Codex / opencode / Gemini / agy / Qwen / MiMo Code** in a project directory from the project card, with a tool badge on the tab. Opening a CLI focuses a running tab for that tool, otherwise it resumes the latest on-disk session; a new session starts only when there is no history
 - **Project history** — expand a card to search, preview, resume, or delete each CLI's on-disk sessions; running tabs only match an explicit continue/resume
-- **Open a set / Collaborate** — one click opens Claude + Codex + Grok in a three-pane main layout; Collaborate assigns one brain and two workers that share `.vibe/orchestra/`
+- **Open a set / Collaborate** — one click opens Claude + Codex + Grok in a three-pane main layout; Collaborate lets you choose one installed CLI as the brain and one or more others as workers sharing `.vibe/orchestra/`
 - **Unify memory to Claude** (opt-in) — a project `.memory` symlink to Claude's project memory store; off by default, never auto-creates `CLAUDE.md` / `AGENTS.md`
 - **Terminal proxy** — optional header switch writes `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` into newly started CLI terminals so a local Clash/Surge port works without TUN
 - **Session attention awareness** — when a terminal session goes quiet after a burst of output (an AI CLI likely finished or is waiting for input), you get a desktop notification + chime + an amber pulsing dot on the tab; the session you're actively watching won't interrupt you, and a bell icon in the toolbar toggles it

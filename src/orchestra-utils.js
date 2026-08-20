@@ -1,21 +1,21 @@
 import { cliToolName } from './session-restore-utils.js';
+import { CLI_TOOLS, CLI_TOOL_IDS } from './cli-tools.js';
 
-export const ORCHESTRA_KIT = Object.freeze(['claude', 'codex', 'grok']);
+export const ORCHESTRA_KIT = Object.freeze([...CLI_TOOL_IDS]);
 export const ORCHESTRA_DIR = '.vibe/orchestra';
 export const ORCHESTRA_GOAL_FILE = 'goal.md';
 export const ORCHESTRA_PLAN_FILE = 'plan.md';
 export const DEFAULT_ORCHESTRA_BRAIN = 'claude';
+export const DEFAULT_ORCHESTRA_WORKERS = Object.freeze(['codex', 'grok']);
+
+const LEGACY_ORCHESTRA_KIT = Object.freeze(['claude', 'codex', 'grok']);
+const CLI_TOOL_LABELS = new Map(CLI_TOOLS.map(tool => [tool.id, tool.label]));
 
 const ALLOWED_FILES = new Set([
   'goal.md',
   'plan.md',
   'README.md',
-  'inbox/claude.md',
-  'inbox/codex.md',
-  'inbox/grok.md',
-  'inbox/opencode.md',
-  'inbox/gemini.md',
-  'inbox/agy.md',
+  ...CLI_TOOL_IDS.map(tool => `inbox/${tool}.md`),
 ]);
 
 export function normalizeOrchestraTool(tool) {
@@ -23,14 +23,44 @@ export function normalizeOrchestraTool(tool) {
   return ORCHESTRA_KIT.includes(name) ? name : '';
 }
 
+function normalizeOrchestraKit(kit) {
+  const source = Array.isArray(kit) ? kit : ORCHESTRA_KIT;
+  const seen = new Set();
+  const tools = [];
+  for (const value of source) {
+    const tool = normalizeOrchestraTool(value?.id || value);
+    if (!tool || seen.has(tool)) continue;
+    seen.add(tool);
+    tools.push(tool);
+  }
+  return tools;
+}
+
 export function normalizeOrchestraBrain(brain, kit = ORCHESTRA_KIT) {
+  const tools = normalizeOrchestraKit(kit);
   const name = normalizeOrchestraTool(brain);
-  return kit.includes(name) ? name : DEFAULT_ORCHESTRA_BRAIN;
+  if (tools.includes(name)) return name;
+  if (tools.includes(DEFAULT_ORCHESTRA_BRAIN)) return DEFAULT_ORCHESTRA_BRAIN;
+  return tools[0] || DEFAULT_ORCHESTRA_BRAIN;
 }
 
 export function orchestraWorkers(brain, kit = ORCHESTRA_KIT) {
-  const lead = normalizeOrchestraBrain(brain, kit);
-  return kit.filter(tool => tool !== lead);
+  const tools = normalizeOrchestraKit(kit);
+  const lead = normalizeOrchestraBrain(brain, tools);
+  const preferred = LEGACY_ORCHESTRA_KIT.includes(lead)
+    ? LEGACY_ORCHESTRA_KIT.filter(tool => tool !== lead)
+    : DEFAULT_ORCHESTRA_WORKERS;
+  const candidates = [
+    ...preferred,
+    ...tools,
+  ];
+  const workers = [];
+  for (const tool of candidates) {
+    if (tool === lead || !tools.includes(tool) || workers.includes(tool)) continue;
+    workers.push(tool);
+    if (workers.length === 2) break;
+  }
+  return workers;
 }
 
 export function normalizeOrchestraConfig({
@@ -38,11 +68,14 @@ export function normalizeOrchestraConfig({
   workers,
   kit = ORCHESTRA_KIT,
 } = {}) {
-  const tools = (Array.isArray(kit) ? kit : ORCHESTRA_KIT).filter(Boolean);
+  const tools = normalizeOrchestraKit(kit);
   const lead = normalizeOrchestraBrain(brain, tools);
-  const rest = Array.isArray(workers) && workers.length
-    ? workers.map(normalizeOrchestraTool).filter(tool => tool && tool !== lead && tools.includes(tool))
-    : orchestraWorkers(lead, tools);
+  const selected = Array.isArray(workers)
+    ? workers
+      .map(normalizeOrchestraTool)
+      .filter(tool => tool && tool !== lead && tools.includes(tool))
+    : [];
+  const rest = workers === undefined ? orchestraWorkers(lead, tools) : selected;
   return {
     brain: lead,
     workers: [...new Set(rest)],
@@ -75,15 +108,17 @@ export function orchestraInboxFile(tool) {
 }
 
 function headingForTool(tool) {
-  if (tool === 'claude') return 'Claude';
-  if (tool === 'codex') return 'Codex';
-  if (tool === 'grok') return 'Grok';
-  return tool;
+  return orchestraToolLabel(tool);
+}
+
+export function orchestraToolLabel(tool) {
+  const raw = cliToolName(tool);
+  return CLI_TOOL_LABELS.get(raw) || raw;
 }
 
 export function orchestraBrainPrompt({ goal, workers = [], planFile = `${ORCHESTRA_DIR}/${ORCHESTRA_PLAN_FILE}` } = {}) {
   const task = String(goal || '').trim() || '（用户还没写具体目标，先根据当前仓库判断该拆什么。）';
-  const names = workers.map(headingForTool).join('、') || '另外两个干活的人';
+  const names = workers.map(headingForTool).join('、') || '干活的终端';
   const sections = workers.map(tool => `## ${headingForTool(tool)}\n- \n`).join('\n');
   return [
     `你是这场协作的大脑，只负责拆活和验收，不要亲自改业务代码。`,

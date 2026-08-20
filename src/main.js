@@ -14,7 +14,7 @@ import { installThemePointer } from './terminal-theme-pointer.js';
 import { installTerminalCharacterTheme } from './terminal-theme-character.js';
 import { normalizeProjectMachine, projectMachineTag } from './project-form-utils.js';
 import { seedThemePresets } from './terminal-theme-presets.js';
-import { CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
+import { CLI_TOOLS, CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
 import {
   cliToolName,
   restoreSessionLayout,
@@ -47,17 +47,22 @@ import { usageCommandForAgent, windowsFromUsagePayload } from './usage-panel-uti
 import {
   DEFAULT_ORCHESTRA_BRAIN,
   ORCHESTRA_GOAL_FILE,
-  ORCHESTRA_KIT,
   ORCHESTRA_PLAN_FILE,
   orchestraBrainPrompt,
   orchestraBroadcastPrompt,
   orchestraInboxFile,
   orchestraRoleForTool,
   orchestraRoleLabel,
+  orchestraToolLabel,
   orchestraWorkerPrompt,
-  orchestraWorkers,
   normalizeOrchestraConfig,
 } from './orchestra-utils.js';
+import {
+  commitOrchestraFilesTransaction,
+  createLatestRequestGate,
+  restoreOrchestraFileSnapshot,
+  runOrchestraLaunchTransaction,
+} from './orchestra-launch-utils.js';
 import {
   isNativeEscOverlayOpen,
   isXtermHelperTextarea,
@@ -184,6 +189,8 @@ const el = {
   sessionPreviewOpen: $('session-preview-open'),
   orchestra: $('orchestra-overlay'),
   orchestraGoal: $('orchestra-goal'),
+  orchestraBrainPicks: $('orchestra-brain-picks'),
+  orchestraWorkerPicks: $('orchestra-worker-picks'),
   orchestraWorkersHint: $('orchestra-workers-hint'),
   orchestraModalClose: $('orchestra-modal-close'),
   orchestraModalCancel: $('orchestra-modal-cancel'),
@@ -541,7 +548,7 @@ function render(list) {
           <button class="action-btn kit-btn" title="开一套（Claude + Codex + Grok 主从）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.2" y="4.2" width="10.2" height="15.6" rx="1.4"/><rect x="10.6" y="7.2" width="10.2" height="6.2" rx="1.2"/><rect x="10.6" y="14.4" width="10.2" height="5.4" rx="1.2"/></svg>
           </button>
-          <button class="action-btn orchestra-btn-card" title="开协作（一个大脑拆活，另外两个动手）">
+          <button class="action-btn orchestra-btn-card" title="开协作（一个大脑拆活，多个终端动手）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="8" r="2.2"/><circle cx="17" cy="8" r="2.2"/><circle cx="12" cy="16.2" r="2.2"/><path d="M8.8 9.4l2.4 5.2M15.2 9.4l-2.4 5.2"/></svg>
           </button>
           <button class="action-btn edit-btn" title="编辑">
@@ -581,7 +588,7 @@ function render(list) {
     };
     card.querySelector('.orchestra-btn-card').onclick = (ev) => {
       ev.stopPropagation();
-      openOrchestraModal(p);
+      void openOrchestraModal(p);
     };
     card.querySelector('.edit-btn').onclick = () => openModal(p);
     card.querySelector('.del-btn').onclick = () => del(p.id, p.name);
@@ -618,7 +625,7 @@ const sessionRailLoads = projectSessionLoads;
 let sessionRailRevision = 0;
 let sessionRailModel = null;
 let sessionPreviewContext = null;
-let projectKitOpening = false;
+let projectKitOpening = null;
 
 function listLiveTerminals() {
   return [...sessions.entries()].map(([id, session]) => ({
@@ -722,7 +729,7 @@ function sessionToolbarHtml(query) {
     + `<input class="card-session-search" type="search" placeholder="搜索标题、预览、工具" value="${escAttr(query)}" />`
     + `</label>`
     + `<button class="card-session-kit" type="button" title="同时打开 Claude、Codex、Grok 主从三窗">开一套</button>`
-    + `<button class="card-session-orchestra" type="button" title="一个大脑拆活，另外两个动手">开协作</button>`
+    + `<button class="card-session-orchestra" type="button" title="一个大脑拆活，多个终端动手">开协作</button>`
     + `</div>`;
 }
 
@@ -765,7 +772,7 @@ function renderProjectSessions(card, history) {
   };
   root.querySelector('.card-session-orchestra').onclick = (event) => {
     event.stopPropagation();
-    if (project) openOrchestraModal(project);
+    if (project) void openOrchestraModal(project);
   };
   root.querySelectorAll('.card-session-item').forEach(row => {
     const session = historySessionPayload(row);
@@ -805,7 +812,7 @@ async function expandProjectSessions(project, card) {
   };
   panel.querySelector('.card-session-orchestra').onclick = (event) => {
     event.stopPropagation();
-    openOrchestraModal(project);
+    void openOrchestraModal(project);
   };
   if (!project.localPath) {
     renderProjectSessions(card, { groups: [] });
@@ -826,7 +833,7 @@ async function expandProjectSessions(project, card) {
     };
     panel.querySelector('.card-session-orchestra').onclick = (event) => {
       event.stopPropagation();
-      openOrchestraModal(project);
+      void openOrchestraModal(project);
     };
   }
 }
@@ -933,12 +940,13 @@ function refreshExpandedHistoryCards() {
 function applyProjectKitLayout(sessionIds) {
   const ids = sessionIds.filter(id => sessions.has(id));
   if (!ids.length) return;
-  terminalPaneLayout = PROJECT_KIT_LAYOUT;
+  const layout = ids.length >= 4 ? 'grid' : PROJECT_KIT_LAYOUT;
+  terminalPaneLayout = layout;
   terminalPaneAssignments = reconcileTerminalPanes({
     assignments: ids,
     sessionIds: [...sessions.keys()],
     activeSessionId: ids[0],
-    layout: PROJECT_KIT_LAYOUT,
+    layout,
     fill: false,
   });
   activeSession = ids[0];
@@ -966,80 +974,223 @@ async function fetchProjectSessions(project) {
   return history;
 }
 
-async function openProjectKit(project, { forceNew = false } = {}) {
+function normalizeProjectTools(tools) {
+  const allowed = new Set(CLI_TOOL_IDS);
+  const seen = new Set();
+  const normalized = [];
+  for (const value of Array.isArray(tools) ? tools : []) {
+    const tool = cliToolName(value);
+    if (!allowed.has(tool) || seen.has(tool)) continue;
+    seen.add(tool);
+    normalized.push(tool);
+  }
+  return normalized;
+}
+
+function beginProjectToolOpening() {
+  if (projectKitOpening) return null;
+  const token = Symbol('project-tool-opening');
+  projectKitOpening = token;
+  return token;
+}
+
+function releaseProjectToolOpening(token) {
+  if (projectKitOpening === token) projectKitOpening = null;
+}
+
+async function launchProjectTools(project, selectedTools, { forceNew = false, createdIds = [] } = {}) {
+  let history = { groups: [] };
+  if (!forceNew) {
+    try {
+      history = await fetchProjectSessions(project);
+    } catch (_) {
+      history = { groups: [] };
+    }
+  }
+  const readyIds = [];
+  for (const tool of selectedTools) {
+    if (!forceNew) {
+      const existing = findRunningProjectTool(listLiveTerminals(), project.localPath, tool);
+      if (existing) {
+        readyIds.push(existing.id);
+        continue;
+      }
+    }
+    const launch = forceNew ? { autoCmd: tool } : launchCommandForProjectTool(tool, history.groups);
+    const autoCmd = launch.autoCmd || tool;
+    const id = await createProjectToolSession(project, autoCmd);
+    createdIds.push(id);
+    const created = sessions.get(id);
+    if (created && created.status !== 'failed' && created.status !== 'exited') readyIds.push(id);
+  }
+  return readyIds;
+}
+
+async function createProjectToolSession(project, autoCmd) {
+  recordProjectActivity(project.id, autoCmd);
+  return createSession({ cwd: project.localPath, name: project.name, autoCmd });
+}
+
+async function openProjectTools(project, tools, { forceNew = false } = {}) {
   if (!project?.localPath) {
     msg('这个项目没有本地路径', 'info');
     return [];
   }
-  if (projectKitOpening) return [];
-  projectKitOpening = true;
+  const selectedTools = normalizeProjectTools(tools);
+  if (!selectedTools.length) {
+    msg('没有可打开的终端', 'error');
+    return [];
+  }
+  const openingToken = beginProjectToolOpening();
+  if (!openingToken) return [];
   try {
-    let history = { groups: [] };
-    if (!forceNew) {
-      try {
-        history = await fetchProjectSessions(project);
-      } catch (_) {
-        history = { groups: [] };
-      }
-    }
-    const ids = [];
-    for (const tool of DEFAULT_PROJECT_KIT) {
-      if (!forceNew) {
-        const existing = findRunningProjectTool(listLiveTerminals(), project.localPath, tool);
-        if (existing) {
-          ids.push(existing.id);
-          continue;
-        }
-      }
-      const launch = forceNew ? { autoCmd: tool } : launchCommandForProjectTool(tool, history.groups);
-      const autoCmd = launch.autoCmd || tool;
-      recordProjectActivity(project.id, autoCmd);
-      const id = await createSession({ cwd: project.localPath, name: project.name, autoCmd });
-      const created = sessions.get(id);
-      if (created && created.status !== 'failed') ids.push(id);
-    }
+    const ids = await launchProjectTools(project, selectedTools, { forceNew });
     applyProjectKitLayout(ids);
     refreshExpandedHistoryCards();
     if (!ids.length) msg('没有成功打开的终端', 'error');
-    else if (!forceNew) msg('已打开 Claude + Codex + Grok 主从三窗', 'success');
     return ids;
   } catch (error) {
-    msg('开一套失败：' + (error?.message || error), 'error');
+    msg('打开终端失败：' + (error?.message || error), 'error');
     return [];
   } finally {
-    projectKitOpening = false;
+    releaseProjectToolOpening(openingToken);
   }
+}
+
+async function openProjectKit(project, { forceNew = false } = {}) {
+  const ids = await openProjectTools(project, DEFAULT_PROJECT_KIT, { forceNew });
+  if (ids.length && !forceNew) msg('已打开 Claude + Codex + Grok 主从三窗', 'success');
+  return ids;
 }
 
 let orchestraProject = null;
 let activeOrchestra = null;
 let orchestraSending = false;
+let orchestraDraftConfig = null;
+const orchestraModalGate = createLatestRequestGate();
+const ORCHESTRA_CONFIG_STORAGE_KEY = 'orchestra-config-v1';
+
+function orchestraInstalledKit() {
+  return installedCliTools(installedCliIds).map(tool => tool.id);
+}
+
+function readOrchestraConfig(kit) {
+  if (!kit.length) return { brain: '', workers: [], kit: [] };
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(ORCHESTRA_CONFIG_STORAGE_KEY) || 'null');
+  } catch (_) {}
+  const savedWorkers = Array.isArray(saved?.workers) ? saved.workers : undefined;
+  const normalized = normalizeOrchestraConfig({
+    brain: saved?.brain,
+    workers: savedWorkers,
+    kit,
+  });
+  return savedWorkers?.length && !normalized.workers.length
+    ? normalizeOrchestraConfig({ brain: normalized.brain, kit })
+    : normalized;
+}
+
+function saveOrchestraConfig(config) {
+  try {
+    localStorage.setItem(ORCHESTRA_CONFIG_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      brain: config.brain,
+      workers: config.workers,
+    }));
+  } catch (_) {}
+}
 
 function selectedOrchestraBrain() {
   return document.querySelector('input[name="orchestra-brain"]:checked')?.value || DEFAULT_ORCHESTRA_BRAIN;
 }
 
-function syncOrchestraWorkersHint() {
-  if (!el.orchestraWorkersHint) return;
-  const workers = orchestraWorkers(selectedOrchestraBrain());
-  el.orchestraWorkersHint.textContent = `干活：${workers.map(name => name[0].toUpperCase() + name.slice(1)).join(' · ')}`;
+function selectedOrchestraWorkers() {
+  return [...document.querySelectorAll('input[name="orchestra-worker"]:checked')]
+    .map(input => input.value);
 }
 
-function openOrchestraModal(project) {
+function syncOrchestraWorkersHint(config = orchestraDraftConfig) {
+  if (!el.orchestraWorkersHint) return;
+  const workers = config?.workers || [];
+  el.orchestraWorkersHint.classList.toggle('is-empty', workers.length === 0);
+  el.orchestraWorkersHint.textContent = workers.length
+    ? `已选 ${workers.length} 个：${workers.map(orchestraToolLabel).join(' · ')}`
+    : '至少选择 1 个终端';
+}
+
+function orchestraPickHtml(tool, role, config) {
+  const available = config.kit.includes(tool.id);
+  const isBrain = tool.id === config.brain;
+  const disabled = !available || (role === 'worker' && isBrain);
+  const checked = role === 'brain' ? isBrain : config.workers.includes(tool.id);
+  const name = role === 'brain' ? 'orchestra-brain' : 'orchestra-worker';
+  const type = role === 'brain' ? 'radio' : 'checkbox';
+  const reason = !available ? '未安装' : (isBrain && role === 'worker' ? '已选为大脑' : '');
+  return `<label class="orchestra-pick${disabled ? ' is-disabled' : ''}"${reason ? ` title="${escAttr(reason)}"` : ''}>`
+    + `<input type="${type}" name="${name}" value="${escAttr(tool.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''} />`
+    + `<span>${esc(tool.label)}</span>`
+    + (!available ? '<small>未安装</small>' : '')
+    + `</label>`;
+}
+
+function renderOrchestraPicks(config) {
+  orchestraDraftConfig = config;
+  if (el.orchestraBrainPicks) {
+    el.orchestraBrainPicks.innerHTML = CLI_TOOLS.map(tool => orchestraPickHtml(tool, 'brain', config)).join('');
+    el.orchestraBrainPicks.querySelectorAll('input:not(:disabled)').forEach(input => {
+      input.onchange = () => {
+        const previousBrain = orchestraDraftConfig.brain;
+        const nextBrain = input.value;
+        const selected = new Set(orchestraDraftConfig.workers);
+        selected.delete(nextBrain);
+        if (previousBrain && previousBrain !== nextBrain && orchestraDraftConfig.kit.includes(previousBrain)) {
+          selected.add(previousBrain);
+        }
+        renderOrchestraPicks(normalizeOrchestraConfig({
+          brain: nextBrain,
+          workers: orchestraDraftConfig.kit.filter(tool => selected.has(tool)),
+          kit: orchestraDraftConfig.kit,
+        }));
+      };
+    });
+  }
+  if (el.orchestraWorkerPicks) {
+    el.orchestraWorkerPicks.innerHTML = CLI_TOOLS.map(tool => orchestraPickHtml(tool, 'worker', config)).join('');
+    el.orchestraWorkerPicks.querySelectorAll('input:not(:disabled)').forEach(input => {
+      input.onchange = () => {
+        orchestraDraftConfig = normalizeOrchestraConfig({
+          brain: selectedOrchestraBrain(),
+          workers: selectedOrchestraWorkers(),
+          kit: orchestraDraftConfig.kit,
+        });
+        syncOrchestraWorkersHint();
+      };
+    });
+  }
+  syncOrchestraWorkersHint(config);
+}
+
+async function openOrchestraModal(project) {
+  const request = orchestraModalGate.begin();
+  orchestraProject = null;
+  el.orchestra?.classList.remove('active');
   if (!project?.localPath) {
     msg('这个项目没有本地路径', 'info');
     return;
   }
+  await refreshInstalledClis();
+  if (!orchestraModalGate.isCurrent(request)) return;
   orchestraProject = project;
   if (el.orchestraGoal && !el.orchestraGoal.value.trim()) el.orchestraGoal.value = '';
-  const brain = document.querySelector(`input[name="orchestra-brain"][value="${DEFAULT_ORCHESTRA_BRAIN}"]`);
-  if (brain) brain.checked = true;
-  syncOrchestraWorkersHint();
+  renderOrchestraPicks(readOrchestraConfig(orchestraInstalledKit()));
   el.orchestra.classList.add('active');
   el.orchestraGoal?.focus();
 }
 
 function closeOrchestraModal() {
+  orchestraModalGate.invalidate();
+  orchestraProject = null;
   el.orchestra?.classList.remove('active');
 }
 
@@ -1100,27 +1251,16 @@ async function saveProxyModal() {
   }
 }
 
-function bindOrchestraSessions(sessionIds, config) {
-  const byTool = {};
-  for (const id of sessionIds) {
-    const session = sessions.get(id);
-    const tool = cliToolName(session?.tool);
-    if (session && tool) byTool[tool] = id;
-  }
-  return {
-    ...config,
-    sessionIds: byTool,
-  };
-}
-
 function syncOrchestraChrome() {
   const bar = termEl.orchestraBar;
   if (!bar) return;
   const active = Boolean(activeOrchestra);
   bar.hidden = !active;
   bar.classList.toggle('active', active);
-  sessions.forEach(session => {
-    const role = active ? orchestraRoleForTool(activeOrchestra, session.tool) : '';
+  sessions.forEach((session, id) => {
+    const tool = cliToolName(session.tool);
+    const isBoundSession = active && tool && activeOrchestra.sessionIds?.[tool] === id;
+    const role = isBoundSession ? orchestraRoleForTool(activeOrchestra, tool) : '';
     let badge = session.paneHeadEl?.querySelector('.term-pane-role');
     if (!role) {
       badge?.remove();
@@ -1141,7 +1281,7 @@ function syncOrchestraChrome() {
   ];
   termEl.orchestraRoles.innerHTML = chips.map(item => (
     `<span class="orchestra-chip" data-role="${escAttr(item.role)}">`
-    + `<small>${esc(orchestraRoleLabel(item.role))}</small>${esc(item.tool)}`
+    + `<small>${esc(orchestraRoleLabel(item.role))}</small>${esc(orchestraToolLabel(item.tool))}`
     + `</span>`
   )).join('');
 }
@@ -1149,6 +1289,20 @@ function syncOrchestraChrome() {
 function closeOrchestra() {
   activeOrchestra = null;
   syncOrchestraChrome();
+}
+
+function detachOrchestraSession(id, session) {
+  if (!activeOrchestra) return;
+  const tool = cliToolName(session?.tool);
+  if (!tool || activeOrchestra.sessionIds?.[tool] !== id) return;
+  delete activeOrchestra.sessionIds[tool];
+  if (tool === activeOrchestra.brain) {
+    closeOrchestra();
+    return;
+  }
+  activeOrchestra.workers = activeOrchestra.workers.filter(worker => worker !== tool);
+  if (!activeOrchestra.workers.length) closeOrchestra();
+  else syncOrchestraChrome();
 }
 
 async function waitForCliPrompt(session) {
@@ -1169,11 +1323,9 @@ async function injectToSession(id, text, send = true) {
 }
 
 function orchestraSessionId(tool) {
-  return activeOrchestra?.sessionIds?.[tool] || findRunningProjectTool(
-    listLiveTerminals(),
-    activeOrchestra?.projectPath,
-    tool,
-  )?.id || '';
+  const id = activeOrchestra?.sessionIds?.[tool] || '';
+  const session = id ? sessions.get(id) : null;
+  return session && session.status !== 'failed' && session.status !== 'exited' ? id : '';
 }
 
 async function sendOrchestra(target) {
@@ -1222,12 +1374,98 @@ async function sendOrchestra(target) {
       }
     }
     if (termEl.orchestraInput) termEl.orchestraInput.value = '';
-    msg(target === 'brain' ? '已发给大脑' : target === 'workers' ? '已派给干活的人' : '已广播到三个窗口', 'success');
+    msg(
+      target === 'brain'
+        ? '已发给大脑'
+        : target === 'workers'
+          ? '已派给干活的人'
+          : `已广播到 ${activeOrchestra.workers.length + 1} 个协作终端`,
+      'success',
+    );
   } catch (error) {
     msg('发送失败：' + (error?.message || error), 'error');
   } finally {
     orchestraSending = false;
   }
+}
+
+function captureTerminalPaneState() {
+  return {
+    layout: terminalPaneLayout,
+    assignments: [...terminalPaneAssignments],
+    activeSessionId: activeSession,
+  };
+}
+
+function restoreTerminalPaneState(snapshot) {
+  if (!snapshot) return;
+  terminalPaneLayout = snapshot.layout;
+  terminalPaneAssignments = snapshot.assignments.map(id => (id && sessions.has(id) ? id : null));
+  activeSession = snapshot.activeSessionId && sessions.has(snapshot.activeSessionId)
+    ? snapshot.activeSessionId
+    : (visibleTerminalSessionIds(terminalPaneAssignments)[0] || null);
+  const active = activeSession ? sessions.get(activeSession) : null;
+  if (active && active.cwd !== treeRoot) renderTree(active.cwd);
+  else refreshSessionRailView();
+  renderTerminalPaneLayout();
+  persistSessionLayout();
+  if (active) requestAnimationFrame(() => active.term.focus());
+}
+
+async function closeCreatedSessions(createdIds) {
+  const ids = [...new Set(createdIds)].filter(id => sessions.has(id));
+  const outcomes = await Promise.allSettled(ids.map(async id => ({ id, closed: await closeSession(id) })));
+  const remaining = outcomes.flatMap((outcome, index) => {
+    if (outcome.status === 'rejected') return sessions.has(ids[index]) ? [ids[index]] : [];
+    return !outcome.value.closed && sessions.has(outcome.value.id) ? [outcome.value.id] : [];
+  });
+  if (remaining.length) throw new Error(`部分终端清理失败：${remaining.join('、')}`);
+}
+
+async function rollbackCreatedSessions(createdIds, terminalState) {
+  try {
+    await closeCreatedSessions(createdIds);
+  } finally {
+    restoreTerminalPaneState(terminalState);
+  }
+}
+
+async function restoreOrchestraFiles(projectPath, previous) {
+  return restoreOrchestraFileSnapshot({
+    snapshot: previous,
+    goalFile: ORCHESTRA_GOAL_FILE,
+    planFile: ORCHESTRA_PLAN_FILE,
+    write: (name, content) => invoke('write_orchestra_file', {
+      path: projectPath,
+      name,
+      content,
+    }),
+  });
+}
+
+async function commitOrchestraFiles(projectPath, goal) {
+  return commitOrchestraFilesTransaction({
+    goalFile: ORCHESTRA_GOAL_FILE,
+    planFile: ORCHESTRA_PLAN_FILE,
+    goalContent: `# 目标\n\n${goal}\n`,
+    read: name => invoke('read_orchestra_file', { path: projectPath, name }),
+    write: (name, content) => invoke('write_orchestra_file', {
+      path: projectPath,
+      name,
+      content,
+    }),
+  });
+}
+
+function isReadyOrchestraSession(id, tool, projectPath) {
+  const session = sessions.get(id);
+  return Boolean(
+    session
+    && session.status !== 'failed'
+    && session.status !== 'exited'
+    && cliToolName(session.tool) === tool
+    && sameProjectCwd(session.cwd, projectPath),
+  );
 }
 
 async function startOrchestraFromModal() {
@@ -1239,29 +1477,128 @@ async function startOrchestraFromModal() {
     el.orchestraGoal?.focus();
     return;
   }
+  const kit = orchestraInstalledKit();
   const config = normalizeOrchestraConfig({
     brain: selectedOrchestraBrain(),
-    kit: ORCHESTRA_KIT,
+    workers: selectedOrchestraWorkers(),
+    kit,
   });
+  if (kit.length < 2) {
+    msg('至少安装两个 CLI 才能开始协作', 'info');
+    el.orchestraBrainPicks?.querySelector('input:not(:disabled)')?.focus();
+    return;
+  }
+  if (!config.workers.length) {
+    msg('至少选择一个干活的终端', 'info');
+    el.orchestraWorkerPicks?.querySelector('input:not(:disabled)')?.focus();
+    syncOrchestraWorkersHint(config);
+    return;
+  }
+  const openingToken = beginProjectToolOpening();
+  if (!openingToken) {
+    msg('正在打开另一组终端，请稍后再试', 'info');
+    return;
+  }
+  orchestraDraftConfig = config;
+  const terminalState = captureTerminalPaneState();
+  const participants = [config.brain, ...config.workers];
   closeOrchestraModal();
   try {
-    await invoke('write_orchestra_file', {
-      path: project.localPath,
-      name: ORCHESTRA_GOAL_FILE,
-      content: `# 目标\n\n${goal}\n`,
+    let previousFiles = null;
+    const result = await runOrchestraLaunchTransaction({
+      brain: config.brain,
+      workers: config.workers,
+      participants,
+      create: tool => createProjectToolSession(project, tool),
+      isReady: (id, tool) => isReadyOrchestraSession(id, tool, project.localPath),
+      commit: async launch => {
+        if (!isReadyOrchestraSession(
+          launch.sessionIds[config.brain],
+          config.brain,
+          project.localPath,
+        )) {
+          throw new Error(`${orchestraToolLabel(config.brain)} 大脑终端启动失败`);
+        }
+        const hasReadyWorker = launch.readyWorkers.some(tool => isReadyOrchestraSession(
+          launch.sessionIds[tool],
+          tool,
+          project.localPath,
+        ));
+        if (!hasReadyWorker) throw new Error('干活终端都没有启动成功');
+        previousFiles = await commitOrchestraFiles(project.localPath, goal);
+      },
+      rollback: createdIds => rollbackCreatedSessions(createdIds, terminalState),
     });
-    const sessionIds = await openProjectKit(project, { forceNew: true });
+    let failedCleanupError = null;
+    if (result.failedIds.length) {
+      try {
+        await closeCreatedSessions(result.failedIds);
+      } catch (error) {
+        failedCleanupError = error;
+      }
+    }
+    const brainReady = isReadyOrchestraSession(
+      result.sessionIds[config.brain],
+      config.brain,
+      project.localPath,
+    );
+    const readyWorkers = result.readyWorkers.filter(tool => isReadyOrchestraSession(
+      result.sessionIds[tool],
+      tool,
+      project.localPath,
+    ));
+    if (!brainReady || !readyWorkers.length) {
+      const recoveryErrors = [];
+      try {
+        await restoreOrchestraFiles(project.localPath, previousFiles);
+      } catch (error) {
+        recoveryErrors.push(`恢复原协作文件失败：${error?.message || error}`);
+      }
+      try {
+        await rollbackCreatedSessions(result.createdIds, terminalState);
+      } catch (error) {
+        recoveryErrors.push(error?.message || error);
+      }
+      const reason = brainReady
+        ? '干活终端在启动期间已退出'
+        : `${orchestraToolLabel(config.brain)} 大脑终端在启动期间已退出`;
+      throw new Error([reason, ...recoveryErrors].join('；'));
+    }
     activeOrchestra = {
-      ...bindOrchestraSessions(sessionIds, config),
+      ...config,
+      sessionIds: result.sessionIds,
+      workers: readyWorkers,
       projectId: project.id,
       projectPath: project.localPath,
       goal,
     };
+    saveOrchestraConfig(activeOrchestra);
+    applyProjectKitLayout([
+      result.sessionIds[config.brain],
+      ...readyWorkers.map(tool => result.sessionIds[tool]),
+    ]);
     if (termEl.orchestraInput) termEl.orchestraInput.value = goal;
     syncOrchestraChrome();
-    msg('协作已就位：等 CLI 出现输入框后点「发给大脑」', 'success');
+    const failedCount = config.workers.length - readyWorkers.length;
+    const failedSuffix = failedCount ? `；另有 ${failedCount} 个干活终端启动失败` : '';
+    const cleanupSuffix = failedCleanupError ? `；${failedCleanupError.message}` : '';
+    msg(
+      `协作已就位：${readyWorkers.length + 1} 个终端，等输入框出现后点「发给大脑」${failedSuffix}${cleanupSuffix}`,
+      failedCount || failedCleanupError ? 'info' : 'success',
+    );
   } catch (error) {
-    msg('开协作失败：' + (error?.message || error), 'error');
+    const detail = error?.code === 'brain_not_ready'
+      ? `${orchestraToolLabel(config.brain)} 大脑终端启动失败`
+      : (error?.message || error);
+    const rollbackHint = error?.rollbackError
+      ? `；关闭本次终端失败：${error.rollbackError?.message || error.rollbackError}`
+      : '';
+    const restoreHint = error?.restoreError
+      ? `；${error.restoreError?.message || error.restoreError}`
+      : '';
+    msg(`开协作失败：${detail}${rollbackHint}${restoreHint}`, 'error');
+  } finally {
+    releaseProjectToolOpening(openingToken);
   }
 }
 
@@ -1341,9 +1678,6 @@ function bind() {
   el.orchestraModalCancel.onclick = closeOrchestraModal;
   el.orchestra.onclick = e => { if (e.target === el.orchestra) closeOrchestraModal(); };
   el.orchestraModalStart.onclick = () => void startOrchestraFromModal();
-  document.querySelectorAll('input[name="orchestra-brain"]').forEach(input => {
-    input.onchange = syncOrchestraWorkersHint;
-  });
   termEl.orchestraToBrain.onclick = () => void sendOrchestra('brain');
   termEl.orchestraToWorkers.onclick = () => void sendOrchestra('workers');
   termEl.orchestraBroadcast.onclick = () => void sendOrchestra('broadcast');
@@ -3773,6 +4107,7 @@ async function bindTermEvents() {
       }
       if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
       refreshExpandedHistoryCards();
+      detachOrchestraSession(e.payload, s);
     }
   });
   // 会话状态感知：某会话活跃后静默 → AI 可能跑完/在等你输入
@@ -5527,13 +5862,7 @@ function finalizeSessionClose(id) {
   persistSessionLayout();
   if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
   refreshExpandedHistoryCards();
-  if (activeOrchestra) {
-    const tool = cliToolName(session.tool);
-    if (tool && activeOrchestra.sessionIds?.[tool] === id) delete activeOrchestra.sessionIds[tool];
-    const remaining = Object.values(activeOrchestra.sessionIds || {}).filter(item => sessions.has(item));
-    if (!remaining.length) closeOrchestra();
-    else syncOrchestraChrome();
-  }
+  detachOrchestraSession(id, session);
 }
 
 async function closeSession(id) {

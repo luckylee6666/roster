@@ -4,6 +4,36 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ## Unreleased
 
+## v1.2.23
+
+### English
+
+**Added**
+- Added Qwen and MiMo Code project history, including listing, search, preview, project-scoped deletion, recent-session restore, and explicit session resume.
+- Collaborate now lets users choose one installed CLI as the brain and one or more installed CLIs as workers, and remembers the last successful combination.
+
+**Improved / Fixed**
+- Collaboration startup is transactional: it uses fresh, explicitly bound terminals and restores the previous shared files and layout if terminal launch, file commit, or final liveness validation fails.
+- Fixed stale project selection during concurrent CLI probes and cleaned up collaboration state when the brain or workers exit.
+- Hardened `.vibe/orchestra` access against symlink and hard-link traversal, including intermediate directories and `.gitignore`.
+
+**Tests**
+- Frontend suite: 266 tests. Rust suite: 64 tests, with strict Clippy and changed-source formatting checks.
+
+### 中文
+
+**新增**
+- 接入 Qwen 与 MiMo Code 项目历史：支持列表、搜索、预览、按项目隔离删除、续接最近会话及指定会话续接。
+- 「开协作」支持从已安装 CLI 中单选一个大脑、多选一个或多个干活终端，并记住上次成功组合。
+
+**改进 / 修复**
+- 协作启动改为事务流程：始终新开并精确绑定本轮终端；终端启动、共享文件提交或最终存活检查失败时，恢复上一场共享文件与终端布局。
+- 修复 CLI 并发探测导致项目串线，以及大脑或干活终端退出后的协作状态残留。
+- 加固 `.vibe/orchestra` 文件边界，拒绝目标文件、中间目录和 `.gitignore` 的符号链接及多硬链接。
+
+**测试**
+- 前端 266 项、Rust 64 项，并通过严格 Clippy 与本次 Rust 源码格式检查。
+
 ## v1.2.22
 
 ### English

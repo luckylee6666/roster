@@ -1,20 +1,20 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.22 / 本版更新
+## What's new in v1.2.23 / 本版更新
 
 **English**
-- One-click CLI launch on project cards: installed AI CLIs (Claude / Grok / Codex / OpenCode / Gemini / agy) show as colored chips; clicking focuses the running session for that project or resumes the latest on-disk one.
-- Slimmer cards: branch badge next to the name, full adaptive paths, single footer row of CLI chips; tabs opened from cards are named after the project.
-- The session rail opens at maximum height by default and remembers dragged heights reliably.
-- Removed the floating search-style launch menu; card chips are the single launch entry.
+- Qwen and MiMo Code history now supports search, preview, project-scoped deletion, recent restore, and explicit session resume.
+- Collaborate now supports one selectable brain and multiple selectable workers from installed CLIs, while remembering the last successful setup.
+- Collaboration startup is transactional and precisely binds fresh terminals; failures restore prior files and layout.
+- Shared `.vibe/orchestra` files are hardened against symlink and hard-link traversal.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- 项目卡片底部一键打开 CLI：本机已装的 AI CLI（Claude / Grok / Codex / OpenCode / Gemini / agy）以色标显示，点击先聚焦运行中会话，没有则续接最近一次。
-- 卡片收整：分支徽标并入标题行，路径全量自适应宽度，色标底行一行收尾；卡片打开的标签改用项目名。
-- 会话条默认最大高度，拖过的高度可靠记住。
-- 移除无入口的搜索式启动菜单，卡片色标为唯一入口。
+- Qwen 与 MiMo Code 历史支持搜索、预览、按项目隔离删除、续接最近会话及指定会话续接。
+- 协作支持从已安装 CLI 中单选一个大脑、多选多个干活终端，并记住上次成功组合。
+- 协作启动改为事务流程并精确绑定新终端；失败时恢复上一场文件与布局。
+- `.vibe/orchestra` 共享文件增加符号链接和多硬链接防护。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装

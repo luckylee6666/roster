@@ -208,24 +208,30 @@
     <!-- 协作会话 -->
     <div class="modal-mask" id="orchestra-overlay">
       <div class="modal-wrap">
-        <div class="modal">
+        <div class="modal modal-orchestra">
           <div class="modal-header">
             <span class="modal-title">开协作会话</span>
             <button class="modal-x" id="orchestra-modal-close" type="button">&times;</button>
           </div>
           <div class="modal-body">
-            <p class="orchestra-lead">一个大脑拆活，另外两个动手。还是三家各自的终端，共用目标和 <code>.vibe/orchestra/plan.md</code>。</p>
+            <p class="orchestra-lead">选一个大脑拆活，再指定一个或多个终端动手。各家仍在自己的终端里工作，共用目标和 <code>.vibe/orchestra/plan.md</code>。</p>
             <label class="form-label" for="orchestra-goal">这次要做什么</label>
             <textarea class="form-input orchestra-goal" id="orchestra-goal" rows="4"
-                      placeholder="例如：把历史会话预览和删除做完，Codex 改 Rust，Grok 补前端测试"></textarea>
-            <div class="orchestra-brain-field">
-              <span class="form-label">大脑</span>
-              <div class="orchestra-brain-picks" id="orchestra-brain-picks">
-                <label class="orchestra-pick"><input type="radio" name="orchestra-brain" value="claude" checked /> Claude</label>
-                <label class="orchestra-pick"><input type="radio" name="orchestra-brain" value="codex" /> Codex</label>
-                <label class="orchestra-pick"><input type="radio" name="orchestra-brain" value="grok" /> Grok</label>
+                      placeholder="例如：把历史会话预览和删除做完，大脑拆任务，多个终端分别改代码和补测试"></textarea>
+            <div class="orchestra-role-field">
+              <div class="orchestra-role-head">
+                <span class="form-label">大脑</span>
+                <span class="orchestra-role-note">单选</span>
               </div>
-              <p class="orchestra-workers-hint" id="orchestra-workers-hint">干活：Codex · Grok</p>
+              <div class="orchestra-tool-picks" id="orchestra-brain-picks" role="radiogroup" aria-label="选择大脑"></div>
+            </div>
+            <div class="orchestra-role-field">
+              <div class="orchestra-role-head">
+                <span class="form-label">干活的</span>
+                <span class="orchestra-workers-hint" id="orchestra-workers-hint">至少选择 1 个终端</span>
+              </div>
+              <div class="orchestra-tool-picks orchestra-worker-picks" id="orchestra-worker-picks" role="group" aria-label="选择干活终端"></div>
+              <p class="orchestra-selection-note">未安装的终端不可选；超过 4 个时，其余终端仍会启动并留在标签栏。</p>
             </div>
           </div>
           <div class="modal-footer">

@@ -2083,7 +2083,11 @@ body {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+  max-width: min(38vw, 420px);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.orchestra-roles::-webkit-scrollbar { display: none; }
 .orchestra-chip {
   display: inline-flex;
   align-items: center;
@@ -2164,23 +2168,42 @@ body {
   font-size: 13px;
   line-height: 1.6;
 }
+.modal-orchestra { max-width: 760px; }
+.modal-orchestra .modal-body {
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+}
 .orchestra-goal {
   min-height: 96px;
   resize: vertical;
   margin-bottom: 14px;
 }
-.orchestra-brain-field { margin-top: 4px; }
-.orchestra-brain-picks {
+.orchestra-role-field { margin-top: 14px; }
+.orchestra-role-head {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.orchestra-role-head .form-label { margin: 0; }
+.orchestra-role-note,
+.orchestra-workers-hint {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.orchestra-workers-hint.is-empty { color: var(--red); }
+.orchestra-tool-picks {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  margin: 6px 0 8px;
 }
 .orchestra-pick {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 10px;
+  min-height: 32px;
+  padding: 0 11px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-1);
@@ -2193,11 +2216,25 @@ body {
   background: var(--blue-bg);
   color: var(--blue);
 }
+.orchestra-pick:has(input:focus-visible) {
+  outline: 2px solid rgba(22, 119, 255, 0.28);
+  outline-offset: 2px;
+}
+.orchestra-pick.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
 .orchestra-pick input { accent-color: var(--blue); }
-.orchestra-workers-hint {
-  margin: 0;
+.orchestra-pick small {
+  padding-left: 2px;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 10px;
+}
+.orchestra-selection-note {
+  margin: 8px 0 0;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.5;
 }
 .term-pane-role {
   flex: 0 0 auto;
