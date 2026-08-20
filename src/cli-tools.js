@@ -8,6 +8,7 @@ export const CLI_TOOLS = Object.freeze([
   Object.freeze({ id: 'opencode', label: 'OpenCode', keywords: Object.freeze(['sst']) }),
   Object.freeze({ id: 'gemini', label: 'Gemini', keywords: Object.freeze(['google']) }),
   Object.freeze({ id: 'agy', label: 'agy', keywords: Object.freeze(['antigravity']) }),
+  Object.freeze({ id: 'qwen', label: 'Qwen', keywords: Object.freeze(['alibaba', 'qianwen', 'tongyi']) }),
 ]);
 
 export const CLI_TOOL_IDS = Object.freeze(CLI_TOOLS.map(tool => tool.id));
