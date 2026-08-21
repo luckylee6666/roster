@@ -4,6 +4,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ## Unreleased
 
+## v1.2.24
+
 ### English
 
 **Added**
@@ -15,9 +17,10 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Hardened idea persistence with single-flight UI mutations, executable rollback coverage, project/session revalidation, bounded backend input, duplicate-ID rejection, startup validation with recoverable bad-file backups, symlink/special-file rejection, and randomized atomic temporary files.
 - Project cards and Collaborate now show only CLIs detected on the local machine, force-refresh availability when the window regains focus or Collaborate opens, and never treat a failed probe as “all installed.”
 - Fixed project-idea capacity checks so every successfully saved UTF-8 JSON file remains readable after restart. Handoff now locks its modal to the active operation, validates edited drafts by UTF-8 bytes, and rejects oversized Gemini/Grok JSON before parsing.
+- Fixed the handoff toolbar action being disabled by a stale or failed background CLI probe; clicking it now performs the authoritative fresh probe before showing installed targets.
 
 **Tests**
-- Frontend suite: 293 tests. Rust suite: 71 tests, plus Debug App visual verification of the project ideas and handoff flows.
+- Frontend suite: 294 tests. Rust suite: 71 tests, plus Debug App visual verification of the project ideas and handoff flows.
 
 ### 中文
 
@@ -30,9 +33,10 @@ All notable changes to this project are documented here. 本项目的更新记�
 - 想法持久化增加单事务 UI 写入与可执行回滚覆盖、项目/会话二次校验、后端容量边界、重复 ID 拒绝、启动校验与可恢复坏文件备份、符号链接/特殊文件拒绝，以及随机原子临时文件。
 - 项目卡片与「开协作」现在只显示本机探测到的 CLI；窗口重新聚焦或打开协作时强制刷新，探测失败也不再误判成“全部已安装”。
 - 修复项目想法容量按字符/字节计算不一致导致保存后重启无法读回；交接进行中锁定当前操作，编辑稿按 UTF-8 字节校验，Gemini/Grok 超限 JSON 在解析前拒绝。
+- 修复交接按钮会被过期或失败的后台 CLI 探测错误禁用；现在点击后再执行权威的实时探测并展示已安装目标。
 
 **测试**
-- 前端 293 项、Rust 71 项，并用独立 Debug App 完成项目想法与交接流程的真机视觉验收。
+- 前端 294 项、Rust 71 项，并用独立 Debug App 完成项目想法与交接流程的真机视觉验收。
 
 ## v1.2.23
 

@@ -12,6 +12,16 @@ export function handoffTargetTools(installedIds, sourceTool, tools = CLI_TOOLS) 
   return tools.filter(tool => tool.id !== sourceTool && installed.has(tool.id));
 }
 
+export function sessionHandoffAvailability({ running, sourceTool, hasProject, busy } = {}, tools = CLI_TOOLS) {
+  const source = tools.find(tool => tool.id === sourceTool);
+  const sourceLabel = source?.label || '当前 CLI';
+  if (!running) return { enabled: false, title: '请先切到运行中的 CLI 终端' };
+  if (!source) return { enabled: false, title: '当前终端不是受支持的 CLI' };
+  if (!hasProject) return { enabled: false, title: `当前 ${sourceLabel} 终端未关联已登记项目` };
+  if (busy) return { enabled: false, title: '正在交接会话…' };
+  return { enabled: true, title: `把 ${sourceLabel} 最新会话交给其他 CLI` };
+}
+
 export function latestHandoffSession(groups, sourceTool) {
   const group = (Array.isArray(groups) ? groups : []).find(item => item?.tool === sourceTool);
   return (Array.isArray(group?.sessions) ? group.sessions : []).reduce((latest, session) => {

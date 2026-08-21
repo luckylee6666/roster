@@ -18,9 +18,12 @@ test('终端工具栏为任意已登记 CLI 提供跨 CLI 交接预览和目标�
   assert.match(html, /内容可能发送给目标 CLI 对应的服务/);
   assert.match(css, /\.modal-handoff/);
   assert.match(css, /\.handoff-content/);
+  assert.match(css, /\.term-tool-btn\.is-ready:not\(\.active\)/);
 
-  assert.match(main, /CLI_TOOL_IDS\.includes\(current\.sourceTool\)/);
   assert.match(main, /handoffTargetTools\(installedCliIds, sourceTool\)/);
+  assert.match(main, /sessionHandoffAvailability\(\{/);
+  assert.match(main, /handoffBtn\.classList\.toggle\('is-ready', availability\.enabled\)/);
+  assert.doesNotMatch(main, /current\.project[\s\S]{0,160}targets\.length[\s\S]{0,160}!sessionHandoffBusy/);
   assert.match(main, /const targetTool = targets\[0\]\.id/);
   assert.match(main, /sourceTool: current\.sourceTool/);
   assert.match(main, /validateSessionHandoffContent\(content\)/);

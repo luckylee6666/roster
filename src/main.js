@@ -38,6 +38,7 @@ import {
   handoffTargetTools,
   latestHandoffSession,
   SESSION_HANDOFF_FILE_MAX_BYTES,
+  sessionHandoffAvailability,
   validateSessionHandoffContent,
 } from './session-handoff-utils.js';
 import {
@@ -1110,7 +1111,7 @@ function activeSessionHandoffContext() {
     && !sessionCloseCoordinator.isClosing(id);
   const sourceTool = running ? cliToolName(session.tool) : '';
   const project = running ? findProjectByCwd(session.cwd) : null;
-  return { id, session, sourceTool, project };
+  return { id, session, running, sourceTool, project };
 }
 
 function sessionHandoffTargets(sourceTool) {
@@ -1120,22 +1121,15 @@ function sessionHandoffTargets(sourceTool) {
 function syncSessionHandoffButton() {
   if (!termEl?.handoffBtn) return;
   const current = activeSessionHandoffContext();
-  const sourceKnown = CLI_TOOL_IDS.includes(current.sourceTool);
-  const targets = sourceKnown ? sessionHandoffTargets(current.sourceTool) : [];
-  const sourceLabel = CLI_TOOLS.find(tool => tool.id === current.sourceTool)?.label || '当前 CLI';
-  let title = `把 ${sourceLabel} 最新会话交给其他 CLI`;
-  if (!current.session || current.session.status !== 'running') title = '请先切到运行中的 CLI 终端';
-  else if (!sourceKnown) title = '当前终端不是受支持的 CLI';
-  else if (!current.project) title = `当前 ${sourceLabel} 终端未关联已登记项目`;
-  else if (!targets.length) title = '未检测到可接手的其他 CLI';
-  const enabled = Boolean(
-    current.project
-    && sourceKnown
-    && targets.length
-    && !sessionHandoffBusy,
-  );
-  termEl.handoffBtn.disabled = !enabled;
-  termEl.handoffBtn.title = title;
+  const availability = sessionHandoffAvailability({
+    running: current.running,
+    sourceTool: current.sourceTool,
+    hasProject: Boolean(current.project),
+    busy: sessionHandoffBusy,
+  });
+  termEl.handoffBtn.disabled = !availability.enabled;
+  termEl.handoffBtn.classList.toggle('is-ready', availability.enabled);
+  termEl.handoffBtn.title = availability.title;
   if (el.sessionHandoff?.classList.contains('active')) {
     const sameSource = sessionHandoffContext
       && sessionHandoffContext.sourceSessionId === current.id

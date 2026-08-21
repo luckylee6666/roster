@@ -8,6 +8,7 @@ import {
   handoffLaunchPrompt,
   handoffTargetTools,
   latestHandoffSession,
+  sessionHandoffAvailability,
   validateSessionHandoffContent,
 } from '../src/session-handoff-utils.js';
 
@@ -20,6 +21,22 @@ test('交接目标只包含已安装且不是来源的 CLI', () => {
     handoffTargetTools(['grok', 'claude', 'codex'], 'grok').map(tool => tool.id),
     ['claude', 'codex'],
   );
+});
+
+test('工具栏只校验当前来源上下文，目标 CLI 在打开弹窗后实时探测', () => {
+  assert.deepEqual(sessionHandoffAvailability({
+    running: true,
+    sourceTool: 'codex',
+    hasProject: true,
+    busy: false,
+  }), {
+    enabled: true,
+    title: '把 Codex 最新会话交给其他 CLI',
+  });
+  assert.equal(sessionHandoffAvailability({ running: false }).enabled, false);
+  assert.equal(sessionHandoffAvailability({ running: true, sourceTool: 'bash', hasProject: true }).enabled, false);
+  assert.equal(sessionHandoffAvailability({ running: true, sourceTool: 'codex', hasProject: false }).enabled, false);
+  assert.equal(sessionHandoffAvailability({ running: true, sourceTool: 'codex', hasProject: true, busy: true }).enabled, false);
 });
 
 test('按时间选中来源工具的最新会话', () => {

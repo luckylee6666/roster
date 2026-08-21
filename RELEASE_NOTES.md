@@ -1,20 +1,20 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.23 / 本版更新
+## What's new in v1.2.24 / 本版更新
 
 **English**
-- Qwen and MiMo Code history now supports search, preview, project-scoped deletion, recent restore, and explicit session resume.
-- Collaborate now supports one selectable brain and multiple selectable workers from installed CLIs, while remembering the last successful setup.
-- Collaboration startup is transactional and precisely binds fresh terminals; failures restore prior files and layout.
-- Shared `.vibe/orchestra` files are hardened against symlink and hard-link traversal.
+- Added per-project ideas in the terminal: capture, refine, archive, and place a draft into the active project conversation without pressing Enter.
+- Added handoff between any two installed registered AI CLIs, using the source tool's latest project conversation plus the current Git workspace context.
+- Project cards, Collaborate, and handoff target selection now use live local CLI detection; stale background probes no longer disable the handoff action.
+- Hardened idea and handoff persistence with bounded UTF-8 input, project/session validation, safe atomic writes, and symlink/special-file protections.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- Qwen 与 MiMo Code 历史支持搜索、预览、按项目隔离删除、续接最近会话及指定会话续接。
-- 协作支持从已安装 CLI 中单选一个大脑、多选多个干活终端，并记住上次成功组合。
-- 协作启动改为事务流程并精确绑定新终端；失败时恢复上一场文件与布局。
-- `.vibe/orchestra` 共享文件增加符号链接和多硬链接防护。
+- 终端新增按项目隔离的「想法」：可记录、持续完善、归档，并在不自动回车的情况下放入当前项目对话。
+- 支持任意两家已安装且已登记的 AI CLI 双向交接，交接稿包含来源工具的最新项目会话与当前 Git 工作区现场。
+- 项目卡片、开协作和交接目标统一使用本机 CLI 实时探测；过期的后台探测不再错误禁用交接按钮。
+- 想法与交接持久化增加 UTF-8 容量边界、项目/会话校验、安全原子写入及符号链接/特殊文件防护。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装

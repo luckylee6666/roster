@@ -2593,6 +2593,11 @@ body {
   color: #fff;
 }
 
+.term-tool-btn.is-ready:not(.active) {
+  color: #75aaff;
+  background: rgba(22, 119, 255, 0.12);
+}
+
 .term-tool-btn svg {
   width: 16px;
   height: 16px;

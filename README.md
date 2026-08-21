@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.2.23** — Qwen and MiMo Code history/resume, configurable one-brain/multi-worker collaboration, transactional startup, and hardened shared files. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.2.24** — per-project ideas, handoff between any installed AI CLI, dynamic local CLI filtering, and hardened local persistence. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
