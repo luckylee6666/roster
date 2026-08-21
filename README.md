@@ -28,6 +28,8 @@ Latest release: **v1.2.23** — Qwen and MiMo Code history/resume, configurable 
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
 - **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude, OpenCode, Grok, Qwen, and MiMo Code use `--continue`, while Codex uses `resume --last` in the saved project directory. Picking a specific Qwen or MiMo Code history row uses `qwen --resume <id>` or `mimo --session <id>`
 - **Prompt/snippet library** — a toolbar bookmark icon holds reusable prompts/commands; click one to inject it into the current terminal (text only, no auto-Enter, so you can review before sending); add/edit/delete via a management dialog, stored in `snippets.json`
+- **Per-project ideas** — the terminal lightbulb keeps multiple rough ideas beside the active project, where they can be refined, archived, or later placed into that project's current CLI input without pressing Enter
+- **Cross-CLI handoff** — from any running registered CLI tab, review that tool's latest project conversation plus the current Git state, edit the handoff draft, then open any other installed CLI to continue without modifying the source session
 - **Restore context** — a history icon on each project card opens a one-glance snapshot to resume work: git overview + recent commits + changed files + CLAUDE.md summary + the CLI you last launched there; footer buttons jump back in (open terminal / Claude)
 - **Rate-limit usage (no Node)** — usage panel: Claude uses the official `api/oauth/usage` endpoint (5-hour / 7-day, Keychain token; first read prompts authorization); Codex uses the local `codex app-server` `account/rateLimits/read` RPC (ChatGPT plan windows, duration from the server). Cached 60s, near-instant
 - **Menu-bar tray** — a macOS menu-bar item shows Claude `5h X% · 7d Y%`, refreshed every 60s; its menu opens the app / refreshes / quits
@@ -70,6 +72,17 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 - **Drag** a file/folder from the tree onto the terminal → inserts its path (handy for pointing an AI session at a directory)
 - Drag the middle splitter to resize the tree; the folder toolbar icon collapses/expands it
 - The lower half of the tree is a session rail for the current project: running AI tabs first (click to focus), then recent on-disk sessions (click to resume). Search, preview, and delete stay on the project card. Drag the horizontal splitter to resize; the chevron collapses just the rail
+
+**Project ideas**
+- The lightbulb in the terminal toolbar is enabled when the active running tab belongs to a registered project. Each project has its own list, stored locally in `ideas.json`
+- Capture as many rough ideas as needed, then edit, archive, or delete them as they evolve. If a project is removed, its remaining ideas can be explicitly reassigned from another project's drawer
+- **Place in current conversation** rechecks the active tab and project, then pastes a single-line draft into that CLI without pressing Enter. Review or extend it before sending
+
+**Cross-CLI handoff**
+- Open any running registered CLI tab in a registered project, then click the two-arrow handoff icon in the terminal toolbar
+- Roster reads that CLI's latest project session from disk, keeps the available recent natural-language turns, and adds the current branch and changed-file summary. Tool calls, thinking blocks, and system reminders are excluded where the source format exposes them
+- Review or edit the draft, choose any other installed target, and confirm. For example, a Grok session can be handed to Claude. Roster writes an ignored local file under `.vibe/handoff/`, starts a fresh target CLI in the same project, and asks it to inspect that file and the real working tree
+- The source tab and all working-tree changes remain untouched. The handoff may be sent to the target CLI provider, so remove anything you do not want to share before confirming
 
 **Supported preview formats**
 - **Code / config / text**: syntax highlighting (dozens of languages) and direct editing while preserving UTF-8 BOM, LF/CRLF line endings, permissions, ACLs, extended attributes, and supported platform metadata

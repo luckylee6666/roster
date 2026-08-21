@@ -15,14 +15,14 @@ use uuid::Uuid;
 
 mod remote;
 use remote::{PtySession, RemoteHub, SessionMeta};
-mod usage;
 mod applog;
+mod cli_detect;
 mod native_esc;
+mod orchestra;
 mod project_memory;
 mod project_sessions;
-mod orchestra;
 mod proxy_settings;
-mod cli_detect;
+mod usage;
 
 /// 手机端远程服务监听端口（局域网）。
 const REMOTE_PORT: u16 = 8787;
@@ -98,29 +98,173 @@ pub struct Snippet {
     pub schedule: Option<Schedule>,
 }
 
-/// 需求清单：开发随手记录的碎片需求/想法收集箱。
-/// 默认是全局收集箱，`project_id` 为可选的项目关联标签。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 项目内的想法草稿：可反复完善，成熟后放入当前终端输入区。
+const MAX_PROJECT_IDEAS: usize = 2_000;
+const MAX_PROJECT_IDEAS_TOTAL_CHARS: usize = 2_000_000;
+const MAX_PROJECT_IDEAS_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Requirement {
+pub struct ProjectIdea {
     pub id: String,
     pub title: String,
-    /// 可选补充说明
     #[serde(default)]
     pub note: String,
-    /// todo | doing | done
     #[serde(default)]
-    pub status: String,
-    /// high | normal | low
-    #[serde(default)]
-    pub priority: String,
-    /// 可选关联项目 id（空 = 未关联）
-    #[serde(default, alias = "project_id")]
+    pub archived: bool,
+    #[serde(alias = "project_id")]
     pub project_id: String,
+    /// 最近一次放入终端输入区的时间；只表示已填入，不代表用户已经发送。
+    #[serde(default, alias = "last_placed_at")]
+    pub last_placed_at: String,
+    #[serde(default, alias = "last_placed_tool")]
+    pub last_placed_tool: String,
+    #[serde(default, alias = "last_placed_session_id")]
+    pub last_placed_session_id: String,
     #[serde(default, alias = "created_at")]
     pub created_at: String,
     #[serde(default, alias = "updated_at")]
     pub updated_at: String,
+}
+
+fn project_idea_changed(previous: &ProjectIdea, current: &ProjectIdea) -> bool {
+    previous.title != current.title
+        || previous.note != current.note
+        || previous.archived != current.archived
+        || previous.project_id != current.project_id
+        || previous.last_placed_at != current.last_placed_at
+        || previous.last_placed_tool != current.last_placed_tool
+        || previous.last_placed_session_id != current.last_placed_session_id
+}
+
+fn project_idea_has_unsafe_control(value: &str, allow_layout_whitespace: bool) -> bool {
+    value
+        .chars()
+        .any(|ch| ch.is_control() && !(allow_layout_whitespace && matches!(ch, '\n' | '\t')))
+}
+
+fn normalize_project_ideas(
+    ideas: Vec<ProjectIdea>,
+    now: &str,
+    project_ids: &HashSet<String>,
+    previous_ideas: &[ProjectIdea],
+) -> Result<Vec<ProjectIdea>, String> {
+    if ideas.len() > MAX_PROJECT_IDEAS {
+        return Err(format!("项目想法不能超过 {MAX_PROJECT_IDEAS} 条"));
+    }
+    let previous_by_id: HashMap<&str, &ProjectIdea> = previous_ideas
+        .iter()
+        .filter(|idea| !idea.id.is_empty())
+        .map(|idea| (idea.id.as_str(), idea))
+        .collect();
+    let mut seen_ids = HashSet::with_capacity(ideas.len());
+    let mut total_chars = 0usize;
+    let mut normalized = Vec::with_capacity(ideas.len());
+
+    for mut idea in ideas {
+        idea.title = idea.title.trim().to_string();
+        idea.note = idea.note.trim().to_string();
+        idea.project_id = idea.project_id.trim().to_string();
+        idea.last_placed_at = idea.last_placed_at.trim().to_string();
+        idea.last_placed_tool = idea.last_placed_tool.trim().to_string();
+        idea.last_placed_session_id = idea.last_placed_session_id.trim().to_string();
+
+        if idea.project_id.is_empty() {
+            return Err("想法必须关联项目".to_string());
+        }
+        if idea.title.is_empty() {
+            return Err("想法标题不能为空".to_string());
+        }
+        if idea.title.chars().count() > 200 || idea.note.chars().count() > 10_000 {
+            return Err("想法内容过长".to_string());
+        }
+        if idea.project_id.len() > 128
+            || idea.last_placed_tool.chars().count() > 128
+            || idea.last_placed_session_id.len() > 128
+            || idea.last_placed_at.len() > 64
+            || idea.created_at.len() > 64
+            || idea.updated_at.len() > 64
+        {
+            return Err("想法元数据过长".to_string());
+        }
+        if project_idea_has_unsafe_control(&idea.title, false)
+            || project_idea_has_unsafe_control(&idea.note, true)
+            || project_idea_has_unsafe_control(&idea.project_id, false)
+            || project_idea_has_unsafe_control(&idea.last_placed_at, false)
+            || project_idea_has_unsafe_control(&idea.last_placed_tool, false)
+            || project_idea_has_unsafe_control(&idea.last_placed_session_id, false)
+            || project_idea_has_unsafe_control(&idea.created_at, false)
+            || project_idea_has_unsafe_control(&idea.updated_at, false)
+        {
+            return Err("想法包含不支持的控制字符".to_string());
+        }
+
+        if idea.id.is_empty() {
+            loop {
+                let candidate = Uuid::new_v4().to_string();
+                if seen_ids.insert(candidate.clone()) {
+                    idea.id = candidate;
+                    break;
+                }
+            }
+        } else {
+            if idea.id.len() > 128
+                || !idea
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Err("想法 ID 不合法".to_string());
+            }
+            if !seen_ids.insert(idea.id.clone()) {
+                return Err("想法 ID 重复".to_string());
+            }
+        }
+
+        let previous = previous_by_id.get(idea.id.as_str()).copied();
+        if !project_ids.contains(&idea.project_id) {
+            let same_orphan = previous
+                .map(|old| old.project_id == idea.project_id)
+                .unwrap_or(false);
+            if !same_orphan {
+                return Err("想法关联的项目不存在".to_string());
+            }
+        }
+        if let Some(old) = previous {
+            if old.project_id != idea.project_id
+                && (project_ids.contains(&old.project_id)
+                    || !project_ids.contains(&idea.project_id))
+            {
+                return Err("不能把想法直接移动到其他项目".to_string());
+            }
+            idea.created_at = old.created_at.clone();
+            idea.updated_at = if project_idea_changed(old, &idea) {
+                now.to_string()
+            } else {
+                old.updated_at.clone()
+            };
+        } else {
+            idea.created_at = now.to_string();
+            idea.updated_at = now.to_string();
+        }
+
+        total_chars = total_chars.saturating_add(
+            idea.id.chars().count()
+                + idea.title.chars().count()
+                + idea.note.chars().count()
+                + idea.project_id.chars().count()
+                + idea.last_placed_at.chars().count()
+                + idea.last_placed_tool.chars().count()
+                + idea.last_placed_session_id.chars().count()
+                + idea.created_at.chars().count()
+                + idea.updated_at.chars().count(),
+        );
+        if total_chars > MAX_PROJECT_IDEAS_TOTAL_CHARS {
+            return Err("项目想法总容量过大".to_string());
+        }
+        normalized.push(idea);
+    }
+    Ok(normalized)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -130,24 +274,40 @@ struct AppState {
     #[serde(default)]
     snippets: Vec<Snippet>,
     #[serde(default)]
-    requirements: Vec<Requirement>,
+    ideas: Vec<ProjectIdea>,
     data_path: PathBuf,
     server_path: PathBuf,
     snippet_path: PathBuf,
-    requirement_path: PathBuf,
+    idea_path: PathBuf,
 }
 
 /// 原子写：写同目录临时文件 + fsync，再 rename 覆盖目标。
 /// rename 在同一分区是原子操作——崩溃/断电后要么是旧文件、要么是新文件，
 /// 绝不会出现写到一半的半截文件（旧版 fs::write 先清空再写，中途被 kill 会损坏整文件）。
 pub(crate) fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = fs::File::create(&tmp)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("data");
+    let tmp = parent.join(format!(".{name}.{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path)
+    result
 }
 
 /// 数据目录：优先用隐藏目录 ~/.roster/，避免清理软件误删。
@@ -224,7 +384,7 @@ fn copy_dir_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// 从指定旧目录迁移到新目录。只有全部复制成功后才写完成标记；目录使用可重试的
 /// 逐项复制而非 rename，迁移中断后可安全补齐，也始终保留旧目录作为恢复来源。
-/// 核心文件包括 projects.json、servers.json、snippets.json、requirements.json、
+/// 核心文件包括 projects.json、servers.json、snippets.json、ideas.json、
 /// term-themes.json、proxy-settings.json，以及 theme-images/、logs/ 和用量缓存。
 fn migrate_legacy_data_between(old: &Path, new: &Path) -> std::io::Result<()> {
     let marker = new.join(".migrated-from-legacy");
@@ -290,12 +450,9 @@ fn existing_data_files() -> Vec<(PathBuf, String)> {
         (f("projects.json"), "projects".to_string()),
         (f("servers.json"), "servers".to_string()),
         (f("snippets.json"), "snippets".to_string()),
-        (f("requirements.json"), "requirements".to_string()),
+        (f("ideas.json"), "ideas".to_string()),
     ];
-    pairs
-        .into_iter()
-        .filter(|(p, _)| p.exists())
-        .collect()
+    pairs.into_iter().filter(|(p, _)| p.exists()).collect()
 }
 
 /// 快照当前全部数据文件到 `backups/<YYYY-MM-DD>/`，保留最近 30 天。
@@ -303,7 +460,11 @@ fn existing_data_files() -> Vec<(PathBuf, String)> {
 fn snapshot_data_files() {
     let stamp = chrono::Local::now().format("%Y-%m-%d").to_string();
     let dir = backup_root_dir().join(&stamp);
-    if dir.is_dir() && existing_data_files().iter().all(|(_, name)| dir.join(format!("{name}.json")).exists()) {
+    if dir.is_dir()
+        && existing_data_files()
+            .iter()
+            .all(|(_, name)| dir.join(format!("{name}.json")).exists())
+    {
         return; // 今日已有完整快照
     }
     if let Err(e) = fs::create_dir_all(&dir) {
@@ -340,10 +501,8 @@ fn backup_prev(path: &Path, name: &str) {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(format!("{name}.prev.json"));
-        let tmp = dest.with_extension("prev.tmp");
-        let result = fs::copy(path, &tmp).and_then(|_| fs::rename(&tmp, &dest));
+        let result = fs::read(path).and_then(|data| atomic_write(&dest, &data));
         if let Err(e) = result {
-            let _ = fs::remove_file(tmp);
             crate::log_warn!("创建 {name}.prev.json 失败：{e}");
         }
     }
@@ -382,13 +541,120 @@ pub(crate) fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path
     }
 }
 
+fn backup_invalid_project_ideas(path: &Path, reason: &str, data: &[u8]) {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let bad = path.with_extension(format!("{stamp}-{}.bad", Uuid::new_v4()));
+    match atomic_write(&bad, data) {
+        Ok(()) => crate::log_error!(
+            "读取 ideas.json 失败：{reason}；已备份异常文件到 {:?}",
+            bad.file_name().unwrap_or_default()
+        ),
+        Err(error) => {
+            crate::log_error!("读取 ideas.json 失败：{reason}；备份异常文件失败：{error}")
+        }
+    }
+}
+
+fn read_project_ideas_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    #[cfg(not(unix))]
+    {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        #[cfg(windows)]
+        let is_link = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+        };
+        #[cfg(not(windows))]
+        let is_link = metadata.file_type().is_symlink();
+        if is_link || !metadata.is_file() {
+            return Err("ideas.json 含符号链接或不是普通文件".to_string());
+        }
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("无法安全打开 ideas.json：{error}")),
+    };
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("ideas.json 不是普通文件".to_string());
+    }
+    if metadata.len() > MAX_PROJECT_IDEAS_FILE_BYTES {
+        return Err(format!(
+            "文件超过 {}MB",
+            MAX_PROJECT_IDEAS_FILE_BYTES / 1024 / 1024
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
+    file.take(MAX_PROJECT_IDEAS_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_PROJECT_IDEAS_FILE_BYTES {
+        return Err(format!(
+            "文件超过 {}MB",
+            MAX_PROJECT_IDEAS_FILE_BYTES / 1024 / 1024
+        ));
+    }
+    Ok(Some(bytes))
+}
+
+fn load_project_ideas(path: &Path, project_ids: &HashSet<String>) -> Vec<ProjectIdea> {
+    let data = match read_project_ideas_bytes(path) {
+        Ok(None) => return Vec::new(),
+        Ok(Some(data)) if data.iter().all(u8::is_ascii_whitespace) => return Vec::new(),
+        Ok(Some(data)) => data,
+        Err(error) => {
+            crate::log_error!("读取 ideas.json 失败：{error}");
+            return Vec::new();
+        }
+    };
+    let ideas: Vec<ProjectIdea> = match serde_json::from_slice(&data) {
+        Ok(ideas) => ideas,
+        Err(error) => {
+            backup_invalid_project_ideas(path, &format!("JSON 解析失败：{error}"), &data);
+            return Vec::new();
+        }
+    };
+    if ideas.len() > MAX_PROJECT_IDEAS {
+        backup_invalid_project_ideas(path, "条目数量超过上限", &data);
+        return Vec::new();
+    }
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    match normalize_project_ideas(ideas.clone(), &now, project_ids, &ideas) {
+        Ok(normalized) => normalized,
+        Err(error) => {
+            backup_invalid_project_ideas(path, &error, &data);
+            Vec::new()
+        }
+    }
+}
+
 impl AppState {
     fn new(data_dir: &Path) -> Self {
         fs::create_dir_all(data_dir).ok();
         snapshot_data_files();
-        
+
         let data_path = data_dir.join("projects.json");
-        let projects = load_json_or_backup(&data_path);
+        let projects: Vec<Project> = load_json_or_backup(&data_path);
 
         let server_path = data_dir.join("servers.json");
         let servers = load_json_or_backup(&server_path);
@@ -396,18 +662,22 @@ impl AppState {
         let snippet_path = data_dir.join("snippets.json");
         let snippets = load_json_or_backup(&snippet_path);
 
-        let requirement_path = data_dir.join("requirements.json");
-        let requirements = load_json_or_backup(&requirement_path);
+        let idea_path = data_dir.join("ideas.json");
+        let project_ids = projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect::<HashSet<_>>();
+        let ideas = load_project_ideas(&idea_path, &project_ids);
 
         Self {
             projects,
             servers,
             snippets,
-            requirements,
+            ideas,
             data_path,
             server_path,
             snippet_path,
-            requirement_path,
+            idea_path,
         }
     }
 
@@ -438,11 +708,17 @@ impl AppState {
         })
     }
 
-    fn save_requirements_value(&self, requirements: &[Requirement]) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(requirements).map_err(|e| e.to_string())?;
-        backup_prev(&self.requirement_path, "requirements");
-        atomic_write(&self.requirement_path, data.as_bytes()).map_err(|e| {
-            crate::log_error!("写 requirements.json 失败：{e}");
+    fn save_ideas_value(&self, ideas: &[ProjectIdea]) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(ideas).map_err(|e| e.to_string())?;
+        if data.len() as u64 > MAX_PROJECT_IDEAS_FILE_BYTES {
+            return Err(format!(
+                "项目想法总容量超过 {}MB",
+                MAX_PROJECT_IDEAS_FILE_BYTES / 1024 / 1024
+            ));
+        }
+        backup_prev(&self.idea_path, "ideas");
+        atomic_write(&self.idea_path, data.as_bytes()).map_err(|e| {
+            crate::log_error!("写 ideas.json 失败：{e}");
             e.to_string()
         })
     }
@@ -468,7 +744,7 @@ fn add_project(
     group: String,
 ) -> Result<Project, String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
-    
+
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let project = Project {
         id: Uuid::new_v4().to_string(),
@@ -482,12 +758,12 @@ fn add_project(
         created_at: now.clone(),
         updated_at: now,
     };
-    
+
     let mut projects = state.projects.clone();
     projects.push(project.clone());
     state.save_projects_value(&projects)?;
     state.projects = projects;
-    
+
     Ok(project)
 }
 
@@ -506,10 +782,13 @@ fn update_project(
     group: String,
 ) -> Result<Project, String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
-    
-    let index = state.projects.iter().position(|p| p.id == id)
+
+    let index = state
+        .projects
+        .iter()
+        .position(|p| p.id == id)
         .ok_or_else(|| "Project not found".to_string())?;
-    
+
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let project = Project {
         id: id.clone(),
@@ -523,12 +802,12 @@ fn update_project(
         created_at: state.projects[index].created_at.clone(),
         updated_at: now,
     };
-    
+
     let mut projects = state.projects.clone();
     projects[index] = project.clone();
     state.save_projects_value(&projects)?;
     state.projects = projects;
-    
+
     Ok(project)
 }
 
@@ -560,7 +839,7 @@ fn rename_group(state: State<Mutex<AppState>>, old: String, new: String) -> Resu
 #[tauri::command]
 fn export_excel(state: State<Mutex<AppState>>) -> Result<String, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
-    
+
     let file_path = rfd::FileDialog::new()
         .set_title("导出Excel文件")
         .set_file_name("vibe-coding-projects.xlsx")
@@ -570,42 +849,80 @@ fn export_excel(state: State<Mutex<AppState>>) -> Result<String, String> {
 
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let worksheet = workbook.add_worksheet();
-    
+
     let header_format = rust_xlsxwriter::Format::new()
         .set_bold()
         .set_background_color(rust_xlsxwriter::Color::RGB(0x4472C4))
         .set_font_color(rust_xlsxwriter::Color::White)
         .set_border(rust_xlsxwriter::FormatBorder::Thin);
-    
-    worksheet.write_string_with_format(0, 0, "项目名称", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 1, "分组", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 2, "本地路径", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 3, "远端仓库", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 4, "项目描述", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 5, "运行环境", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 6, "服务器", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 7, "创建时间", &header_format).map_err(|e| e.to_string())?;
-    worksheet.write_string_with_format(0, 8, "更新时间", &header_format).map_err(|e| e.to_string())?;
-    
-    worksheet.set_column_width(0, 20).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(1, 15).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(2, 40).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(3, 40).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(4, 30).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(5, 12).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(6, 15).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(7, 20).map_err(|e| e.to_string())?;
-    worksheet.set_column_width(8, 20).map_err(|e| e.to_string())?;
-    
-    let data_format = rust_xlsxwriter::Format::new()
-        .set_border(rust_xlsxwriter::FormatBorder::Thin);
-    
+
+    worksheet
+        .write_string_with_format(0, 0, "项目名称", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 1, "分组", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 2, "本地路径", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 3, "远端仓库", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 4, "项目描述", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 5, "运行环境", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 6, "服务器", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 7, "创建时间", &header_format)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .write_string_with_format(0, 8, "更新时间", &header_format)
+        .map_err(|e| e.to_string())?;
+
+    worksheet
+        .set_column_width(0, 20)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(1, 15)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(2, 40)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(3, 40)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(4, 30)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(5, 12)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(6, 15)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(7, 20)
+        .map_err(|e| e.to_string())?;
+    worksheet
+        .set_column_width(8, 20)
+        .map_err(|e| e.to_string())?;
+
+    let data_format =
+        rust_xlsxwriter::Format::new().set_border(rust_xlsxwriter::FormatBorder::Thin);
+
     for (i, project) in state.projects.iter().enumerate() {
         let row = (i + 1) as u32;
         let server_name = if project.server_id.is_empty() {
             String::new()
         } else {
-            state.servers.iter()
+            state
+                .servers
+                .iter()
                 .find(|s| s.id == project.server_id)
                 .map(|s| s.name.clone())
                 .unwrap_or_default()
@@ -615,19 +932,37 @@ fn export_excel(state: State<Mutex<AppState>>) -> Result<String, String> {
             "server" => "服务器",
             other => other,
         };
-        worksheet.write_string_with_format(row, 0, &project.name, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 1, &project.group, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 2, &project.local_path, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 3, &project.remote_url, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 4, &project.description, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 5, machine_label, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 6, &server_name, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 7, &project.created_at, &data_format).map_err(|e| e.to_string())?;
-        worksheet.write_string_with_format(row, 8, &project.updated_at, &data_format).map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 0, &project.name, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 1, &project.group, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 2, &project.local_path, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 3, &project.remote_url, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 4, &project.description, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 5, machine_label, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 6, &server_name, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 7, &project.created_at, &data_format)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string_with_format(row, 8, &project.updated_at, &data_format)
+            .map_err(|e| e.to_string())?;
     }
-    
+
     workbook.save(&file_path).map_err(|e| e.to_string())?;
-    
+
     Ok(file_path.to_string_lossy().to_string())
 }
 
@@ -642,7 +977,7 @@ fn open_folder_dialog() -> Result<String, String> {
         .set_title("选择项目文件夹")
         .pick_folder()
         .ok_or_else(|| "未选择文件夹".to_string())?;
-    
+
     Ok(folder.to_string_lossy().to_string())
 }
 
@@ -686,7 +1021,13 @@ fn open_terminal(path: String) -> Result<(), String> {
     {
         // Windows 路径用双引号包裹（路径通常不含 "）
         std::process::Command::new("cmd")
-            .args(["/C", "start", "cmd", "/K", &format!("cd /d \"{}\" && claude", path)])
+            .args([
+                "/C",
+                "start",
+                "cmd",
+                "/K",
+                &format!("cd /d \"{}\" && claude", path),
+            ])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -742,7 +1083,10 @@ fn update_server(
     note: String,
 ) -> Result<Server, String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
-    let index = state.servers.iter().position(|s| s.id == id)
+    let index = state
+        .servers
+        .iter()
+        .position(|s| s.id == id)
         .ok_or_else(|| "Server not found".to_string())?;
     let server = Server {
         id: id.clone(),
@@ -838,9 +1182,8 @@ fn term_theme_path() -> PathBuf {
     data_dir().join("term-themes.json")
 }
 
-/// 主题表不在 AppState 里（那是项目/服务器数据），但整表读改写仍需互斥：
-/// 两次并发 save_term_themes 若都在跑 atomic_write，会同时截断同一个
-/// term-themes.tmp，产出合并坏文件——用这把独立锁把它俩串行化。
+/// 主题表不在 AppState 里（那是项目/服务器数据），整表读改写仍需互斥，
+/// 避免两次并发保存都基于旧快照，后完成的一次覆盖先完成的修改。
 struct TermThemeLock(Mutex<()>);
 
 fn theme_image_dir() -> PathBuf {
@@ -928,41 +1271,28 @@ fn load_theme_image(name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn get_requirements(state: State<Mutex<AppState>>) -> Result<Vec<Requirement>, String> {
+fn get_project_ideas(state: State<Mutex<AppState>>) -> Result<Vec<ProjectIdea>, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
-    Ok(state.requirements.clone())
+    Ok(state.ideas.clone())
 }
 
-/// 整表保存（前端管理增删改后回写）。补齐缺失的 id / 默认值 / 时间戳。
+/// 项目想法整表保存：补齐 id / 时间戳，并拒绝无项目或超长内容。
 #[tauri::command]
-fn save_requirements(
+fn save_project_ideas(
     state: State<Mutex<AppState>>,
-    requirements: Vec<Requirement>,
-) -> Result<Vec<Requirement>, String> {
+    ideas: Vec<ProjectIdea>,
+) -> Result<Vec<ProjectIdea>, String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let requirements: Vec<Requirement> = requirements
-        .into_iter()
-        .map(|mut r| {
-            if r.id.is_empty() {
-                r.id = Uuid::new_v4().to_string();
-            }
-            if r.status.is_empty() {
-                r.status = "todo".to_string();
-            }
-            if r.priority.is_empty() {
-                r.priority = "normal".to_string();
-            }
-            if r.created_at.is_empty() {
-                r.created_at = now.clone();
-            }
-            r.updated_at = now.clone();
-            r
-        })
+    let project_ids = state
+        .projects
+        .iter()
+        .map(|project| project.id.clone())
         .collect();
-    state.save_requirements_value(&requirements)?;
-    state.requirements = requirements.clone();
-    Ok(requirements)
+    let normalized = normalize_project_ideas(ideas, &now, &project_ids, &state.ideas)?;
+    state.save_ideas_value(&normalized)?;
+    state.ideas = normalized.clone();
+    Ok(normalized)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -981,7 +1311,8 @@ fn scan_directory(path: String) -> Result<Vec<ScannedProject>, String> {
         return Err("路径不是目录".to_string());
     }
 
-    let dir_name = dir.file_name()
+    let dir_name = dir
+        .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
@@ -1868,6 +2199,19 @@ async fn preview_project_session(
 }
 
 #[tauri::command]
+async fn preview_session_handoff(
+    path: String,
+    source_tool: String,
+    id: String,
+) -> Result<project_sessions::SessionHandoffPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project_sessions::preview_session_handoff(&path, &source_tool, &id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn delete_project_session(path: String, tool: String, id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         project_sessions::delete_project_session(&path, &tool, &id)
@@ -1899,6 +2243,16 @@ async fn write_orchestra_file(
 #[tauri::command]
 async fn read_orchestra_file(path: String, name: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || orchestra::read_orchestra_file(&path, &name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn write_session_handoff(
+    path: String,
+    content: String,
+) -> Result<orchestra::SessionHandoffFile, String> {
+    tauri::async_runtime::spawn_blocking(move || orchestra::write_session_handoff(&path, &content))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2021,11 +2375,10 @@ fn detect_context_window(s: &str) -> Option<u64> {
     // `/context` 的分母最明确，优先取最后一次完整的 `已用/上限 tokens`。
     for (idx, _) in lower.rmatch_indices(" token") {
         let head = lower[..idx].trim_end();
-        let Some(slash) = head.rfind('/') else { continue };
-        let candidate = head[slash + 1..]
-            .split_whitespace()
-            .next()
-            .unwrap_or("");
+        let Some(slash) = head.rfind('/') else {
+            continue;
+        };
+        let candidate = head[slash + 1..].split_whitespace().next().unwrap_or("");
         if let Some(limit) = parse_context_window_value(candidate) {
             return Some(limit);
         }
@@ -2069,7 +2422,11 @@ fn read_file_tail(path: &PathBuf, max: u64) -> Option<String> {
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
     // 丢掉可能被截断的首行残片（从第一个换行之后开始）
-    let start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+    let start = buf
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     Some(String::from_utf8_lossy(&buf[start..]).into_owned())
 }
 
@@ -2119,9 +2476,18 @@ async fn context_usage(
         }
 
         let fallback_limit = resolved_limit.unwrap_or(DEFAULT_CONTEXT_WINDOW);
-        let mut cu = ContextUsage { ok: false, percent: 0, tokens: 0, limit: fallback_limit };
-        let Some(dir) = find_claude_project_dir(&cwd) else { return cu };
-        let Some(jsonl) = newest_jsonl(&dir) else { return cu };
+        let mut cu = ContextUsage {
+            ok: false,
+            percent: 0,
+            tokens: 0,
+            limit: fallback_limit,
+        };
+        let Some(dir) = find_claude_project_dir(&cwd) else {
+            return cu;
+        };
+        let Some(jsonl) = newest_jsonl(&dir) else {
+            return cu;
+        };
         // 只认「本会话开始之后」修改过的 transcript：新会话发第一句前还没有自己的
         // transcript，最新那个是上一个会话——此时上下文应为 0，别拿旧会话的数充数。
         let mtime_ms = fs::metadata(&jsonl)
@@ -2139,8 +2505,12 @@ async fn context_usage(
         // 避免每次轮询都把整份文件读进内存。
         let scan = |text: &str| -> Option<u64> {
             for line in text.lines().rev() {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                let Some(usage) = v.pointer("/message/usage") else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let Some(usage) = v.pointer("/message/usage") else {
+                    continue;
+                };
                 let g = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
                 let tokens = g("input_tokens")
                     + g("cache_read_input_tokens")
@@ -2247,7 +2617,8 @@ fn monitor_attention(app: AppHandle, activity: ActivityMap) {
                     continue;
                 }
                 let burst_ms = a.last_output.duration_since(a.burst_start).as_millis();
-                let qualifies = burst_ms >= ATTENTION_MIN_BURST_MS || a.burst_bytes >= ATTENTION_MIN_BYTES;
+                let qualifies =
+                    burst_ms >= ATTENTION_MIN_BURST_MS || a.burst_bytes >= ATTENTION_MIN_BYTES;
                 // 不管够不够格，这段活跃都已结束 → 消费掉，等下一段新输出再重新计
                 a.busy = false;
                 if qualifies {
@@ -2404,7 +2775,11 @@ fn terminal_create(
     crate::log_info!(
         "终端已创建：id={id} tool={} cwd={} proxy={}",
         tool.as_deref().unwrap_or(""),
-        if cwd.is_empty() { "(默认)" } else { cwd.as_str() },
+        if cwd.is_empty() {
+            "(默认)"
+        } else {
+            cwd.as_str()
+        },
         {
             let proxy = proxy_settings::load_settings();
             if proxy.enabled && !proxy.url.is_empty() {
@@ -2604,10 +2979,7 @@ fn classify_ipv4(ip: std::net::Ipv4Addr) -> Option<&'static str> {
     if o[0] == 100 && (64..=127).contains(&o[1]) {
         return None;
     }
-    if o[0] == 10
-        || (o[0] == 172 && (16..=31).contains(&o[1]))
-        || (o[0] == 192 && o[1] == 168)
-    {
+    if o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168) {
         return Some("局域网");
     }
     Some("其他")
@@ -2631,7 +3003,10 @@ fn make_qr_svg(data: &str) -> String {
 /// 生成 6 位随机 PIN（取 UUID 前 4 字节 mod 1_000_000，左补零）。
 fn random_pin() -> String {
     let b = Uuid::new_v4().into_bytes();
-    format!("{:06}", u32::from_le_bytes([b[0], b[1], b[2], b[3]]) % 1_000_000)
+    format!(
+        "{:06}",
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]]) % 1_000_000
+    )
 }
 
 /// 按需启动手机端服务：用户首次打开「手机远程」面板时才生成随机 PIN 并监听端口。
@@ -2654,7 +3029,12 @@ fn ensure_remote_started(hub: &remote::RemoteHub) {
 fn terminal_remote_info(state: State<TerminalState>) -> RemoteInfo {
     ensure_remote_started(&state.hub);
     let port = state.hub.port;
-    let pin = state.hub.token.lock().map(|t| t.clone()).unwrap_or_default();
+    let pin = state
+        .hub
+        .token
+        .lock()
+        .map(|t| t.clone())
+        .unwrap_or_default();
 
     let mut addrs: Vec<RemoteAddr> = Vec::new();
     if let Ok(ifaces) = local_ip_address::list_afinet_netifas() {
@@ -2862,19 +3242,10 @@ pub fn run() {
             std::thread::spawn(move || monitor_attention(mon_app, activity_for_monitor));
             // 版本号显示在原生标题栏（来自 Cargo.toml，单一来源）
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_title(&format!(
-                    "Roster v{}",
-                    env!("CARGO_PKG_VERSION")
-                ));
+                let _ = win.set_title(&format!("Roster v{}", env!("CARGO_PKG_VERSION")));
             }
             // 菜单栏托盘：常驻显示 5h / 周限流用量，菜单可打开主窗/刷新/退出
-            let show_i = MenuItem::with_id(
-                app,
-                "tray_show",
-                "打开 Roster",
-                true,
-                None::<&str>,
-            )?;
+            let show_i = MenuItem::with_id(app, "tray_show", "打开 Roster", true, None::<&str>)?;
             let refresh_i = MenuItem::with_id(app, "tray_refresh", "刷新用量", true, None::<&str>)?;
             let log_i = MenuItem::with_id(app, "tray_log", "打开日志", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
@@ -2963,10 +3334,12 @@ pub fn run() {
             detach_project_memory,
             list_project_sessions,
             preview_project_session,
+            preview_session_handoff,
             delete_project_session,
             ensure_orchestra,
             write_orchestra_file,
             read_orchestra_file,
+            write_session_handoff,
             get_proxy_settings,
             save_proxy_settings,
             get_proxy_shell_hook,
@@ -2977,8 +3350,8 @@ pub fn run() {
             save_term_themes,
             pick_theme_image,
             load_theme_image,
-            get_requirements,
-            save_requirements,
+            get_project_ideas,
+            save_project_ideas,
             oauth_usage,
             codex_usage,
             list_installed_clis,
@@ -3018,7 +3391,10 @@ mod tests {
         migrate_legacy_data_between(&old, &new).unwrap();
 
         assert_eq!(fs::read(new.join("projects.json")).unwrap(), b"[1]");
-        assert_eq!(fs::read(new.join("oauth-usage-cache-test.json")).unwrap(), b"{}");
+        assert_eq!(
+            fs::read(new.join("oauth-usage-cache-test.json")).unwrap(),
+            b"{}"
+        );
         assert_eq!(
             fs::read(new.join("theme-images/nested/bg.png")).unwrap(),
             b"image"
@@ -3089,7 +3465,12 @@ mod tests {
         file.set_len(9).unwrap();
         assert!(read_binary_file_bounded(&path, 8, "too large").is_err());
         file.set_len(8).unwrap();
-        assert_eq!(read_binary_file_bounded(&path, 8, "too large").unwrap().len(), 8);
+        assert_eq!(
+            read_binary_file_bounded(&path, 8, "too large")
+                .unwrap()
+                .len(),
+            8
+        );
     }
 
     #[test]
@@ -3107,9 +3488,21 @@ mod tests {
             updated_at: "2025-01-01 00:00:00".into(),
         };
         let json = serde_json::to_string(&p).unwrap();
-        assert!(json.contains("localPath"), "JSON should use camelCase: {}", json);
-        assert!(json.contains("remoteUrl"), "JSON should use camelCase: {}", json);
-        assert!(json.contains("createdAt"), "JSON should use camelCase: {}", json);
+        assert!(
+            json.contains("localPath"),
+            "JSON should use camelCase: {}",
+            json
+        );
+        assert!(
+            json.contains("remoteUrl"),
+            "JSON should use camelCase: {}",
+            json
+        );
+        assert!(
+            json.contains("createdAt"),
+            "JSON should use camelCase: {}",
+            json
+        );
 
         // 验证能从 camelCase JSON 反序列化
         let p2: Project = serde_json::from_str(&json).unwrap();
@@ -3120,6 +3513,172 @@ mod tests {
         let snake = r#"{"id":"x","name":"t","local_path":"/tmp","remote_url":"","description":"","machine":"local","group":"","created_at":"","updated_at":""}"#;
         let p3: Project = serde_json::from_str(snake).unwrap();
         assert_eq!(p3.local_path, "/tmp");
+    }
+
+    fn project_idea(id: &str, project_id: &str, title: &str) -> ProjectIdea {
+        ProjectIdea {
+            id: id.to_string(),
+            title: title.to_string(),
+            note: String::new(),
+            archived: false,
+            project_id: project_id.to_string(),
+            last_placed_at: String::new(),
+            last_placed_tool: String::new(),
+            last_placed_session_id: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_project_ideas_normalize_and_enforce_project_scope() {
+        let now = "2026-08-20 12:00:00";
+        let later = "2026-08-20 12:01:00";
+        let projects = HashSet::from(["project-a".to_string(), "project-b".to_string()]);
+        let mut fresh = project_idea("", "project-a", "  新想法  ");
+        fresh.note = "  保留多行\n详情  ".to_string();
+        let normalized =
+            normalize_project_ideas(vec![fresh], now, &projects, &[]).expect("new idea");
+        assert!(!normalized[0].id.is_empty());
+        assert_eq!(normalized[0].title, "新想法");
+        assert_eq!(normalized[0].note, "保留多行\n详情");
+        assert_eq!(normalized[0].created_at, now);
+        assert_eq!(normalized[0].updated_at, now);
+        let json = serde_json::to_string(&normalized[0]).unwrap();
+        assert!(json.contains("projectId"));
+        assert!(json.contains("lastPlacedAt"));
+
+        let mut edited = normalized[0].clone();
+        edited.archived = true;
+        edited.created_at = "client-overwrite".to_string();
+        edited.updated_at = "client-overwrite".to_string();
+        let saved = normalize_project_ideas(vec![edited], later, &projects, &normalized)
+            .expect("edit idea");
+        assert_eq!(saved[0].created_at, now);
+        assert_eq!(saved[0].updated_at, later);
+        assert!(saved[0].archived);
+
+        let missing = project_idea("idea-missing", "project-missing", "无项目");
+        assert!(normalize_project_ideas(vec![missing], now, &projects, &[]).is_err());
+
+        let mut moved = normalized[0].clone();
+        moved.project_id = "project-b".to_string();
+        assert!(normalize_project_ideas(vec![moved], later, &projects, &normalized).is_err());
+
+        let mut orphan = project_idea("idea-orphan", "project-deleted", "待归属");
+        orphan.created_at = now.to_string();
+        orphan.updated_at = now.to_string();
+        let mut claimed = orphan.clone();
+        claimed.project_id = "project-b".to_string();
+        let claimed = normalize_project_ideas(vec![claimed], later, &projects, &[orphan])
+            .expect("claim orphan");
+        assert_eq!(claimed[0].project_id, "project-b");
+
+        let duplicate = project_idea("idea-duplicate", "project-a", "重复");
+        assert!(
+            normalize_project_ideas(vec![duplicate.clone(), duplicate], now, &projects, &[],)
+                .is_err()
+        );
+        let unsafe_text = project_idea("idea-control", "project-a", "包含\u{1b}控制符");
+        assert!(normalize_project_ideas(vec![unsafe_text], now, &projects, &[]).is_err());
+    }
+
+    #[test]
+    fn test_project_ideas_reject_oversized_content_and_file() {
+        let projects = HashSet::from(["project-a".to_string()]);
+        let mut too_long = project_idea("idea-long", "project-a", "过长");
+        too_long.note = "x".repeat(10_001);
+        assert!(
+            normalize_project_ideas(vec![too_long], "2026-08-20 12:00:00", &projects, &[],)
+                .is_err()
+        );
+
+        let many_cjk = (0..150)
+            .map(|index| {
+                let mut idea = project_idea(
+                    &format!("idea-cjk-{index}"),
+                    "project-a",
+                    &format!("中文想法 {index}"),
+                );
+                idea.note = "想".repeat(10_000);
+                idea
+            })
+            .collect::<Vec<_>>();
+        let normalized = normalize_project_ideas(many_cjk, "2026-08-20 12:00:00", &projects, &[])
+            .expect("字符数未超限");
+        let save_dir = tempfile::tempdir().unwrap();
+        let idea_path = save_dir.path().join("ideas.json");
+        let state = AppState {
+            projects: vec![],
+            servers: vec![],
+            snippets: vec![],
+            ideas: vec![],
+            data_path: save_dir.path().join("projects.json"),
+            server_path: save_dir.path().join("servers.json"),
+            snippet_path: save_dir.path().join("snippets.json"),
+            idea_path: idea_path.clone(),
+        };
+        let error = state.save_ideas_value(&normalized).unwrap_err();
+        assert!(error.contains("4MB"));
+        assert!(!idea_path.exists());
+
+        let mut safe_cjk = project_idea("idea-safe-cjk", "project-a", "可安全读回");
+        safe_cjk.note = "想".repeat(10_000);
+        let safe_cjk =
+            normalize_project_ideas(vec![safe_cjk], "2026-08-20 12:00:00", &projects, &[]).unwrap();
+        state.save_ideas_value(&safe_cjk).unwrap();
+        assert_eq!(load_project_ideas(&idea_path, &projects), safe_cjk);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ideas.json");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_PROJECT_IDEAS_FILE_BYTES + 1).unwrap();
+        assert!(load_project_ideas(&path, &projects).is_empty());
+
+        let invalid_path = dir.path().join("invalid-ideas.json");
+        let duplicate = project_idea("duplicate", "project-a", "重复 ID");
+        let invalid_data = serde_json::to_vec(&vec![duplicate.clone(), duplicate]).unwrap();
+        fs::write(&invalid_path, &invalid_data).unwrap();
+        assert!(load_project_ideas(&invalid_path, &projects).is_empty());
+        let bad = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                let name = path.file_name().unwrap().to_string_lossy();
+                name.starts_with("invalid-ideas.") && name.ends_with(".bad")
+            })
+            .expect("invalid ideas backup");
+        assert_eq!(fs::read(bad).unwrap(), invalid_data);
+
+        let orphan_path = dir.path().join("orphan-ideas.json");
+        let mut orphan = project_idea("orphan", "deleted-project", "保留孤立想法");
+        orphan.created_at = "2026-08-20 12:00:00".to_string();
+        orphan.updated_at = orphan.created_at.clone();
+        fs::write(
+            &orphan_path,
+            serde_json::to_vec(&vec![orphan.clone()]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_project_ideas(&orphan_path, &projects), vec![orphan]);
+
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+
+            let external = dir.path().join("external.json");
+            fs::write(&external, b"[]").unwrap();
+            let linked = dir.path().join("linked-ideas.json");
+            std::os::unix::fs::symlink(&external, &linked).unwrap();
+            assert!(load_project_ideas(&linked, &projects).is_empty());
+
+            let fifo = dir.path().join("ideas-fifo.json");
+            let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            // SAFETY: fifo_path is a NUL-free path owned by this temporary test directory.
+            assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+            assert!(load_project_ideas(&fifo, &projects).is_empty());
+        }
     }
 
     #[test]
@@ -3133,11 +3692,11 @@ mod tests {
             projects: vec![],
             servers: vec![],
             snippets: vec![],
-            requirements: vec![],
+            ideas: vec![],
             data_path: data_path.clone(),
             server_path: dir.join("servers.json"),
             snippet_path: dir.join("snippets.json"),
-            requirement_path: dir.join("requirements.json"),
+            idea_path: dir.join("ideas.json"),
         };
 
         let now = "2025-01-01 00:00:00".to_string();
@@ -3346,23 +3905,38 @@ mod tests {
     #[test]
     fn test_context_window_from_settings_json() {
         let string_value = r#"{"env":{"CLAUDE_CODE_MAX_CONTEXT_TOKENS":"353000"}}"#;
-        assert_eq!(context_window_from_settings_json(string_value), Some(353_000));
+        assert_eq!(
+            context_window_from_settings_json(string_value),
+            Some(353_000)
+        );
 
         let number_value = r#"{"env":{"CLAUDE_CODE_MAX_CONTEXT_TOKENS":353000}}"#;
-        assert_eq!(context_window_from_settings_json(number_value), Some(353_000));
+        assert_eq!(
+            context_window_from_settings_json(number_value),
+            Some(353_000)
+        );
         assert_eq!(context_window_from_settings_json(r#"{"env":{}}"#), None);
     }
 
     #[test]
     fn test_detect_context_window_from_terminal_output() {
-        assert_eq!(detect_context_window("Opus 4.8 (1M context)"), Some(1_000_000));
+        assert_eq!(
+            detect_context_window("Opus 4.8 (1M context)"),
+            Some(1_000_000)
+        );
         assert_eq!(detect_context_window("model · 200K context"), Some(200_000));
-        assert_eq!(detect_context_window("gpt-5.6-sol · 353k context"), Some(353_000));
+        assert_eq!(
+            detect_context_window("gpt-5.6-sol · 353k context"),
+            Some(353_000)
+        );
         assert_eq!(
             detect_context_window("225.8k/353k tokens (64%)"),
             Some(353_000)
         );
-        assert_eq!(detect_context_window("30.4k / 353k tokens (9%)"), Some(353_000));
+        assert_eq!(
+            detect_context_window("30.4k / 353k tokens (9%)"),
+            Some(353_000)
+        );
         assert_eq!(
             detect_context_window("\x1b[32m225.8k\x1b[0m/\x1b[36m353k\x1b[0m tokens (64%)"),
             Some(353_000)
@@ -3382,7 +3956,9 @@ mod tests {
     fn test_terminal_base64_roundtrip() {
         let data: &[u8] = b"\x1b[31m\xe4\xbd\xa0\xe5\xa5\xbd\x07\x1b[0m"; // ESC[31m 你好 BEL ESC[0m
         let enc = base64::engine::general_purpose::STANDARD.encode(data);
-        let dec = base64::engine::general_purpose::STANDARD.decode(&enc).unwrap();
+        let dec = base64::engine::general_purpose::STANDARD
+            .decode(&enc)
+            .unwrap();
         assert_eq!(dec, data, "base64 应无损还原原始终端字节");
     }
 

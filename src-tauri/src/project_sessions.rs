@@ -10,6 +10,10 @@ const CLAUDE_TITLE_READ_LIMIT: u64 = 96 * 1024;
 const PREVIEW_LIST_LIMIT: usize = 80;
 const PREVIEW_BODY_LIMIT: usize = 2400;
 const PREVIEW_FILE_READ_LIMIT: u64 = 128 * 1024;
+const HANDOFF_FILE_READ_LIMIT: u64 = 512 * 1024;
+const GEMINI_SESSION_READ_LIMIT: u64 = 8 * 1024 * 1024;
+const HANDOFF_MESSAGE_LIMIT: usize = 24;
+const HANDOFF_TEXT_LIMIT: usize = 18_000;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +47,24 @@ pub struct ProjectHistoryGroup {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectHistory {
     pub groups: Vec<ProjectHistoryGroup>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHandoffMessage {
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHandoffPreview {
+    pub source_tool: String,
+    pub source_id: String,
+    pub source_title: String,
+    pub source_at_ms: u64,
+    pub messages: Vec<SessionHandoffMessage>,
+    pub truncated: bool,
 }
 
 pub fn encode_grok_cwd(cwd: &str) -> String {
@@ -91,7 +113,12 @@ fn preview_title(text: &str) -> String {
     }
 }
 
-fn history_session(id: impl Into<String>, tool: &str, raw: &str, at_ms: u64) -> ProjectHistorySession {
+fn history_session(
+    id: impl Into<String>,
+    tool: &str,
+    raw: &str,
+    at_ms: u64,
+) -> ProjectHistorySession {
     ProjectHistorySession {
         id: id.into(),
         tool: tool.into(),
@@ -175,7 +202,11 @@ fn dir_has_matching_claude_cwd(dir: &Path, cwd: &str) -> bool {
     })
 }
 
-fn claude_session_from_jsonl(path: &Path, cwd: &str, allow_missing_cwd: bool) -> Option<ProjectHistorySession> {
+fn claude_session_from_jsonl(
+    path: &Path,
+    cwd: &str,
+    allow_missing_cwd: bool,
+) -> Option<ProjectHistorySession> {
     if !claude_file_matches_cwd(path, cwd, allow_missing_cwd) {
         return None;
     }
@@ -224,7 +255,9 @@ fn claude_session_from_jsonl(path: &Path, cwd: &str, allow_missing_cwd: bool) ->
 fn find_claude_project_dir(home: &Path, cwd: &str) -> Option<PathBuf> {
     let projects = home.join(".claude").join("projects");
     let encoded = projects.join(encode_claude_project_dir(cwd));
-    if encoded.is_dir() && (dir_has_matching_claude_cwd(&encoded, cwd) || is_encoded_claude_dir(&encoded, cwd)) {
+    if encoded.is_dir()
+        && (dir_has_matching_claude_cwd(&encoded, cwd) || is_encoded_claude_dir(&encoded, cwd))
+    {
         return Some(encoded);
     }
     for entry in fs::read_dir(&projects).ok()?.flatten() {
@@ -299,7 +332,9 @@ fn grok_session_from_dir(path: &Path) -> Option<ProjectHistorySession> {
     if !summary_path.is_file() {
         return None;
     }
-    let summary: serde_json::Value = serde_json::from_str(&fs::read_to_string(summary_path).ok()?).ok()?;
+    let summary_text =
+        read_utf8_file_bounded(&summary_path, HANDOFF_FILE_READ_LIMIT, "Grok 会话摘要").ok()?;
+    let summary: serde_json::Value = serde_json::from_str(&summary_text).ok()?;
     if summary.get("session_kind").and_then(|value| value.as_str()) == Some("subagent") {
         return None;
     }
@@ -322,8 +357,18 @@ fn grok_session_from_dir(path: &Path) -> Option<ProjectHistorySession> {
         .unwrap_or(raw_title.as_str());
     let at_ms = ["last_active_at", "updated_at", "created_at"]
         .iter()
-        .find_map(|key| summary.get(*key).and_then(|value| value.as_str()).and_then(parse_rfc3339_ms))
-        .or_else(|| path.metadata().and_then(|meta| meta.modified()).ok().map(millis))
+        .find_map(|key| {
+            summary
+                .get(*key)
+                .and_then(|value| value.as_str())
+                .and_then(parse_rfc3339_ms)
+        })
+        .or_else(|| {
+            path.metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(millis)
+        })
         .unwrap_or(0);
     let mut session = history_session(id, "grok", &raw_title, at_ms);
     if !preview_source.is_empty() {
@@ -376,8 +421,14 @@ fn same_project_cwd(left: &str, right: &str) -> bool {
 }
 
 fn is_codex_subagent(payload: &serde_json::Value) -> bool {
-    payload.get("thread_source").and_then(|value| value.as_str()) == Some("subagent")
-        || payload.get("source").and_then(|value| value.get("subagent")).is_some()
+    payload
+        .get("thread_source")
+        .and_then(|value| value.as_str())
+        == Some("subagent")
+        || payload
+            .get("source")
+            .and_then(|value| value.get("subagent"))
+            .is_some()
 }
 
 fn is_noise_codex_text(text: &str) -> bool {
@@ -396,14 +447,21 @@ fn first_codex_user_text(buf: &str) -> String {
         if value.get("type").and_then(|value| value.as_str()) != Some("response_item") {
             continue;
         }
-        let Some(payload) = value.get("payload") else { continue };
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
         if payload.get("type").and_then(|value| value.as_str()) != Some("message") {
             continue;
         }
         if payload.get("role").and_then(|value| value.as_str()) != Some("user") {
             continue;
         }
-        for item in payload.get("content").and_then(|value| value.as_array()).into_iter().flatten() {
+        for item in payload
+            .get("content")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+        {
             if item.get("type").and_then(|value| value.as_str()) != Some("input_text") {
                 continue;
             }
@@ -451,7 +509,12 @@ fn codex_session_from_jsonl(path: &Path, cwd: &str) -> Option<ProjectHistorySess
         .get("timestamp")
         .and_then(|value| value.as_str())
         .and_then(parse_rfc3339_ms)
-        .or_else(|| path.metadata().and_then(|meta| meta.modified()).ok().map(millis))
+        .or_else(|| {
+            path.metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(millis)
+        })
         .unwrap_or(0);
     Some(history_session(
         id,
@@ -513,10 +576,9 @@ fn opencode_db_paths(home: &Path) -> Vec<PathBuf> {
 }
 
 fn list_opencode_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
-    let Ok(connection) = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) else {
+    let Ok(connection) =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
         return Vec::new();
     };
     let normalized = crate::project_memory::normalize_project_cwd(cwd);
@@ -592,10 +654,9 @@ fn mimo_db_paths(home: &Path) -> Vec<PathBuf> {
 }
 
 fn list_mimo_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
-    let Ok(connection) = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) else {
+    let Ok(connection) =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
         return Vec::new();
     };
     let normalized = crate::project_memory::normalize_project_cwd(cwd);
@@ -660,7 +721,12 @@ fn list_mimo_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
 }
 
 fn gemini_first_user_text(value: &serde_json::Value) -> String {
-    for message in value.get("messages").and_then(|value| value.as_array()).into_iter().flatten() {
+    for message in value
+        .get("messages")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+    {
         if message.get("type").and_then(|value| value.as_str()) != Some("user") {
             continue;
         }
@@ -670,7 +736,11 @@ fn gemini_first_user_text(value: &serde_json::Value) -> String {
                 return text.to_string();
             }
         }
-        for item in content.and_then(|value| value.as_array()).into_iter().flatten() {
+        for item in content
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+        {
             if let Some(text) = item.get("text").and_then(|value| value.as_str()) {
                 if !text.trim().is_empty() {
                     return text.to_string();
@@ -682,14 +752,28 @@ fn gemini_first_user_text(value: &serde_json::Value) -> String {
 }
 
 fn gemini_session_from_file(path: &Path) -> Option<ProjectHistorySession> {
-    let raw = fs::read_to_string(path).ok()?;
+    let raw = read_utf8_file_bounded(path, GEMINI_SESSION_READ_LIMIT, "Gemini 会话").ok()?;
     let value = serde_json::from_str::<serde_json::Value>(raw.trim())
         .ok()
-        .or_else(|| raw.lines().next().and_then(|line| serde_json::from_str(line).ok()))?;
+        .or_else(|| {
+            raw.lines()
+                .next()
+                .and_then(|line| serde_json::from_str(line).ok())
+        })?;
     let at_ms = ["lastUpdated", "startTime"]
         .iter()
-        .find_map(|key| value.get(*key).and_then(|item| item.as_str()).and_then(parse_rfc3339_ms))
-        .or_else(|| path.metadata().and_then(|meta| meta.modified()).ok().map(millis))
+        .find_map(|key| {
+            value
+                .get(*key)
+                .and_then(|item| item.as_str())
+                .and_then(parse_rfc3339_ms)
+        })
+        .or_else(|| {
+            path.metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(millis)
+        })
         .unwrap_or(0);
     Some(history_session(
         path.to_string_lossy().into_owned(),
@@ -743,7 +827,10 @@ fn list_gemini_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
             if !name.starts_with("session-") {
                 continue;
             }
@@ -768,7 +855,11 @@ fn qwen_first_user_text(value: &serde_json::Value) -> String {
         .to_string()
 }
 
-fn qwen_session_from_jsonl(path: &Path, cwd: &str, allow_missing_cwd: bool) -> Option<ProjectHistorySession> {
+fn qwen_session_from_jsonl(
+    path: &Path,
+    cwd: &str,
+    allow_missing_cwd: bool,
+) -> Option<ProjectHistorySession> {
     // qwen 的行式 jsonl 与 Claude 同款（每行带 cwd），复用其匹配逻辑
     if !claude_file_matches_cwd(path, cwd, allow_missing_cwd) {
         return None;
@@ -850,7 +941,10 @@ fn qwen_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf
     let dir = find_qwen_project_dir(home, cwd).ok_or_else(|| "找不到这个 Qwen 会话".to_string())?;
     let path = dir.join("chats").join(format!("{id}.jsonl"));
     let allow_missing = is_encoded_claude_dir(&dir, cwd);
-    if path.is_file() && is_within_dir(&dir, &path) && claude_file_matches_cwd(&path, cwd, allow_missing) {
+    if path.is_file()
+        && is_within_dir(&dir, &path)
+        && claude_file_matches_cwd(&path, cwd, allow_missing)
+    {
         Ok(path)
     } else {
         Err("找不到这个 Qwen 会话".into())
@@ -863,7 +957,10 @@ fn collect_qwen_preview_parts(buf: &str) -> Vec<String> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        let kind = value.get("type").and_then(|value| value.as_str()).unwrap_or("");
+        let kind = value
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         if kind != "user" && kind != "assistant" {
             continue;
         }
@@ -888,7 +985,8 @@ fn collect_qwen_preview_parts(buf: &str) -> Vec<String> {
 
 fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     let history = home.join(".gemini/antigravity-cli/history.jsonl");
-    let mut by_id: std::collections::BTreeMap<String, (String, u64)> = std::collections::BTreeMap::new();
+    let mut by_id: std::collections::BTreeMap<String, (String, u64)> =
+        std::collections::BTreeMap::new();
     if let Ok(text) = fs::read_to_string(&history) {
         for line in text.lines() {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -900,15 +998,24 @@ fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
             if !same_project_cwd(workspace, cwd) {
                 continue;
             }
-            let Some(id) = value.get("conversationId").and_then(|item| item.as_str()).filter(|item| !item.is_empty()) else {
+            let Some(id) = value
+                .get("conversationId")
+                .and_then(|item| item.as_str())
+                .filter(|item| !item.is_empty())
+            else {
                 continue;
             };
             let title = value
                 .get("display")
                 .and_then(|item| item.as_str())
                 .unwrap_or("");
-            let at_ms = value.get("timestamp").and_then(|item| item.as_u64()).unwrap_or(0);
-            let entry = by_id.entry(id.to_string()).or_insert_with(|| (String::new(), 0));
+            let at_ms = value
+                .get("timestamp")
+                .and_then(|item| item.as_u64())
+                .unwrap_or(0);
+            let entry = by_id
+                .entry(id.to_string())
+                .or_insert_with(|| (String::new(), 0));
             if entry.0.is_empty() && !title.trim().is_empty() {
                 entry.0 = preview_title(title);
             }
@@ -917,10 +1024,14 @@ fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
             }
         }
     }
-    if let Ok(text) = fs::read_to_string(home.join(".gemini/antigravity-cli/cache/last_conversations.json")) {
+    if let Ok(text) =
+        fs::read_to_string(home.join(".gemini/antigravity-cli/cache/last_conversations.json"))
+    {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(id) = value.get(cwd).and_then(|item| item.as_str()) {
-                by_id.entry(id.to_string()).or_insert_with(|| ("未命名会话".into(), 0));
+                by_id
+                    .entry(id.to_string())
+                    .or_insert_with(|| ("未命名会话".into(), 0));
             }
         }
     }
@@ -931,7 +1042,12 @@ fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     finalize_sessions(sessions)
 }
 
-fn push_group(groups: &mut Vec<ProjectHistoryGroup>, tool: &str, label: &str, sessions: Vec<ProjectHistorySession>) {
+fn push_group(
+    groups: &mut Vec<ProjectHistoryGroup>,
+    tool: &str,
+    label: &str,
+    sessions: Vec<ProjectHistorySession>,
+) {
     if sessions.is_empty() {
         return;
     }
@@ -948,14 +1064,39 @@ pub fn list_project_history_with_home(project_path: &str, home: &Path) -> Projec
     if cwd.is_empty() {
         return ProjectHistory { groups };
     }
-    push_group(&mut groups, "claude", "Claude", list_claude_sessions(home, &cwd));
-    push_group(&mut groups, "codex", "Codex", list_codex_sessions(home, &cwd));
+    push_group(
+        &mut groups,
+        "claude",
+        "Claude",
+        list_claude_sessions(home, &cwd),
+    );
+    push_group(
+        &mut groups,
+        "codex",
+        "Codex",
+        list_codex_sessions(home, &cwd),
+    );
     push_group(&mut groups, "grok", "Grok", list_grok_sessions(home, &cwd));
-    push_group(&mut groups, "opencode", "OpenCode", list_opencode_sessions(home, &cwd));
-    push_group(&mut groups, "gemini", "Gemini", list_gemini_sessions(home, &cwd));
+    push_group(
+        &mut groups,
+        "opencode",
+        "OpenCode",
+        list_opencode_sessions(home, &cwd),
+    );
+    push_group(
+        &mut groups,
+        "gemini",
+        "Gemini",
+        list_gemini_sessions(home, &cwd),
+    );
     push_group(&mut groups, "agy", "agy", list_agy_sessions(home, &cwd));
     push_group(&mut groups, "qwen", "Qwen", list_qwen_sessions(home, &cwd));
-    push_group(&mut groups, "mimo", "MiMo Code", list_mimo_sessions(home, &cwd));
+    push_group(
+        &mut groups,
+        "mimo",
+        "MiMo Code",
+        list_mimo_sessions(home, &cwd),
+    );
     ProjectHistory { groups }
 }
 
@@ -984,7 +1125,8 @@ fn is_safe_component(id: &str) -> bool {
 }
 
 fn has_parent_dir(path: &Path) -> bool {
-    path.components().any(|component| matches!(component, Component::ParentDir))
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
 }
 
 fn is_within_dir(parent: &Path, child: &Path) -> bool {
@@ -1032,6 +1174,269 @@ fn collect_claude_preview_parts(buf: &str) -> Vec<String> {
     parts
 }
 
+fn strip_handoff_tagged_blocks(text: &str) -> String {
+    let mut cleaned = text.to_string();
+    for tag in [
+        "system-reminder",
+        "command-name",
+        "command-message",
+        "command-args",
+        "local-command-caveat",
+    ] {
+        let opening = format!("<{tag}>");
+        let closing = format!("</{tag}>");
+        while let Some(start) = cleaned.find(&opening) {
+            let after_opening = start + opening.len();
+            if let Some(relative_end) = cleaned[after_opening..].find(&closing) {
+                let end = after_opening + relative_end + closing.len();
+                cleaned.replace_range(start..end, "");
+            } else {
+                cleaned.truncate(start);
+                break;
+            }
+        }
+    }
+    cleaned
+}
+
+fn sanitize_handoff_text(text: &str) -> String {
+    let cleaned = strip_handoff_tagged_blocks(text);
+    let filtered = cleaned
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .collect::<String>();
+    let mut lines = Vec::new();
+    let mut previous_blank = false;
+    for line in filtered.lines() {
+        let line = line.trim_end();
+        let blank = line.trim().is_empty();
+        if blank && previous_blank {
+            continue;
+        }
+        lines.push(line);
+        previous_blank = blank;
+    }
+    lines.join("\n").trim().to_string()
+}
+
+fn assistant_text_from_claude_message(value: &serde_json::Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let parts = content
+        .as_array()?
+        .iter()
+        .filter(|item| item.get("type").and_then(|value| value.as_str()) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn claude_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessage> {
+    if value.get("isSidechain").and_then(|value| value.as_bool()) == Some(true) {
+        return None;
+    }
+    let role = value.get("type").and_then(|value| value.as_str())?;
+    let raw = match role {
+        "user" => user_text_from_claude_message(value)?,
+        "assistant" => assistant_text_from_claude_message(value)?,
+        _ => return None,
+    };
+    let text = sanitize_handoff_text(&raw);
+    if text.is_empty() || (role == "user" && is_noise_user_text(&text)) {
+        return None;
+    }
+    Some(SessionHandoffMessage {
+        role: role.to_string(),
+        text,
+    })
+}
+
+fn codex_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessage> {
+    if value.get("type").and_then(|item| item.as_str()) != Some("response_item") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(|item| item.as_str()) != Some("message") {
+        return None;
+    }
+    let role = payload.get("role").and_then(|item| item.as_str())?;
+    let content_type = match role {
+        "user" => "input_text",
+        "assistant" => "output_text",
+        _ => return None,
+    };
+    let raw = payload
+        .get("content")
+        .and_then(|item| item.as_array())?
+        .iter()
+        .filter(|item| item.get("type").and_then(|value| value.as_str()) == Some(content_type))
+        .filter_map(|item| item.get("text").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = sanitize_handoff_text(&raw);
+    if text.is_empty() || (role == "user" && is_noise_codex_text(&text)) {
+        return None;
+    }
+    Some(SessionHandoffMessage {
+        role: role.to_string(),
+        text,
+    })
+}
+
+fn grok_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessage> {
+    let source_role = value.get("type").and_then(|item| item.as_str())?;
+    let role = match source_role {
+        "user" => "user",
+        "assistant" => "assistant",
+        _ => return None,
+    };
+    if role == "user" && value.get("synthetic_reason").is_some() {
+        return None;
+    }
+    let raw = if role == "user" {
+        grok_user_text(value)?
+    } else {
+        let content = value.get("content")?;
+        if let Some(text) = content.as_str() {
+            text.to_string()
+        } else {
+            content
+                .as_array()?
+                .iter()
+                .filter(|item| item.get("type").and_then(|value| value.as_str()) == Some("text"))
+                .filter_map(|item| item.get("text").and_then(|value| value.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
+    let text = sanitize_handoff_text(&raw);
+    if text.is_empty() {
+        return None;
+    }
+    Some(SessionHandoffMessage {
+        role: role.to_string(),
+        text,
+    })
+}
+
+fn qwen_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessage> {
+    let role = match value.get("type").and_then(|item| item.as_str())? {
+        "user" => "user",
+        "assistant" => "assistant",
+        _ => return None,
+    };
+    let raw = value
+        .get("message")
+        .and_then(|message| message.get("parts"))
+        .and_then(|parts| parts.as_array())?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = sanitize_handoff_text(&raw);
+    if text.is_empty() {
+        return None;
+    }
+    Some(SessionHandoffMessage {
+        role: role.to_string(),
+        text,
+    })
+}
+
+fn gemini_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessage> {
+    let role = match value.get("type").and_then(|item| item.as_str())? {
+        "user" => "user",
+        "assistant" | "model" | "gemini" => "assistant",
+        _ => return None,
+    };
+    let content = value.get("content")?;
+    let raw = if let Some(text) = content.as_str() {
+        text.to_string()
+    } else {
+        content
+            .as_array()?
+            .iter()
+            .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = sanitize_handoff_text(&raw);
+    if text.is_empty() {
+        return None;
+    }
+    Some(SessionHandoffMessage {
+        role: role.to_string(),
+        text,
+    })
+}
+
+fn read_lossy_tail(path: &Path, limit: u64) -> Result<(String, bool), String> {
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let len = file.metadata().map_err(|error| error.to_string())?.len();
+    let start = len.saturating_sub(limit);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if start > 0 {
+        if let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
+            bytes.drain(..=newline);
+        } else {
+            bytes.clear();
+        }
+    }
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), start > 0))
+}
+
+fn read_utf8_file_bounded(path: &Path, limit: u64, label: &str) -> Result<String, String> {
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let len = file.metadata().map_err(|error| error.to_string())?.len();
+    if len > limit {
+        return Err(format!("{label}超过 {} KiB 安全上限", limit / 1024));
+    }
+    let mut bytes = Vec::with_capacity(len as usize + 1);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{label}超过 {} KiB 安全上限", limit / 1024));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{label}不是 UTF-8 文本"))
+}
+
+fn limit_handoff_messages(
+    candidates: Vec<SessionHandoffMessage>,
+    source_truncated: bool,
+) -> (Vec<SessionHandoffMessage>, bool) {
+    let mut remaining = HANDOFF_TEXT_LIMIT;
+    let mut selected = Vec::new();
+    let mut truncated = source_truncated || candidates.len() > HANDOFF_MESSAGE_LIMIT;
+    for message in candidates.iter().rev().take(HANDOFF_MESSAGE_LIMIT) {
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let count = message.text.chars().count();
+        let text = if count > remaining {
+            truncated = true;
+            message.text.chars().take(remaining).collect::<String>()
+        } else {
+            message.text.clone()
+        };
+        remaining = remaining.saturating_sub(text.chars().count());
+        selected.push(SessionHandoffMessage {
+            role: message.role.clone(),
+            text,
+        });
+    }
+    selected.reverse();
+    (selected, truncated)
+}
+
 fn collect_codex_preview_parts(buf: &str) -> Vec<String> {
     let mut parts = Vec::new();
     for line in buf.lines() {
@@ -1041,14 +1446,21 @@ fn collect_codex_preview_parts(buf: &str) -> Vec<String> {
         if value.get("type").and_then(|value| value.as_str()) != Some("response_item") {
             continue;
         }
-        let Some(payload) = value.get("payload") else { continue };
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
         if payload.get("type").and_then(|value| value.as_str()) != Some("message") {
             continue;
         }
         if payload.get("role").and_then(|value| value.as_str()) != Some("user") {
             continue;
         }
-        for item in payload.get("content").and_then(|value| value.as_array()).into_iter().flatten() {
+        for item in payload
+            .get("content")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+        {
             if item.get("type").and_then(|value| value.as_str()) != Some("input_text") {
                 continue;
             }
@@ -1069,7 +1481,12 @@ fn collect_codex_preview_parts(buf: &str) -> Vec<String> {
 
 fn collect_gemini_preview_parts(value: &serde_json::Value) -> Vec<String> {
     let mut parts = Vec::new();
-    for message in value.get("messages").and_then(|value| value.as_array()).into_iter().flatten() {
+    for message in value
+        .get("messages")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+    {
         if message.get("type").and_then(|value| value.as_str()) != Some("user") {
             continue;
         }
@@ -1079,7 +1496,11 @@ fn collect_gemini_preview_parts(value: &serde_json::Value) -> Vec<String> {
                 parts.push(text.to_string());
             }
         } else {
-            for item in content.and_then(|value| value.as_array()).into_iter().flatten() {
+            for item in content
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+            {
                 if let Some(text) = item.get("text").and_then(|value| value.as_str()) {
                     if !text.trim().is_empty() {
                         parts.push(text.to_string());
@@ -1132,7 +1553,11 @@ fn grok_user_text(value: &serde_json::Value) -> Option<String> {
 
 fn collect_grok_preview_parts(path: &Path) -> Vec<String> {
     let mut parts = Vec::new();
-    if let Ok(text) = fs::read_to_string(path.join("summary.json")) {
+    if let Ok(text) = read_utf8_file_bounded(
+        &path.join("summary.json"),
+        HANDOFF_FILE_READ_LIMIT,
+        "Grok 会话摘要",
+    ) {
         if let Ok(summary) = serde_json::from_str::<serde_json::Value>(&text) {
             for key in ["generated_title", "session_summary"] {
                 if let Some(value) = summary.get(key).and_then(|item| item.as_str()) {
@@ -1163,10 +1588,14 @@ fn collect_grok_preview_parts(path: &Path) -> Vec<String> {
 
 fn claude_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
     let id = require_component_id(session_id)?;
-    let dir = find_claude_project_dir(home, cwd).ok_or_else(|| "找不到这个 Claude 会话".to_string())?;
+    let dir =
+        find_claude_project_dir(home, cwd).ok_or_else(|| "找不到这个 Claude 会话".to_string())?;
     let path = dir.join(format!("{id}.jsonl"));
     let allow_missing = is_encoded_claude_dir(&dir, cwd);
-    if path.is_file() && is_within_dir(&dir, &path) && claude_file_matches_cwd(&path, cwd, allow_missing) {
+    if path.is_file()
+        && is_within_dir(&dir, &path)
+        && claude_file_matches_cwd(&path, cwd, allow_missing)
+    {
         Ok(path)
     } else {
         Err("找不到这个 Claude 会话".into())
@@ -1175,7 +1604,8 @@ fn claude_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<PathB
 
 fn grok_session_dir(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
     let id = require_component_id(session_id)?;
-    let group = find_grok_session_group(home, cwd).ok_or_else(|| "找不到这个 Grok 会话".to_string())?;
+    let group =
+        find_grok_session_group(home, cwd).ok_or_else(|| "找不到这个 Grok 会话".to_string())?;
     let path = group.join(id);
     if path.is_dir() && path.join("summary.json").is_file() && is_within_dir(&group, &path) {
         Ok(path)
@@ -1210,10 +1640,7 @@ fn codex_file_matches(path: &Path, cwd: &str, session_id: &str) -> bool {
     if !same_project_cwd(session_cwd, cwd) {
         return false;
     }
-    payload
-        .get("session_id")
-        .and_then(|item| item.as_str())
-        == Some(session_id)
+    payload.get("session_id").and_then(|item| item.as_str()) == Some(session_id)
 }
 
 fn find_codex_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
@@ -1247,7 +1674,11 @@ fn find_codex_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<P
     Err("找不到这个 Codex 会话".into())
 }
 
-fn resolve_gemini_session_file(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
+fn resolve_gemini_session_file(
+    home: &Path,
+    cwd: &str,
+    session_id: &str,
+) -> Result<PathBuf, String> {
     let raw = session_id.trim();
     if raw.is_empty() || raw.len() > 1024 || raw.contains('\0') {
         return Err("非法会话 ID".into());
@@ -1273,7 +1704,10 @@ fn resolve_gemini_session_file(home: &Path, cwd: &str, session_id: &str) -> Resu
         allowed.iter().map(|dir| dir.join(name)).collect()
     };
     for file in files {
-        let name = file.file_name().and_then(|value| value.to_str()).unwrap_or("");
+        let name = file
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
         if !name.starts_with("session-") || !file.is_file() {
             continue;
         }
@@ -1285,17 +1719,21 @@ fn resolve_gemini_session_file(home: &Path, cwd: &str, session_id: &str) -> Resu
 }
 
 fn find_opencode_db(home: &Path) -> Option<PathBuf> {
-    opencode_db_paths(home).into_iter().find(|path| path.is_file())
+    opencode_db_paths(home)
+        .into_iter()
+        .find(|path| path.is_file())
 }
 
-fn preview_opencode(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectHistoryPreview, String> {
+fn preview_opencode(
+    home: &Path,
+    cwd: &str,
+    session_id: &str,
+) -> Result<ProjectHistoryPreview, String> {
     let id = require_component_id(session_id)?;
     let db_path = find_opencode_db(home).ok_or_else(|| "找不到 OpenCode 会话库".to_string())?;
-    let connection = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|error| error.to_string())?;
+    let connection =
+        rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?;
     let normalized = crate::project_memory::normalize_project_cwd(cwd);
     let slash = format!("{normalized}/");
     let backslash = format!("{normalized}\\");
@@ -1310,16 +1748,13 @@ fn preview_opencode(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectH
         )
         .map_err(|error| error.to_string())?;
     let row = statement
-        .query_row(
-            rusqlite::params![id, normalized, slash, backslash],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
+        .query_row(rusqlite::params![id, normalized, slash, backslash], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
         .map_err(|_| "找不到这个 OpenCode 会话".to_string())?;
     let (title, time_updated, directory) = row;
     if !same_project_cwd(&directory, cwd) {
@@ -1363,11 +1798,9 @@ fn find_mimo_db(home: &Path) -> Option<PathBuf> {
 fn preview_mimo(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectHistoryPreview, String> {
     let id = require_component_id(session_id)?;
     let db_path = find_mimo_db(home).ok_or_else(|| "找不到 MiMo Code 会话库".to_string())?;
-    let connection = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|error| error.to_string())?;
+    let connection =
+        rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?;
     let normalized = crate::project_memory::normalize_project_cwd(cwd);
     let slash = format!("{normalized}/");
     let backslash = format!("{normalized}\\");
@@ -1382,16 +1815,13 @@ fn preview_mimo(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectHisto
         )
         .map_err(|error| error.to_string())?;
     let row = statement
-        .query_row(
-            rusqlite::params![id, normalized, slash, backslash],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
+        .query_row(rusqlite::params![id, normalized, slash, backslash], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
         .map_err(|_| "找不到这个 MiMo Code 会话".to_string())?;
     let (title, time_updated, directory) = row;
     if !same_project_cwd(&directory, cwd) {
@@ -1442,7 +1872,7 @@ fn delete_mimo(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
     let session_ids = {
         let mut statement = transaction
             .prepare(
-            "WITH RECURSIVE target(id, depth) AS (
+                "WITH RECURSIVE target(id, depth) AS (
                  SELECT id, 0
                  FROM session
                  WHERE id = ?1
@@ -1458,10 +1888,9 @@ fn delete_mimo(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
-            .query_map(
-                rusqlite::params![id, normalized, slash, backslash],
-                |row| row.get::<_, String>(0),
-            )
+            .query_map(rusqlite::params![id, normalized, slash, backslash], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?
@@ -1475,8 +1904,7 @@ fn delete_mimo(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
         mimo_table_has_column(&transaction, "permission_grant", "parent_session_id")?;
     let has_permission_target = mimo_table_has_column(&transaction, "permission_grant", "target")?;
     let has_event = mimo_table_has_column(&transaction, "event", "aggregate_id")?;
-    let has_event_sequence =
-        mimo_table_has_column(&transaction, "event_sequence", "aggregate_id")?;
+    let has_event_sequence = mimo_table_has_column(&transaction, "event_sequence", "aggregate_id")?;
 
     for target_id in &session_ids {
         if has_history_fts {
@@ -1591,16 +2019,22 @@ fn preview_agy(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectHistor
 
 fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
     use std::io::Write;
-    let parent = path.parent().ok_or_else(|| "无法确定文件所在目录".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法确定文件所在目录".to_string())?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let mut temp = tempfile::Builder::new()
         .prefix(".vcm-sess-")
         .tempfile_in(parent)
         .map_err(|error| error.to_string())?;
-    temp.write_all(content.as_bytes()).map_err(|error| error.to_string())?;
+    temp.write_all(content.as_bytes())
+        .map_err(|error| error.to_string())?;
     temp.flush().map_err(|error| error.to_string())?;
-    temp.as_file().sync_all().map_err(|error| error.to_string())?;
-    temp.persist(path).map_err(|error| error.error.to_string())?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temp.persist(path)
+        .map_err(|error| error.error.to_string())?;
     Ok(())
 }
 
@@ -1618,7 +2052,8 @@ fn delete_agy(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
                 kept.push(line.to_string());
                 continue;
             };
-            let same_id = value.get("conversationId").and_then(|item| item.as_str()) == Some(id.as_str());
+            let same_id =
+                value.get("conversationId").and_then(|item| item.as_str()) == Some(id.as_str());
             let same_cwd = value
                 .get("workspace")
                 .and_then(|item| item.as_str())
@@ -1667,6 +2102,283 @@ fn preview_result(session: ProjectHistorySession, body: String) -> ProjectHistor
     }
 }
 
+fn handoff_tool_label(tool: &str) -> &str {
+    match tool {
+        "claude" => "Claude",
+        "grok" => "Grok",
+        "codex" => "Codex",
+        "opencode" => "OpenCode",
+        "gemini" => "Gemini",
+        "agy" => "agy",
+        "qwen" => "Qwen",
+        "mimo" => "MiMo Code",
+        _ => "CLI",
+    }
+}
+
+fn jsonl_handoff_candidates(
+    buf: &str,
+    extractor: fn(&serde_json::Value) -> Option<SessionHandoffMessage>,
+) -> Vec<SessionHandoffMessage> {
+    buf.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value| extractor(&value))
+        .collect()
+}
+
+fn sqlite_handoff_candidates(
+    db_path: &Path,
+    cwd: &str,
+    session_id: &str,
+) -> Result<Vec<SessionHandoffMessage>, String> {
+    let connection =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?;
+    let normalized = crate::project_memory::normalize_project_cwd(cwd);
+    let slash = format!("{normalized}/");
+    let backslash = format!("{normalized}\\");
+    let mut statement = connection
+        .prepare(
+            "SELECT message_id, message_data, part_data
+             FROM (
+                 SELECT m.id AS message_id,
+                        m.data AS message_data,
+                        p.data AS part_data,
+                        m.rowid AS message_rowid,
+                        p.rowid AS part_rowid
+                 FROM message AS m
+                 JOIN part AS p
+                   ON p.message_id = m.id AND p.session_id = m.session_id
+                 JOIN session AS s ON s.id = m.session_id
+                 WHERE m.session_id = ?1
+                   AND (s.parent_id IS NULL OR s.parent_id = '')
+                   AND s.directory IN (?2, ?3, ?4)
+                 ORDER BY m.rowid DESC, p.rowid DESC
+                 LIMIT 96
+             )
+             ORDER BY message_rowid, part_rowid",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![session_id, normalized, slash, backslash],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let mut candidates = Vec::new();
+    let mut current_id = String::new();
+    let mut current_role = String::new();
+    let mut current_parts = Vec::new();
+    for row in rows {
+        let (message_id, message_data, part_data) = row.map_err(|error| error.to_string())?;
+        let message = serde_json::from_str::<serde_json::Value>(&message_data).ok();
+        let part = serde_json::from_str::<serde_json::Value>(&part_data).ok();
+        let role = message
+            .as_ref()
+            .and_then(|value| value.get("role"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let part_type = part
+            .as_ref()
+            .and_then(|value| value.get("type"))
+            .and_then(|value| value.as_str());
+        let text = part
+            .as_ref()
+            .filter(|_| part_type == Some("text"))
+            .and_then(|value| value.get("text"))
+            .and_then(|value| value.as_str());
+        if role != "user" && role != "assistant" || text.is_none() {
+            continue;
+        }
+        if !current_id.is_empty() && current_id != message_id {
+            let text = sanitize_handoff_text(&current_parts.join("\n"));
+            if !(text.is_empty() || current_role == "user" && is_noise_codex_text(&text)) {
+                candidates.push(SessionHandoffMessage {
+                    role: current_role.clone(),
+                    text,
+                });
+            }
+            current_parts.clear();
+        }
+        current_id = message_id;
+        current_role = role.to_string();
+        current_parts.push(text.unwrap_or_default().to_string());
+    }
+    if !current_id.is_empty() {
+        let text = sanitize_handoff_text(&current_parts.join("\n"));
+        if !(text.is_empty() || current_role == "user" && is_noise_codex_text(&text)) {
+            candidates.push(SessionHandoffMessage {
+                role: current_role,
+                text,
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+fn source_handoff_messages(
+    home: &Path,
+    cwd: &str,
+    source_tool: &str,
+    session_id: &str,
+) -> Result<(Vec<SessionHandoffMessage>, bool), String> {
+    let (candidates, source_truncated) = match source_tool {
+        "claude" => {
+            let path = claude_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, HANDOFF_FILE_READ_LIMIT)?;
+            (
+                jsonl_handoff_candidates(&buf, claude_handoff_message),
+                truncated,
+            )
+        }
+        "codex" => {
+            let path = find_codex_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, HANDOFF_FILE_READ_LIMIT)?;
+            (
+                jsonl_handoff_candidates(&buf, codex_handoff_message),
+                truncated,
+            )
+        }
+        "grok" => {
+            let path = grok_session_dir(home, cwd, session_id)?;
+            let history = path.join("chat_history.jsonl");
+            let (mut candidates, truncated) = if history.is_file() {
+                let (buf, truncated) = read_lossy_tail(&history, HANDOFF_FILE_READ_LIMIT)?;
+                (
+                    jsonl_handoff_candidates(&buf, grok_handoff_message),
+                    truncated,
+                )
+            } else {
+                (Vec::new(), false)
+            };
+            if candidates.is_empty() {
+                let summary_path = path.join("summary.json");
+                if summary_path.is_file() {
+                    let text = read_utf8_file_bounded(
+                        &summary_path,
+                        HANDOFF_FILE_READ_LIMIT,
+                        "Grok 会话摘要",
+                    )?;
+                    if let Ok(summary) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(raw) = summary
+                            .get("session_summary")
+                            .and_then(|item| item.as_str())
+                        {
+                            let text = sanitize_handoff_text(raw);
+                            if !text.is_empty() {
+                                candidates.push(SessionHandoffMessage {
+                                    role: "assistant".into(),
+                                    text,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            (candidates, truncated)
+        }
+        "qwen" => {
+            let path = qwen_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, HANDOFF_FILE_READ_LIMIT)?;
+            (
+                jsonl_handoff_candidates(&buf, qwen_handoff_message),
+                truncated,
+            )
+        }
+        "gemini" => {
+            let path = resolve_gemini_session_file(home, cwd, session_id)?;
+            let raw = read_utf8_file_bounded(&path, HANDOFF_FILE_READ_LIMIT, "Gemini 交接会话")?;
+            let value = serde_json::from_str::<serde_json::Value>(raw.trim())
+                .ok()
+                .or_else(|| {
+                    raw.lines()
+                        .next()
+                        .and_then(|line| serde_json::from_str(line).ok())
+                })
+                .unwrap_or(serde_json::Value::Null);
+            let candidates = value
+                .get("messages")
+                .and_then(|messages| messages.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(gemini_handoff_message)
+                .collect::<Vec<_>>();
+            (candidates, false)
+        }
+        "agy" => {
+            require_component_id(session_id)?;
+            let history = home.join(".gemini/antigravity-cli/history.jsonl");
+            let (buf, truncated) = read_lossy_tail(&history, HANDOFF_FILE_READ_LIMIT)?;
+            let candidates = buf
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|value| {
+                    value.get("conversationId").and_then(|item| item.as_str()) == Some(session_id)
+                        && value
+                            .get("workspace")
+                            .and_then(|item| item.as_str())
+                            .is_some_and(|workspace| same_project_cwd(workspace, cwd))
+                })
+                .filter_map(|value| {
+                    let text = sanitize_handoff_text(
+                        value
+                            .get("display")
+                            .and_then(|item| item.as_str())
+                            .unwrap_or(""),
+                    );
+                    (!text.is_empty()).then(|| SessionHandoffMessage {
+                        role: "user".into(),
+                        text,
+                    })
+                })
+                .collect::<Vec<_>>();
+            (candidates, truncated)
+        }
+        "opencode" => {
+            let db = find_opencode_db(home).ok_or_else(|| "找不到 OpenCode 会话库".to_string())?;
+            (sqlite_handoff_candidates(&db, cwd, session_id)?, false)
+        }
+        "mimo" => {
+            let db = find_mimo_db(home).ok_or_else(|| "找不到 MiMo Code 会话库".to_string())?;
+            (sqlite_handoff_candidates(&db, cwd, session_id)?, false)
+        }
+        _ => return Err("还不支持从这个工具交接会话".into()),
+    };
+    Ok(limit_handoff_messages(candidates, source_truncated))
+}
+
+pub fn preview_session_handoff_with_home(
+    project_path: &str,
+    source_tool: &str,
+    session_id: &str,
+    home: &Path,
+) -> Result<SessionHandoffPreview, String> {
+    let cwd = require_cwd(project_path)?;
+    let source_tool = source_tool.trim();
+    let (messages, truncated) = source_handoff_messages(home, &cwd, source_tool, session_id)?;
+    let source = preview_project_session_with_home(project_path, source_tool, session_id, home)?;
+    if messages.is_empty() {
+        return Err(format!(
+            "这个 {} 会话没有可交接的对话内容",
+            handoff_tool_label(source_tool)
+        ));
+    }
+    Ok(SessionHandoffPreview {
+        source_tool: source.tool,
+        source_id: source.id,
+        source_title: source.title,
+        source_at_ms: source.at_ms,
+        messages,
+        truncated,
+    })
+}
+
 pub fn preview_project_session_with_home(
     project_path: &str,
     tool: &str,
@@ -1681,12 +2393,19 @@ pub fn preview_project_session_with_home(
                 .ok_or_else(|| "找不到这个 Claude 会话".to_string())?;
             let mut file = fs::File::open(&path).map_err(|error| error.to_string())?;
             let buf = read_lossy_prefix(&mut file, PREVIEW_FILE_READ_LIMIT);
-            Ok(preview_result(session, preview_body(&collect_claude_preview_parts(&buf))))
+            Ok(preview_result(
+                session,
+                preview_body(&collect_claude_preview_parts(&buf)),
+            ))
         }
         "grok" => {
             let path = grok_session_dir(home, &cwd, session_id)?;
-            let session = grok_session_from_dir(&path).ok_or_else(|| "找不到这个 Grok 会话".to_string())?;
-            Ok(preview_result(session, preview_body(&collect_grok_preview_parts(&path))))
+            let session =
+                grok_session_from_dir(&path).ok_or_else(|| "找不到这个 Grok 会话".to_string())?;
+            Ok(preview_result(
+                session,
+                preview_body(&collect_grok_preview_parts(&path)),
+            ))
         }
         "codex" => {
             let path = find_codex_session_path(home, &cwd, session_id)?;
@@ -1697,19 +2416,30 @@ pub fn preview_project_session_with_home(
             let mut first = String::new();
             let _ = reader.read_line(&mut first);
             let buf = read_lossy_prefix(&mut reader, PREVIEW_FILE_READ_LIMIT);
-            Ok(preview_result(session, preview_body(&collect_codex_preview_parts(&buf))))
+            Ok(preview_result(
+                session,
+                preview_body(&collect_codex_preview_parts(&buf)),
+            ))
         }
         "opencode" => preview_opencode(home, &cwd, session_id),
         "mimo" => preview_mimo(home, &cwd, session_id),
         "gemini" => {
             let path = resolve_gemini_session_file(home, &cwd, session_id)?;
-            let session = gemini_session_from_file(&path).ok_or_else(|| "找不到这个 Gemini 会话".to_string())?;
-            let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+            let session = gemini_session_from_file(&path)
+                .ok_or_else(|| "找不到这个 Gemini 会话".to_string())?;
+            let raw = read_utf8_file_bounded(&path, GEMINI_SESSION_READ_LIMIT, "Gemini 会话")?;
             let value = serde_json::from_str::<serde_json::Value>(raw.trim())
                 .ok()
-                .or_else(|| raw.lines().next().and_then(|line| serde_json::from_str(line).ok()))
+                .or_else(|| {
+                    raw.lines()
+                        .next()
+                        .and_then(|line| serde_json::from_str(line).ok())
+                })
                 .unwrap_or(serde_json::Value::Null);
-            Ok(preview_result(session, preview_body(&collect_gemini_preview_parts(&value))))
+            Ok(preview_result(
+                session,
+                preview_body(&collect_gemini_preview_parts(&value)),
+            ))
         }
         "agy" => preview_agy(home, &cwd, session_id),
         "qwen" => {
@@ -1718,7 +2448,10 @@ pub fn preview_project_session_with_home(
                 .ok_or_else(|| "找不到这个 Qwen 会话".to_string())?;
             let mut file = fs::File::open(&path).map_err(|error| error.to_string())?;
             let buf = read_lossy_prefix(&mut file, PREVIEW_FILE_READ_LIMIT);
-            Ok(preview_result(session, preview_body(&collect_qwen_preview_parts(&buf))))
+            Ok(preview_result(
+                session,
+                preview_body(&collect_qwen_preview_parts(&buf)),
+            ))
         }
         _ => Err("还不支持预览这个工具的历史会话".into()),
     }
@@ -1757,7 +2490,9 @@ pub fn delete_project_session_with_home(
             // 伴生的运行时状态文件，删不掉无所谓
             let runtime = path.with_file_name(format!(
                 "{}.runtime.json",
-                path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default()
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default()
             ));
             if runtime.is_file() {
                 let _ = fs::remove_file(runtime);
@@ -1775,6 +2510,15 @@ pub fn preview_project_session(
 ) -> Result<ProjectHistoryPreview, String> {
     let home = dirs::home_dir().ok_or_else(|| "找不到用户主目录".to_string())?;
     preview_project_session_with_home(project_path, tool, session_id, &home)
+}
+
+pub fn preview_session_handoff(
+    project_path: &str,
+    source_tool: &str,
+    session_id: &str,
+) -> Result<SessionHandoffPreview, String> {
+    let home = dirs::home_dir().ok_or_else(|| "找不到用户主目录".to_string())?;
+    preview_session_handoff_with_home(project_path, source_tool, session_id, &home)
 }
 
 pub fn delete_project_session(
@@ -1796,6 +2540,57 @@ mod tests {
         let home = root.path().join("home");
         fs::create_dir_all(&home).unwrap();
         (root, home)
+    }
+
+    fn seed_sqlite_handoff_db(db: &Path, cwd: &str, session_id: &str, title: &str) {
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let connection = rusqlite::Connection::open(db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    directory TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    time_updated INTEGER NOT NULL
+                 );
+                 CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                 );
+                 CREATE TABLE part (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session (id, parent_id, directory, title, time_updated)
+                 VALUES (?1, NULL, ?2, ?3, 300)",
+                rusqlite::params![session_id, cwd, title],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, data)
+                 VALUES ('msg-user', ?1, '{\"role\":\"user\"}'),
+                        ('msg-assistant', ?1, '{\"role\":\"assistant\"}')",
+                rusqlite::params![session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO part (id, message_id, session_id, data)
+                 VALUES ('part-user', 'msg-user', ?1, '{\"type\":\"text\",\"text\":\"检查登录实现\"}'),
+                        ('part-tool', 'msg-assistant', ?1, '{\"type\":\"tool\",\"text\":\"不能交接的工具内容\"}'),
+                        ('part-assistant', 'msg-assistant', ?1, '{\"type\":\"text\",\"text\":\"还需要补失败回滚\"}')",
+                rusqlite::params![session_id],
+            )
+            .unwrap();
     }
 
     #[test]
@@ -1846,7 +2641,10 @@ mod tests {
         assert_eq!(history.groups[0].sessions[0].title, "修好分屏空窗格");
         assert_eq!(history.groups[1].tool, "grok");
         assert_eq!(history.groups[1].sessions.len(), 1);
-        assert_eq!(history.groups[1].sessions[0].title, "Where AI Reads Memory From");
+        assert_eq!(
+            history.groups[1].sessions[0].title,
+            "Where AI Reads Memory From"
+        );
     }
 
     #[test]
@@ -1854,7 +2652,10 @@ mod tests {
         let (_root, home) = temp_home();
         let cwd = "/Users/lucky/foo/bar";
         let other = "/Users/lucky/foo.bar";
-        assert_eq!(encode_claude_project_dir(cwd), encode_claude_project_dir(other));
+        assert_eq!(
+            encode_claude_project_dir(cwd),
+            encode_claude_project_dir(other)
+        );
         let dir = home
             .join(".claude")
             .join("projects")
@@ -1880,7 +2681,11 @@ mod tests {
         .unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
-        let claude = history.groups.iter().find(|group| group.tool == "claude").unwrap();
+        let claude = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "claude")
+            .unwrap();
         assert_eq!(claude.sessions.len(), 1);
         assert_eq!(claude.sessions[0].id, "sess-this");
         assert_eq!(claude.sessions[0].title, "本项目会话");
@@ -1921,7 +2726,11 @@ mod tests {
         fs::write(chats.join(format!("{other_id}.runtime.json")), "{}").unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
-        let qwen = history.groups.iter().find(|group| group.tool == "qwen").unwrap();
+        let qwen = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "qwen")
+            .unwrap();
         assert_eq!(qwen.sessions.len(), 1);
         assert_eq!(qwen.sessions[0].id, id);
         assert_eq!(qwen.sessions[0].title, "部署到服务器");
@@ -1995,7 +2804,11 @@ mod tests {
         drop(connection);
 
         let history = list_project_history_with_home(cwd, &home);
-        let mimo = history.groups.iter().find(|group| group.tool == "mimo").unwrap();
+        let mimo = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "mimo")
+            .unwrap();
         assert_eq!(mimo.label, "MiMo Code");
         assert_eq!(mimo.sessions.len(), 2);
         assert_eq!(mimo.sessions[0].id, "ses_latest");
@@ -2075,16 +2888,32 @@ mod tests {
         delete_project_session_with_home(cwd, "mimo", "ses_latest", &home).unwrap();
         let remaining = rusqlite::Connection::open(&db).unwrap();
         let old_count: i64 = remaining
-            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_old'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM session WHERE id = 'ses_old'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let latest_count: i64 = remaining
-            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_latest'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM session WHERE id = 'ses_latest'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let child_count: i64 = remaining
-            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_child'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM session WHERE id = 'ses_child'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let other_count: i64 = remaining
-            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_other'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM session WHERE id = 'ses_other'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let deleted_message_count: i64 = remaining
             .query_row(
@@ -2094,7 +2923,11 @@ mod tests {
             )
             .unwrap();
         let other_message_count: i64 = remaining
-            .query_row("SELECT COUNT(*) FROM message WHERE id = 'msg_other'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM message WHERE id = 'msg_other'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let deleted_history_count: i64 = remaining
             .query_row(
@@ -2104,7 +2937,11 @@ mod tests {
             )
             .unwrap();
         let other_history_count: i64 = remaining
-            .query_row("SELECT COUNT(*) FROM history_fts WHERE session_id = 'ses_other'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM history_fts WHERE session_id = 'ses_other'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let deleted_permission_count: i64 = remaining
             .query_row(
@@ -2138,7 +2975,11 @@ mod tests {
             )
             .unwrap();
         let other_event_count: i64 = remaining
-            .query_row("SELECT COUNT(*) FROM event WHERE aggregate_id = 'ses_other'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM event WHERE aggregate_id = 'ses_other'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let other_sequence_count: i64 = remaining
             .query_row(
@@ -2240,14 +3081,26 @@ mod tests {
             .unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
-        let tools: Vec<_> = history.groups.iter().map(|group| group.tool.as_str()).collect();
+        let tools: Vec<_> = history
+            .groups
+            .iter()
+            .map(|group| group.tool.as_str())
+            .collect();
         assert!(tools.contains(&"codex"));
         assert!(tools.contains(&"opencode"));
-        let codex = history.groups.iter().find(|group| group.tool == "codex").unwrap();
+        let codex = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "codex")
+            .unwrap();
         assert_eq!(codex.sessions.len(), 1);
         assert_eq!(codex.sessions[0].id, "019ff58f-ad10-76e0-9f8a-84951c2dd09c");
         assert_eq!(codex.sessions[0].title, "打tag吧");
-        let opencode = history.groups.iter().find(|group| group.tool == "opencode").unwrap();
+        let opencode = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "opencode")
+            .unwrap();
         assert_eq!(opencode.sessions.len(), 1);
         assert_eq!(opencode.sessions[0].title, "检查当前项目问题");
     }
@@ -2267,7 +3120,11 @@ mod tests {
         fs::write(day.join("rollout-huge.jsonl"), body).unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
-        let codex = history.groups.iter().find(|group| group.tool == "codex").unwrap();
+        let codex = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "codex")
+            .unwrap();
         assert_eq!(codex.sessions.len(), 1);
         assert_eq!(codex.sessions[0].id, "019ff999-aaaa-bbbb-cccc-ddddeeeeffff");
     }
@@ -2320,7 +3177,11 @@ mod tests {
         }
 
         let history = list_project_history_with_home(cwd, &home);
-        let opencode = history.groups.iter().find(|group| group.tool == "opencode").unwrap();
+        let opencode = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "opencode")
+            .unwrap();
         assert_eq!(opencode.sessions.len(), 1);
         assert_eq!(opencode.sessions[0].id, "ses_old");
         assert_eq!(opencode.sessions[0].title, "本项目旧会话");
@@ -2332,7 +3193,11 @@ mod tests {
         let cwd = "/Users/lucky/git/app";
         let chats = home.join(".gemini/tmp/app/chats");
         fs::create_dir_all(&chats).unwrap();
-        fs::write(home.join(".gemini/tmp/app/.project_root"), format!("{cwd}\n")).unwrap();
+        fs::write(
+            home.join(".gemini/tmp/app/.project_root"),
+            format!("{cwd}\n"),
+        )
+        .unwrap();
         fs::write(
             chats.join("session-2026-03-30T05-40-3fff92c9.json"),
             r#"{"sessionId":"3fff92c9-d623-4845-befd-8ff6a3d55272","lastUpdated":"2026-03-30T05:51:05.919Z","messages":[{"type":"user","content":[{"text":"你是哪个模型"}]}]}"#,
@@ -2350,11 +3215,21 @@ mod tests {
         .unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
-        let gemini = history.groups.iter().find(|group| group.tool == "gemini").unwrap();
+        let gemini = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "gemini")
+            .unwrap();
         assert_eq!(gemini.sessions.len(), 1);
-        assert!(gemini.sessions[0].id.ends_with("session-2026-03-30T05-40-3fff92c9.json"));
+        assert!(gemini.sessions[0]
+            .id
+            .ends_with("session-2026-03-30T05-40-3fff92c9.json"));
         assert_eq!(gemini.sessions[0].title, "你是哪个模型");
-        let agy = history.groups.iter().find(|group| group.tool == "agy").unwrap();
+        let agy = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "agy")
+            .unwrap();
         assert_eq!(agy.sessions.len(), 1);
         assert_eq!(agy.sessions[0].id, "conv-1");
         assert_eq!(agy.sessions[0].title, "你可以生成图片吗");
@@ -2417,7 +3292,11 @@ mod tests {
 
         let chats = home.join(".gemini/tmp/app/chats");
         fs::create_dir_all(&chats).unwrap();
-        fs::write(home.join(".gemini/tmp/app/.project_root"), format!("{cwd}\n")).unwrap();
+        fs::write(
+            home.join(".gemini/tmp/app/.project_root"),
+            format!("{cwd}\n"),
+        )
+        .unwrap();
         fs::write(
             chats.join("session-keep.json"),
             r#"{"messages":[{"type":"user","content":[{"text":"留下 Gemini"}]}]}"#,
@@ -2449,28 +3328,259 @@ mod tests {
         delete_project_session_with_home(cwd, "claude", claude_id, &home).unwrap();
         delete_project_session_with_home(cwd, "grok", "sess-main", &home).unwrap();
         delete_project_session_with_home(cwd, "codex", "drop-codex", &home).unwrap();
-        delete_project_session_with_home(cwd, "gemini", chats.join("session-drop.json").to_str().unwrap(), &home).unwrap();
+        delete_project_session_with_home(
+            cwd,
+            "gemini",
+            chats.join("session-drop.json").to_str().unwrap(),
+            &home,
+        )
+        .unwrap();
         delete_project_session_with_home(cwd, "agy", "conv-1", &home).unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
-        let tools: Vec<_> = history.groups.iter().map(|group| group.tool.as_str()).collect();
+        let tools: Vec<_> = history
+            .groups
+            .iter()
+            .map(|group| group.tool.as_str())
+            .collect();
         assert!(!tools.contains(&"claude"));
         assert!(!tools.contains(&"grok"));
-        let codex = history.groups.iter().find(|group| group.tool == "codex").unwrap();
+        let codex = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "codex")
+            .unwrap();
         assert_eq!(codex.sessions.len(), 1);
         assert_eq!(codex.sessions[0].id, "keep-codex");
-        let gemini = history.groups.iter().find(|group| group.tool == "gemini").unwrap();
+        let gemini = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "gemini")
+            .unwrap();
         assert_eq!(gemini.sessions.len(), 1);
         assert!(gemini.sessions[0].id.ends_with("session-keep.json"));
         assert!(history.groups.iter().all(|group| group.tool != "agy"));
-        let remaining_agy = fs::read_to_string(home.join(".gemini/antigravity-cli/history.jsonl")).unwrap();
+        let remaining_agy =
+            fs::read_to_string(home.join(".gemini/antigravity-cli/history.jsonl")).unwrap();
         assert!(remaining_agy.contains("conv-2"));
         assert!(!remaining_agy.contains("conv-1"));
 
         assert!(delete_project_session_with_home(other, "claude", claude_id, &home).is_err());
         assert!(delete_project_session_with_home(cwd, "claude", "../secret", &home).is_err());
-        assert!(delete_project_session_with_home(cwd, "gemini", "/tmp/session-drop.json", &home).is_err());
-        assert!(delete_project_session_with_home(cwd, "gemini", "../../../.ssh/id_rsa", &home).is_err());
+        assert!(
+            delete_project_session_with_home(cwd, "gemini", "/tmp/session-drop.json", &home)
+                .is_err()
+        );
+        assert!(
+            delete_project_session_with_home(cwd, "gemini", "../../../.ssh/id_rsa", &home).is_err()
+        );
+    }
+
+    #[test]
+    fn claude_handoff_keeps_recent_natural_language_and_project_scope() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/handoff-app";
+        let other = "/tmp/handoff-other";
+        let session_id = "22222222-2222-2222-2222-222222222222";
+        let directory = home
+            .join(".claude/projects")
+            .join(encode_claude_project_dir(cwd));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(format!("{session_id}.jsonl")),
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                serde_json::json!({"type":"user","cwd":cwd,"message":{"role":"user","content":"先实现登录功能"}}),
+                serde_json::json!({"type":"assistant","cwd":cwd,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"不能交出去的思考"},{"type":"text","text":"我已经完成登录表单。"},{"type":"tool_use","name":"Write"}]}}),
+                serde_json::json!({"type":"user","cwd":cwd,"message":{"role":"user","content":"<system-reminder>隐藏系统提醒</system-reminder>"}}),
+                serde_json::json!({"type":"assistant","cwd":cwd,"message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"cat secret"}}]}}),
+                serde_json::json!({"type":"user","cwd":cwd,"message":{"role":"user","content":"感觉方案不好，换 Grok 继续优化"}}),
+                serde_json::json!({"type":"assistant","cwd":cwd,"message":{"role":"assistant","content":"还需要检查错误回滚。\u{1b}"}}),
+                serde_json::json!({"type":"assistant","cwd":cwd,"isSidechain":true,"message":{"role":"assistant","content":"子代理内容"}}),
+            ),
+        )
+        .unwrap();
+
+        let preview = preview_session_handoff_with_home(cwd, "claude", session_id, &home).unwrap();
+        assert_eq!(preview.source_tool, "claude");
+        assert_eq!(preview.source_id, session_id);
+        assert_eq!(preview.source_title, "先实现登录功能");
+        assert_eq!(
+            preview
+                .messages
+                .iter()
+                .map(|message| (message.role.as_str(), message.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("user", "先实现登录功能"),
+                ("assistant", "我已经完成登录表单。"),
+                ("user", "感觉方案不好，换 Grok 继续优化"),
+                ("assistant", "还需要检查错误回滚。"),
+            ]
+        );
+        assert!(!preview.truncated);
+        assert!(preview_session_handoff_with_home(other, "claude", session_id, &home).is_err());
+        assert!(preview_session_handoff_with_home(cwd, "grok", session_id, &home).is_err());
+    }
+
+    #[test]
+    fn handoff_rejects_oversized_gemini_and_grok_json_before_parsing() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/bounded-handoff";
+
+        let gemini = home.join(".gemini/tmp/bounded/chats/session-large.json");
+        fs::create_dir_all(gemini.parent().unwrap()).unwrap();
+        fs::write(home.join(".gemini/tmp/bounded/.project_root"), cwd).unwrap();
+        fs::write(&gemini, vec![b'x'; HANDOFF_FILE_READ_LIMIT as usize + 1]).unwrap();
+        let gemini_error =
+            preview_session_handoff_with_home(cwd, "gemini", gemini.to_str().unwrap(), &home)
+                .err()
+                .unwrap();
+        assert!(gemini_error.contains("512 KiB"));
+
+        let grok = home
+            .join(".grok/sessions")
+            .join(encode_grok_cwd(cwd))
+            .join("grok-large");
+        fs::create_dir_all(&grok).unwrap();
+        fs::write(
+            grok.join("summary.json"),
+            vec![b'x'; HANDOFF_FILE_READ_LIMIT as usize + 1],
+        )
+        .unwrap();
+        let grok_error = preview_session_handoff_with_home(cwd, "grok", "grok-large", &home)
+            .err()
+            .unwrap();
+        assert!(grok_error.contains("512 KiB"));
+    }
+
+    #[test]
+    fn handoff_supports_every_registered_cli_history_format() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/all-handoff";
+
+        let grok_id = "grok-main";
+        let grok = home
+            .join(".grok/sessions")
+            .join(encode_grok_cwd(cwd))
+            .join(grok_id);
+        fs::create_dir_all(&grok).unwrap();
+        fs::write(
+            grok.join("summary.json"),
+            r#"{"generated_title":"Grok 登录优化","last_active_at":"2026-08-21T10:00:00Z"}"#,
+        )
+        .unwrap();
+        fs::write(
+            grok.join("chat_history.jsonl"),
+            format!(
+                "{}\n{}\n{}\n",
+                serde_json::json!({"type":"user","content":[{"type":"text","text":"<user_query>检查登录功能</user_query>"}]}),
+                serde_json::json!({"type":"user","synthetic_reason":"internal","content":[{"type":"text","text":"不能交接的合成消息"}]}),
+                serde_json::json!({"type":"assistant","content":"登录校验还需要收紧。"}),
+            ),
+        )
+        .unwrap();
+
+        let codex_id = "codex-main";
+        let codex_dir = home.join(".codex/sessions/2026/08/21");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(
+            codex_dir.join("rollout-main.jsonl"),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                serde_json::json!({"type":"session_meta","payload":{"session_id":codex_id,"cwd":cwd,"timestamp":"2026-08-21T10:00:00Z","thread_source":"user"}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"内部规则"}]}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"继续修登录"}]}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"我会先检查现有改动。"}]}}),
+            ),
+        )
+        .unwrap();
+
+        let qwen_id = "qwen-main";
+        let qwen = home
+            .join(".qwen/projects")
+            .join(encode_claude_project_dir(cwd))
+            .join("chats");
+        fs::create_dir_all(&qwen).unwrap();
+        fs::write(
+            qwen.join(format!("{qwen_id}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"cwd":cwd,"type":"user","message":{"parts":[{"text":"检查部署"}]}}),
+                serde_json::json!({"cwd":cwd,"type":"assistant","message":{"parts":[{"text":"还要核对服务状态。"}]}}),
+            ),
+        )
+        .unwrap();
+
+        let gemini_file = home.join(".gemini/tmp/handoff/chats/session-gemini.json");
+        fs::create_dir_all(gemini_file.parent().unwrap()).unwrap();
+        fs::write(home.join(".gemini/tmp/handoff/.project_root"), cwd).unwrap();
+        fs::write(
+            &gemini_file,
+            r#"{"messages":[{"type":"user","content":[{"text":"检查搜索"}]},{"type":"gemini","content":"搜索还缺少空态。"}]}"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
+        fs::write(
+            home.join(".gemini/antigravity-cli/history.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"display":"检查移动端布局","timestamp":100,"workspace":cwd,"conversationId":"agy-main"}),
+                serde_json::json!({"display":"继续修窄屏","timestamp":200,"workspace":cwd,"conversationId":"agy-main"}),
+            ),
+        )
+        .unwrap();
+
+        seed_sqlite_handoff_db(
+            &home.join(".local/share/opencode/opencode.db"),
+            cwd,
+            "opencode-main",
+            "OpenCode 登录",
+        );
+        seed_sqlite_handoff_db(
+            &home.join(".local/share/mimocode/mimocode.db"),
+            cwd,
+            "mimo-main",
+            "MiMo 登录",
+        );
+
+        let cases = [
+            ("grok", grok_id, "检查登录功能", "登录校验还需要收紧。"),
+            ("codex", codex_id, "继续修登录", "我会先检查现有改动。"),
+            ("qwen", qwen_id, "检查部署", "还要核对服务状态。"),
+            (
+                "gemini",
+                gemini_file.to_str().unwrap(),
+                "检查搜索",
+                "搜索还缺少空态。",
+            ),
+            ("agy", "agy-main", "检查移动端布局", "继续修窄屏"),
+            (
+                "opencode",
+                "opencode-main",
+                "检查登录实现",
+                "还需要补失败回滚",
+            ),
+            ("mimo", "mimo-main", "检查登录实现", "还需要补失败回滚"),
+        ];
+        for (tool, id, first, last) in cases {
+            let preview = preview_session_handoff_with_home(cwd, tool, id, &home).unwrap();
+            assert_eq!(preview.source_tool, tool);
+            assert!(preview
+                .messages
+                .iter()
+                .any(|message| message.text.contains(first)));
+            assert!(preview
+                .messages
+                .iter()
+                .any(|message| message.text.contains(last)));
+            assert!(preview.messages.iter().all(|message| {
+                !message.text.contains("内部规则")
+                    && !message.text.contains("合成消息")
+                    && !message.text.contains("工具内容")
+            }));
+        }
     }
 
     #[test]
@@ -2506,7 +3616,8 @@ mod tests {
             )
             .unwrap();
 
-        let preview = preview_project_session_with_home(cwd, "opencode", "ses_main", &home).unwrap();
+        let preview =
+            preview_project_session_with_home(cwd, "opencode", "ses_main", &home).unwrap();
         assert_eq!(preview.title, "本项目");
         delete_project_session_with_home(cwd, "opencode", "ses_main", &home).unwrap();
         assert!(delete_project_session_with_home(cwd, "opencode", "ses_other", &home).is_err());
@@ -2514,9 +3625,12 @@ mod tests {
         assert!(history.groups.iter().all(|group| group.tool != "opencode"));
         let leftover: i64 = rusqlite::Connection::open(&db)
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_other'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM session WHERE id = 'ses_other'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(leftover, 1);
     }
-
 }

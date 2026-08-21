@@ -248,7 +248,10 @@ async fn serve_index() -> Response {
         .into_response()
 }
 async fn serve_xterm_css() -> Response {
-    asset("text/css; charset=utf-8", include_str!("../../src/vendor/xterm.css"))
+    asset(
+        "text/css; charset=utf-8",
+        include_str!("../../src/vendor/xterm.css"),
+    )
 }
 async fn serve_xterm_js() -> Response {
     asset(
@@ -355,7 +358,10 @@ async fn handle_socket(mut socket: WebSocket, hub: RemoteHub, id: String) {
         .ok()
         .and_then(|s| s.get(&id).and_then(|p| p.master.get_size().ok()));
     if let Some(sz) = size {
-        let frame = format!("{{\"t\":\"size\",\"cols\":{},\"rows\":{}}}", sz.cols, sz.rows);
+        let frame = format!(
+            "{{\"t\":\"size\",\"cols\":{},\"rows\":{}}}",
+            sz.cols, sz.rows
+        );
         if socket.send(Message::Text(frame)).await.is_err() {
             return;
         }
@@ -484,7 +490,10 @@ mod tests {
 
     #[test]
     fn client_input_accepts_small_input_only() {
-        assert_eq!(parse_client_input(r#"{"t":"i","d":"ls\n"}"#).as_deref(), Some("ls\n"));
+        assert_eq!(
+            parse_client_input(r#"{"t":"i","d":"ls\n"}"#).as_deref(),
+            Some("ls\n")
+        );
         assert_eq!(parse_client_input(r#"{"t":"r","cols":80}"#), None);
         assert_eq!(parse_client_input("not-json"), None);
     }

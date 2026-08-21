@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[cfg(unix)]
 use std::ffi::CString;
@@ -16,10 +17,12 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 pub const ORCHESTRA_DIR: &str = ".vibe/orchestra";
+pub const HANDOFF_DIR: &str = ".vibe/handoff";
 const GITIGNORE_COMMENT: &str = "# Roster — 协作会话";
 const GITIGNORE_ENTRY: &str = ".vibe/";
 const README: &str = "这是 Roster 的协作会话目录。\n大脑写 plan.md，干活的人写 inbox/<工具>.md。不要提交这个目录。\n";
 const MAX_FILE_SIZE: usize = 512 * 1024;
+const MAX_HANDOFF_FILE_SIZE: usize = 64 * 1024;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +31,13 @@ pub struct OrchestraState {
     pub directory: String,
     pub goal_path: String,
     pub plan_path: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHandoffFile {
+    pub path: String,
+    pub relative_path: String,
 }
 
 fn require_cwd(project_path: &str) -> Result<PathBuf, String> {
@@ -530,6 +540,88 @@ fn safe_read(project_dir: &Path, relative: &str) -> Result<String, String> {
     decode_content(bytes)
 }
 
+fn validate_handoff_content(content: &str) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Err("交接内容不能为空".into());
+    }
+    if content.as_bytes().contains(&0) {
+        return Err("交接内容不能包含 NUL".into());
+    }
+    if content.len() > MAX_HANDOFF_FILE_SIZE {
+        return Err("交接内容太大".into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_handoff_file(project_dir: &Path, filename: &str, content: &str) -> Result<(), String> {
+    let project = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(project_dir)
+        .map_err(|error| format!("打开项目目录失败：{error}"))?;
+    let vibe = open_directory_at(&project, ".vibe", true)?
+        .ok_or_else(|| "无法创建交接目录".to_string())?;
+    let handoff =
+        open_directory_at(&vibe, "handoff", true)?.ok_or_else(|| "无法创建交接目录".to_string())?;
+    let mut file = open_file_at(
+        &handoff,
+        filename,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+    )
+    .map_err(|error| format!("创建交接文件失败：{error}"))?;
+    require_regular_file(&file)?;
+    require_single_link(&file, "交接文件")?;
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("写入交接文件失败：{error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("同步交接文件失败：{error}"))
+}
+
+#[cfg(not(unix))]
+fn write_handoff_file(project_dir: &Path, filename: &str, content: &str) -> Result<(), String> {
+    let vibe = project_dir.join(".vibe");
+    ensure_directory(&vibe, true)?;
+    let handoff = vibe.join("handoff");
+    ensure_directory(&handoff, true)?;
+    let path = handoff.join(filename);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("创建交接文件失败：{error}"))?;
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("交接文件不是普通文件".into());
+    }
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("写入交接文件失败：{error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("同步交接文件失败：{error}"))
+}
+
+pub fn write_session_handoff(
+    project_path: &str,
+    content: &str,
+) -> Result<SessionHandoffFile, String> {
+    validate_handoff_content(content)?;
+    let project_dir = require_cwd(project_path)?;
+    ensure_gitignore(&project_dir)?;
+    let filename = format!("{}.md", Uuid::new_v4());
+    write_handoff_file(&project_dir, &filename, content)?;
+    let relative_path = format!("{HANDOFF_DIR}/{filename}");
+    Ok(SessionHandoffFile {
+        path: project_dir
+            .join(&relative_path)
+            .to_string_lossy()
+            .into_owned(),
+        relative_path,
+    })
+}
+
 pub fn ensure_orchestra(project_path: &str) -> Result<OrchestraState, String> {
     let project_dir = require_cwd(project_path)?;
     open_orchestra_directories_for_init(&project_dir)?;
@@ -623,6 +715,47 @@ mod tests {
             write_orchestra_file(cwd, &name, "已完成").unwrap();
             assert_eq!(read_orchestra_file(cwd, &name).unwrap(), "已完成");
         }
+    }
+
+    #[test]
+    fn writes_unique_project_scoped_handoff_files() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("app");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let cwd = project.to_str().unwrap();
+
+        let first = write_session_handoff(cwd, "# 会话交接\n\n继续完成登录功能").unwrap();
+        let second = write_session_handoff(cwd, "另一份交接").unwrap();
+
+        assert_ne!(first.relative_path, second.relative_path);
+        assert!(first.relative_path.starts_with(".vibe/handoff/"));
+        assert_eq!(
+            fs::read_to_string(&first.path).unwrap(),
+            "# 会话交接\n\n继续完成登录功能"
+        );
+        assert!(fs::read_to_string(project.join(".gitignore"))
+            .unwrap()
+            .contains(".vibe/"));
+        assert!(write_session_handoff(cwd, " ").is_err());
+        assert!(write_session_handoff(cwd, "bad\0content").is_err());
+        assert!(write_session_handoff(cwd, &"x".repeat(MAX_HANDOFF_FILE_SIZE + 1)).is_err());
+        assert!(write_session_handoff(cwd, &"中".repeat(MAX_HANDOFF_FILE_SIZE / 3 + 1)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_handoff_directory_without_writing_outside_project() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("app");
+        let external = root.path().join("external");
+        fs::create_dir_all(project.join(".vibe")).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        symlink(&external, project.join(".vibe/handoff")).unwrap();
+
+        assert!(write_session_handoff(project.to_str().unwrap(), "不得外写").is_err());
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 0);
     }
 
     #[test]

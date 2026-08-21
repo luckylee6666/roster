@@ -13,6 +13,9 @@ test('项目卡片底部列出本机已装 CLI，一点即开', () => {
   assert.match(main, /function cardCliButtonsHtml/);
   assert.match(main, /function refreshInstalledClis/);
   assert.match(main, /invoke\('list_installed_clis'/);
+  assert.match(main, /installedCliIds \?\?= \[\]/);
+  assert.doesNotMatch(main, /installedCliIds = \[\.\.\.CLI_TOOL_IDS\]/);
+  assert.match(main, /window\.addEventListener\('focus'[\s\S]*?refreshInstalledClis\(\{ force: true \}\)/);
   assert.match(main, /void openTerminal\(p, btn\.dataset\.cmd\)/);
   assert.doesNotMatch(main, /class="action-btn terminal-btn"/);
   // 按钮只保留工具色标，去掉重复文字、前缀标签和外层盒

@@ -32,13 +32,6 @@
               <span>全部项目</span>
               <span class="menu-badge" id="count-all">0</span>
             </a>
-            <a class="menu-item" href="#" id="req-entry" title="碎片需求收集箱：随手记，省着忘">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M9 12h6m-6 3.75h6M9 8.25h6M5.25 6A2.25 2.25 0 017.5 3.75h9A2.25 2.25 0 0118.75 6v13.06c0 .98-1.1 1.56-1.9 1l-2.6-1.82a1.5 1.5 0 00-1.72 0l-2.6 1.82c-.8.56-1.9-.02-1.9-1V6z"/>
-              </svg>
-              <span>需求清单</span>
-              <span class="menu-badge" id="req-count" style="display:none;">0</span>
-            </a>
           </div>
           <div class="menu-group">
             <div class="menu-label">项目分组</div>
@@ -231,12 +224,49 @@
                 <span class="orchestra-workers-hint" id="orchestra-workers-hint">至少选择 1 个终端</span>
               </div>
               <div class="orchestra-tool-picks orchestra-worker-picks" id="orchestra-worker-picks" role="group" aria-label="选择干活终端"></div>
-              <p class="orchestra-selection-note">未安装的终端不可选；超过 4 个时，其余终端仍会启动并留在标签栏。</p>
+              <p class="orchestra-selection-note">只显示本机已安装的 CLI；超过 4 个时，其余终端仍会启动并留在标签栏。</p>
             </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-default" id="orchestra-modal-cancel" type="button">取消</button>
             <button class="btn btn-primary" id="orchestra-modal-start" type="button">开始协作</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 跨 CLI 会话交接 -->
+    <div class="modal-mask" id="session-handoff-overlay">
+      <div class="modal-wrap">
+        <div class="modal modal-handoff">
+          <div class="modal-header">
+            <span class="modal-title">交接会话</span>
+            <button class="modal-x" id="session-handoff-close" type="button">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="handoff-lead">把当前 CLI 的最新项目会话整理成可检查的交接稿，再让另一个 CLI 接着处理。原会话和工作区改动都会保留。</p>
+            <div class="handoff-source" id="session-handoff-source">正在读取来源 CLI 的最新会话…</div>
+            <div class="handoff-field">
+              <div class="handoff-field-head">
+                <span class="form-label">交给谁</span>
+                <span>只显示本机已安装的 CLI</span>
+              </div>
+              <div class="orchestra-tool-picks" id="session-handoff-targets" role="radiogroup" aria-label="选择接手 CLI"></div>
+            </div>
+            <div class="handoff-field">
+              <div class="handoff-field-head">
+                <label class="form-label" for="session-handoff-content">交接稿</label>
+                <span id="session-handoff-status" aria-live="polite">准备中</span>
+              </div>
+              <textarea class="form-input handoff-content" id="session-handoff-content" maxlength="65536"
+                        aria-describedby="session-handoff-status"
+                        spellcheck="false" placeholder="会自动整理最近对话和当前 Git 工作区，你可以在交接前删改。"></textarea>
+            </div>
+            <p class="handoff-privacy">交接稿会写入项目本地的 <code>.vibe/handoff/</code>，随后由目标 CLI 读取。内容可能发送给目标 CLI 对应的服务，请先删去不想共享的信息。</p>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="session-handoff-cancel" type="button">取消</button>
+            <button class="btn btn-primary" id="session-handoff-start" type="button" disabled>交给 Grok</button>
           </div>
         </div>
       </div>
@@ -458,6 +488,17 @@
           <button class="term-tool-btn" id="terminal-snippet-btn" title="Prompt 片段库：一键注入常用指令">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><path d="M9 5a2 2 0 012-2h2a2 2 0 012 2v0a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/><path d="M9 12h6M9 16h4"/></svg>
           </button>
+          <button class="term-tool-btn terminal-ideas-btn" id="terminal-ideas-btn" type="button"
+                  title="项目想法" aria-label="项目想法" aria-controls="project-ideas-drawer"
+                  aria-expanded="false" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18h6M10 21h4"/><path d="M8.5 15.5c-1.45-1.05-2.5-2.9-2.5-5A6 6 0 0118 10.5c0 2.1-1.05 3.95-2.5 5-.82.6-1.24 1.18-1.35 2.5h-4.3c-.11-1.32-.53-1.9-1.35-2.5z"/><path d="M12 2v2M4.93 4.93l1.42 1.42M19.07 4.93l-1.42 1.42"/></svg>
+            <span class="term-tool-count" id="terminal-ideas-count" hidden>0</span>
+          </button>
+          <button class="term-tool-btn" id="terminal-handoff-btn" type="button"
+                  title="把当前 CLI 最新会话交给其他 CLI" aria-label="交接会话"
+                  aria-controls="session-handoff-overlay" aria-expanded="false" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h11M12 4l3 3-3 3M20 17H9M12 14l-3 3 3 3"/><path d="M4 7v4M20 13v4"/></svg>
+          </button>
           <button class="term-tool-btn" id="terminal-memory-btn" type="button"
                   title="项目记忆：挂载 .memory，给所有 AI 同一份正本" aria-haspopup="menu" aria-expanded="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.2 4.5h9.6A2.2 2.2 0 0118 6.7v12.1c0 .8-.9 1.3-1.6.9l-2.7-1.7a2 2 0 00-2.1 0l-2.7 1.7c-.7.4-1.6-.1-1.6-.9V6.7A2.2 2.2 0 016.2 4.5z"/><path d="M9 8.4h6M9 11.4h4.2"/></svg>
@@ -574,6 +615,45 @@
         <button class="orchestra-close" id="orchestra-close" type="button" title="结束这场协作" aria-label="结束这场协作">&times;</button>
       </div>
       <div class="terminal-main">
+        <div class="project-ideas-scrim" id="project-ideas-scrim"></div>
+        <aside class="project-ideas-drawer" id="project-ideas-drawer" role="complementary"
+               aria-labelledby="project-ideas-title" aria-hidden="true">
+          <header class="project-ideas-head">
+            <div class="project-ideas-heading">
+              <strong id="project-ideas-title">项目想法</strong>
+              <span id="project-ideas-project">当前项目</span>
+            </div>
+            <button class="project-ideas-close" id="project-ideas-close" type="button"
+                    title="关闭想法" aria-label="关闭想法">&times;</button>
+          </header>
+          <div class="project-ideas-capture">
+            <textarea id="project-idea-input" rows="3" maxlength="10000"
+                      aria-label="记录项目想法"
+                      placeholder="先记下来，不必一次想完整。可以稍后继续完善……"></textarea>
+            <div class="project-ideas-capture-foot">
+              <span>⌘/Ctrl + Enter 记录</span>
+              <button class="project-idea-add" id="project-idea-add" type="button">记下来</button>
+            </div>
+          </div>
+          <div class="project-ideas-body">
+            <div class="project-ideas-bar">
+              <span id="project-ideas-summary">0 条想法</span>
+              <button id="project-ideas-archive-toggle" type="button">查看归档</button>
+            </div>
+            <div class="project-ideas-list" id="project-ideas-list"></div>
+            <div class="project-ideas-empty" id="project-ideas-empty">
+              灵感冒出来时先记在这里，成熟后再放入当前对话。
+            </div>
+            <section class="project-ideas-orphans" id="project-ideas-orphans" hidden>
+              <div class="project-ideas-orphans-head">
+                <strong>待归属想法</strong>
+                <span id="project-ideas-orphans-count">0</span>
+              </div>
+              <p>这些想法原来的项目已被移除，可逐条归入当前项目。</p>
+              <div id="project-ideas-orphans-list"></div>
+            </section>
+          </div>
+        </aside>
         <aside class="terminal-tree" id="terminal-tree">
           <div class="tree-head">
             <span class="tree-root-name" id="tree-root-name" title="">文件树</span>
@@ -804,45 +884,6 @@
             </div>
             <div class="snippet-list" id="snippet-list"></div>
             <div class="server-empty" id="snippet-empty">暂无片段，在上方填写后「保存片段」</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 需求清单：碎片需求收集箱 -->
-    <div class="modal-mask" id="req-modal-overlay">
-      <div class="modal-wrap">
-        <div class="modal modal-lg">
-          <div class="modal-header">
-            <span class="modal-title">需求清单</span>
-            <button class="modal-x" id="req-modal-close">&times;</button>
-          </div>
-          <div class="modal-body">
-            <!-- 速记：输入即存，回车提交 -->
-            <div class="req-capture">
-              <input class="form-input req-capture-input" type="text" id="req-input"
-                     placeholder="随手记一条需求 / 想法，回车保存…" maxlength="200" />
-              <select class="form-select req-capture-sel" id="req-priority" title="优先级">
-                <option value="normal">普通</option>
-                <option value="high">重要</option>
-                <option value="low">次要</option>
-              </select>
-              <select class="form-select req-capture-sel" id="req-project" title="关联项目">
-                <option value="">不关联项目</option>
-              </select>
-              <button class="btn btn-primary" id="req-add-btn">添加</button>
-            </div>
-
-            <!-- 过滤页签 -->
-            <div class="req-tabs" id="req-tabs">
-              <button class="req-tab active" data-filter="all">全部 <span class="req-tab-count" id="req-c-all">0</span></button>
-              <button class="req-tab" data-filter="todo">待办 <span class="req-tab-count" id="req-c-todo">0</span></button>
-              <button class="req-tab" data-filter="doing">进行中 <span class="req-tab-count" id="req-c-doing">0</span></button>
-              <button class="req-tab" data-filter="done">已完成 <span class="req-tab-count" id="req-c-done">0</span></button>
-            </div>
-
-            <div class="req-list" id="req-list"></div>
-            <div class="server-empty" id="req-empty">还没有需求，在上方随手记一条吧</div>
           </div>
         </div>
       </div>

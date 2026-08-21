@@ -4,6 +4,36 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ## Unreleased
 
+### English
+
+**Added**
+- Added per-project ideas inside the terminal: capture multiple rough thoughts, edit or archive them, and place a mature idea into the active same-project CLI input without pressing Enter.
+- Expanded cross-CLI handoff to every registered CLI: any running Claude, Grok, Codex, OpenCode, Gemini, agy, Qwen, or MiMo Code tab can hand its latest project conversation to any other installed CLI while preserving the source session.
+
+**Changed / Removed**
+- Removed the global Requirements sidebar and its `requirements.json` model. Project ideas now use the isolated `ProjectIdea` model in `ideas.json`; ideas left by a removed project can be explicitly reassigned.
+- Hardened idea persistence with single-flight UI mutations, executable rollback coverage, project/session revalidation, bounded backend input, duplicate-ID rejection, startup validation with recoverable bad-file backups, symlink/special-file rejection, and randomized atomic temporary files.
+- Project cards and Collaborate now show only CLIs detected on the local machine, force-refresh availability when the window regains focus or Collaborate opens, and never treat a failed probe as “all installed.”
+- Fixed project-idea capacity checks so every successfully saved UTF-8 JSON file remains readable after restart. Handoff now locks its modal to the active operation, validates edited drafts by UTF-8 bytes, and rejects oversized Gemini/Grok JSON before parsing.
+
+**Tests**
+- Frontend suite: 293 tests. Rust suite: 71 tests, plus Debug App visual verification of the project ideas and handoff flows.
+
+### 中文
+
+**新增**
+- 终端内新增按项目隔离的「想法」：可记录多条未成形念头、持续编辑或归档，成熟后放入当前项目的 CLI 输入框且不自动回车。
+- 跨 CLI 交接扩展到全部已登记工具：运行中的 Claude、Grok、Codex、OpenCode、Gemini、agy、Qwen 或 MiMo Code 都能把当前项目最新会话交给任意另一家已安装 CLI，来源会话保持不动。
+
+**变更 / 移除**
+- 移除全局「需求清单」侧栏及 `requirements.json` 模型；项目想法改用独立 `ProjectIdea` / `ideas.json`，项目删除后留下的想法可逐条明确迁入。
+- 想法持久化增加单事务 UI 写入与可执行回滚覆盖、项目/会话二次校验、后端容量边界、重复 ID 拒绝、启动校验与可恢复坏文件备份、符号链接/特殊文件拒绝，以及随机原子临时文件。
+- 项目卡片与「开协作」现在只显示本机探测到的 CLI；窗口重新聚焦或打开协作时强制刷新，探测失败也不再误判成“全部已安装”。
+- 修复项目想法容量按字符/字节计算不一致导致保存后重启无法读回；交接进行中锁定当前操作，编辑稿按 UTF-8 字节校验，Gemini/Grok 超限 JSON 在解析前拒绝。
+
+**测试**
+- 前端 293 项、Rust 71 项，并用独立 Debug App 完成项目想法与交接流程的真机视觉验收。
+
 ## v1.2.23
 
 ### English

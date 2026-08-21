@@ -65,7 +65,13 @@ pub fn normalize_project_cwd(cwd: &str) -> String {
 pub fn encode_claude_project_dir(cwd: &str) -> String {
     normalize_project_cwd(cwd)
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == '.' { '-' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == '.' {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -188,7 +194,9 @@ pub fn upsert_memory_pointer(existing: &str) -> String {
 }
 
 pub fn ensure_memory_gitignore(existing: &str) -> String {
-    let has_link = existing.lines().any(|line| line.trim() == WORKSPACE_MEMORY_LINK);
+    let has_link = existing
+        .lines()
+        .any(|line| line.trim() == WORKSPACE_MEMORY_LINK);
     if has_link {
         if existing.is_empty() || existing.ends_with('\n') {
             return existing.to_string();
@@ -208,11 +216,17 @@ fn parse_memory_topics(markdown: &str, limit: usize) -> Vec<MemoryTopic> {
     let mut seen = std::collections::HashSet::new();
     for line in markdown.lines() {
         let line = line.trim();
-        let Some(rest) = line.strip_prefix("- [") else { continue };
-        let Some(title_end) = rest.find("](") else { continue };
+        let Some(rest) = line.strip_prefix("- [") else {
+            continue;
+        };
+        let Some(title_end) = rest.find("](") else {
+            continue;
+        };
         let title = rest[..title_end].trim();
         let rest = &rest[title_end + 2..];
-        let Some(file_end) = rest.find(')') else { continue };
+        let Some(file_end) = rest.find(')') else {
+            continue;
+        };
         let file = rest[..file_end].trim();
         if title.is_empty() || !seen.insert(file.to_string()) {
             continue;
@@ -302,7 +316,10 @@ fn link_points_to(link: &Path, target: &Path) -> bool {
     if dest == target {
         return true;
     }
-    match (link.parent().unwrap_or(link).join(&dest).canonicalize(), target.canonicalize()) {
+    match (
+        link.parent().unwrap_or(link).join(&dest).canonicalize(),
+        target.canonicalize(),
+    ) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
@@ -388,11 +405,7 @@ fn collect_state(project_dir: &Path, memory_dir: &Path, warning: String) -> Proj
                 entries
                     .flatten()
                     .filter(|entry| {
-                        entry
-                            .path()
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            == Some("md")
+                        entry.path().extension().and_then(|ext| ext.to_str()) == Some("md")
                             && entry.file_name() != "MEMORY.md"
                     })
                     .count() as u32
@@ -406,7 +419,10 @@ fn collect_state(project_dir: &Path, memory_dir: &Path, warning: String) -> Proj
         skipped: false,
         project_path: project_dir.to_string_lossy().into_owned(),
         memory_path: memory_dir.to_string_lossy().into_owned(),
-        link_path: project_dir.join(WORKSPACE_MEMORY_LINK).to_string_lossy().into_owned(),
+        link_path: project_dir
+            .join(WORKSPACE_MEMORY_LINK)
+            .to_string_lossy()
+            .into_owned(),
         index_preview: index_preview(&markdown),
         topics,
         topic_count,
@@ -415,10 +431,16 @@ fn collect_state(project_dir: &Path, memory_dir: &Path, warning: String) -> Proj
     }
 }
 
-pub fn ensure_project_memory_with_home(project_path: &str, home: &Path) -> Result<ProjectMemoryState, String> {
+pub fn ensure_project_memory_with_home(
+    project_path: &str,
+    home: &Path,
+) -> Result<ProjectMemoryState, String> {
     let raw = normalize_project_cwd(project_path);
     if raw.is_empty() {
-        return Ok(ProjectMemoryState::skipped(String::new(), "空白终端没有项目目录"));
+        return Ok(ProjectMemoryState::skipped(
+            String::new(),
+            "空白终端没有项目目录",
+        ));
     }
     let project_dir = PathBuf::from(&raw);
     if !should_mount_project_memory(&project_dir, Some(home)) {
@@ -433,8 +455,7 @@ pub fn ensure_project_memory_with_home(project_path: &str, home: &Path) -> Resul
 
     let index = memory_dir.join("MEMORY.md");
     if !index.exists() {
-        fs::write(&index, seed_memory_index())
-            .map_err(|e| format!("创建 MEMORY.md 失败：{e}"))?;
+        fs::write(&index, seed_memory_index()).map_err(|e| format!("创建 MEMORY.md 失败：{e}"))?;
     }
 
     if let Err(err) = ensure_workspace_link(&project_dir, &memory_dir) {
@@ -473,7 +494,10 @@ pub fn ensure_project_memory(project_path: &str) -> Result<ProjectMemoryState, S
 pub fn detach_project_memory(project_path: &str) -> Result<ProjectMemoryState, String> {
     let raw = normalize_project_cwd(project_path);
     if raw.is_empty() {
-        return Ok(ProjectMemoryState::skipped(String::new(), "空白终端没有项目目录"));
+        return Ok(ProjectMemoryState::skipped(
+            String::new(),
+            "空白终端没有项目目录",
+        ));
     }
     let project_dir = PathBuf::from(&raw);
     let link = project_dir.join(WORKSPACE_MEMORY_LINK);
@@ -483,7 +507,10 @@ pub fn detach_project_memory(project_path: &str) -> Result<ProjectMemoryState, S
         }
     }
     remove_instruction_pointers(&project_dir)?;
-    Ok(ProjectMemoryState::skipped(raw, "已关闭统一记忆，不再自动挂载"))
+    Ok(ProjectMemoryState::skipped(
+        raw,
+        "已关闭统一记忆，不再自动挂载",
+    ))
 }
 
 fn remove_instruction_pointers(project_dir: &Path) -> Result<(), String> {
@@ -492,7 +519,8 @@ fn remove_instruction_pointers(project_dir: &Path) -> Result<(), String> {
         if !path.is_file() {
             continue;
         }
-        let current = fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+        let current =
+            fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
         let next = remove_memory_pointer(&current);
         write_if_changed(&path, &next).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
     }
@@ -545,17 +573,31 @@ mod tests {
         let project = home.join("code").join("app");
         fs::create_dir_all(&project).unwrap();
         fs::write(project.join("AGENTS.md"), "# 入口\n").unwrap();
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let memory = memory_dir_for_project(&home, &project.to_string_lossy());
         fs::create_dir_all(&memory).unwrap();
-        fs::write(memory.join("MEMORY.md"), format!("# 已有索引 {unique}\n- [终端](builtin-terminal.md)\n")).unwrap();
+        fs::write(
+            memory.join("MEMORY.md"),
+            format!("# 已有索引 {unique}\n- [终端](builtin-terminal.md)\n"),
+        )
+        .unwrap();
 
         let state = ensure_project_memory_with_home(project.to_str().unwrap(), &home).unwrap();
         assert!(state.mounted);
         assert_eq!(state.topics.len(), 1);
         assert_eq!(state.topics[0].title, "终端");
-        assert!(fs::read_to_string(memory.join("MEMORY.md")).unwrap().contains(&unique.to_string()));
-        assert!(project.join(".memory").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(fs::read_to_string(memory.join("MEMORY.md"))
+            .unwrap()
+            .contains(&unique.to_string()));
+        assert!(project
+            .join(".memory")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(memory.join("inbox").is_dir());
         let agents = fs::read_to_string(project.join("AGENTS.md")).unwrap();
         assert!(agents.contains(MEMORY_POINTER_START));
@@ -574,7 +616,9 @@ mod tests {
         assert!(state.warning.contains("非空目录"));
         assert!(project.join(".memory").join("note.md").is_file());
         assert!(!project.join(".gitignore").exists());
-        assert!(!fs::read_to_string(project.join("AGENTS.md")).unwrap().contains(MEMORY_POINTER_START));
+        assert!(!fs::read_to_string(project.join("AGENTS.md"))
+            .unwrap()
+            .contains(MEMORY_POINTER_START));
     }
 
     #[test]
@@ -585,7 +629,12 @@ mod tests {
 
         let state = ensure_project_memory_with_home(project.to_str().unwrap(), &home).unwrap();
         assert!(state.mounted);
-        assert!(project.join(".memory").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(project
+            .join(".memory")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(!project.join("CLAUDE.md").exists());
         assert!(!project.join("AGENTS.md").exists());
     }
@@ -600,14 +649,18 @@ mod tests {
         assert!(mounted.mounted);
         let memory = PathBuf::from(&mounted.memory_path);
         assert!(memory.join("MEMORY.md").is_file());
-        assert!(fs::read_to_string(project.join("AGENTS.md")).unwrap().contains(MEMORY_POINTER_START));
+        assert!(fs::read_to_string(project.join("AGENTS.md"))
+            .unwrap()
+            .contains(MEMORY_POINTER_START));
 
         let detached = detach_project_memory(project.to_str().unwrap()).unwrap();
         assert!(!detached.mounted);
         assert!(detached.skipped);
         assert!(!project.join(".memory").exists());
         assert!(memory.join("MEMORY.md").is_file());
-        assert!(!fs::read_to_string(project.join("AGENTS.md")).unwrap().contains(MEMORY_POINTER_START));
+        assert!(!fs::read_to_string(project.join("AGENTS.md"))
+            .unwrap()
+            .contains(MEMORY_POINTER_START));
     }
 
     #[test]

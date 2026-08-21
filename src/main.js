@@ -33,6 +33,14 @@ import {
   sameProjectCwd,
 } from './project-history-utils.js';
 import {
+  buildSessionHandoffMarkdown,
+  handoffLaunchPrompt,
+  handoffTargetTools,
+  latestHandoffSession,
+  SESSION_HANDOFF_FILE_MAX_BYTES,
+  validateSessionHandoffContent,
+} from './session-handoff-utils.js';
+import {
   SESSION_RAIL_HEIGHT_KEY,
   SESSION_RAIL_HIDDEN_KEY,
   buildSessionRailModel,
@@ -97,6 +105,18 @@ import {
   shouldAutoMountProjectMemory,
   shouldMountProjectMemory,
 } from './project-memory-utils.js';
+import {
+  claimOrphanProjectIdea,
+  commitProjectIdeaSnapshot,
+  createProjectIdea,
+  createProjectIdeaMutationGate,
+  findProjectIdea,
+  orphanProjectIdeas,
+  planProjectIdeaPaste,
+  projectIdeasFor,
+  removeProjectIdea,
+  updateProjectIdea,
+} from './project-ideas-utils.js';
 import { createTerminalSessionCloseCoordinator } from './terminal-session-close.js';
 import {
   applyUiScale,
@@ -140,7 +160,7 @@ window.addEventListener('unhandledrejection', e => {
 let projects = [];
 let servers = [];
 let snippets = [];
-let requirements = [];
+let projectIdeas = [];
 let currentEditId = null;
 let pendingConfirm = null;
 let activeGroup = 'all';
@@ -187,6 +207,14 @@ const el = {
   sessionPreviewClose: $('session-preview-close'),
   sessionPreviewCancel: $('session-preview-cancel'),
   sessionPreviewOpen: $('session-preview-open'),
+  sessionHandoff: $('session-handoff-overlay'),
+  sessionHandoffSource: $('session-handoff-source'),
+  sessionHandoffTargets: $('session-handoff-targets'),
+  sessionHandoffStatus: $('session-handoff-status'),
+  sessionHandoffContent: $('session-handoff-content'),
+  sessionHandoffClose: $('session-handoff-close'),
+  sessionHandoffCancel: $('session-handoff-cancel'),
+  sessionHandoffStart: $('session-handoff-start'),
   orchestra: $('orchestra-overlay'),
   orchestraGoal: $('orchestra-goal'),
   orchestraBrainPicks: $('orchestra-brain-picks'),
@@ -284,11 +312,11 @@ async function load() {
     projects = await invoke('get_projects');
     servers = await invoke('get_servers');
     try { snippets = await invoke('get_snippets'); } catch (_) { snippets = []; }
-    try { requirements = await invoke('get_requirements'); } catch (_) { requirements = []; }
+    try { projectIdeas = await invoke('get_project_ideas'); } catch (_) { projectIdeas = []; }
     renderGroups();
     render(projects);
     el.countAll.textContent = projects.length;
-    updateReqBadge();
+    syncProjectIdeasContext();
     renderSnippetQuick();
     startScheduler();
   } catch (e) {
@@ -492,16 +520,23 @@ function paintCardCliRows() {
 async function refreshInstalledClis({ force = false } = {}) {
   if (!force && installedCliIds && Date.now() - installedCliAt < INSTALLED_CLI_TTL_MS) {
     paintCardCliRows();
+    syncSessionHandoffButton();
     return;
   }
   try {
     const found = await invoke('list_installed_clis', { names: [...CLI_TOOL_IDS] });
     installedCliIds = normalizeInstalledCliIds(found);
   } catch (_) {
-    installedCliIds = [...CLI_TOOL_IDS];
+    // 探测失败不能谎报“全部已安装”；保留上一次成功结果，首次失败则安全显示为空。
+    installedCliIds ??= [];
+    installedCliAt = 0;
+    paintCardCliRows();
+    syncSessionHandoffButton();
+    return;
   }
   installedCliAt = Date.now();
   paintCardCliRows();
+  syncSessionHandoffButton();
 }
 
 function render(list) {
@@ -626,6 +661,11 @@ let sessionRailRevision = 0;
 let sessionRailModel = null;
 let sessionPreviewContext = null;
 let projectKitOpening = null;
+const sessionHandoffGate = createLatestRequestGate();
+let sessionHandoffContext = null;
+let sessionHandoffBusy = false;
+let sessionHandoffContentDirty = false;
+let sessionHandoffOperation = null;
 
 function listLiveTerminals() {
   return [...sessions.entries()].map(([id, session]) => ({
@@ -1063,6 +1103,321 @@ async function openProjectKit(project, { forceNew = false } = {}) {
   return ids;
 }
 
+function activeSessionHandoffContext() {
+  const id = activeSession;
+  const session = id ? sessions.get(id) : null;
+  const running = session?.status === 'running'
+    && !sessionCloseCoordinator.isClosing(id);
+  const sourceTool = running ? cliToolName(session.tool) : '';
+  const project = running ? findProjectByCwd(session.cwd) : null;
+  return { id, session, sourceTool, project };
+}
+
+function sessionHandoffTargets(sourceTool) {
+  return handoffTargetTools(installedCliIds, sourceTool);
+}
+
+function syncSessionHandoffButton() {
+  if (!termEl?.handoffBtn) return;
+  const current = activeSessionHandoffContext();
+  const sourceKnown = CLI_TOOL_IDS.includes(current.sourceTool);
+  const targets = sourceKnown ? sessionHandoffTargets(current.sourceTool) : [];
+  const sourceLabel = CLI_TOOLS.find(tool => tool.id === current.sourceTool)?.label || '当前 CLI';
+  let title = `把 ${sourceLabel} 最新会话交给其他 CLI`;
+  if (!current.session || current.session.status !== 'running') title = '请先切到运行中的 CLI 终端';
+  else if (!sourceKnown) title = '当前终端不是受支持的 CLI';
+  else if (!current.project) title = `当前 ${sourceLabel} 终端未关联已登记项目`;
+  else if (!targets.length) title = '未检测到可接手的其他 CLI';
+  const enabled = Boolean(
+    current.project
+    && sourceKnown
+    && targets.length
+    && !sessionHandoffBusy,
+  );
+  termEl.handoffBtn.disabled = !enabled;
+  termEl.handoffBtn.title = title;
+  if (el.sessionHandoff?.classList.contains('active')) {
+    const sameSource = sessionHandoffContext
+      && sessionHandoffContext.sourceSessionId === current.id
+      && sessionHandoffContext.sourceTool === current.sourceTool
+      && sessionHandoffContext.project.id === current.project?.id;
+    if (!sameSource && !sessionHandoffBusy) closeSessionHandoff(false);
+  }
+}
+
+function selectedSessionHandoffTarget() {
+  return el.sessionHandoffTargets
+    ?.querySelector('input[name="session-handoff-target"]:checked')?.value || '';
+}
+
+function setSessionHandoffBusy(busy) {
+  sessionHandoffBusy = Boolean(busy);
+  if (el.sessionHandoffContent) el.sessionHandoffContent.disabled = sessionHandoffBusy;
+  if (el.sessionHandoffClose) el.sessionHandoffClose.disabled = sessionHandoffBusy;
+  if (el.sessionHandoffCancel) el.sessionHandoffCancel.disabled = sessionHandoffBusy;
+  el.sessionHandoffTargets?.querySelectorAll('input').forEach(input => {
+    input.disabled = sessionHandoffBusy;
+  });
+  if (el.sessionHandoffStart) {
+    el.sessionHandoffStart.disabled = sessionHandoffBusy
+      || !sessionHandoffContext?.preview
+      || !el.sessionHandoffContent.value.trim();
+    if (sessionHandoffBusy) {
+      el.sessionHandoffStart.textContent = '正在交接…';
+    } else if (sessionHandoffContext) {
+      const target = sessionHandoffContext.targetTool;
+      const label = CLI_TOOLS.find(tool => tool.id === target)?.label || target;
+      el.sessionHandoffStart.textContent = `交给 ${label}`;
+      syncSessionHandoffDraftState();
+    }
+  }
+  syncSessionHandoffButton();
+}
+
+function syncSessionHandoffDraftState() {
+  const validation = validateSessionHandoffContent(el.sessionHandoffContent?.value || '');
+  const count = sessionHandoffContext?.preview?.messages?.length || 0;
+  if (el.sessionHandoffStatus) {
+    el.sessionHandoffStatus.textContent = validation.error
+      || `${count} 条最近对话 · ${validation.bytes}/${SESSION_HANDOFF_FILE_MAX_BYTES} 字节`;
+    el.sessionHandoffStatus.classList.toggle('is-error', !validation.valid);
+  }
+  if (!sessionHandoffBusy && el.sessionHandoffStart) {
+    el.sessionHandoffStart.disabled = !sessionHandoffContext?.preview || !validation.valid;
+  }
+  return validation;
+}
+
+function sessionHandoffTargetPickHtml(tool, selected) {
+  return `<label class="orchestra-pick">`
+    + `<input type="radio" name="session-handoff-target" value="${escAttr(tool.id)}"${tool.id === selected ? ' checked' : ''} />`
+    + `<span class="term-tab-tool tool-${escAttr(tool.id)}">${esc(tool.id)}</span>`
+    + `<span>${esc(tool.label)}</span>`
+    + `</label>`;
+}
+
+function rebuildSessionHandoffContent() {
+  if (!sessionHandoffContext?.preview || !sessionHandoffContext?.workspace) return;
+  const targetTool = sessionHandoffContext.targetTool;
+  const previousTarget = sessionHandoffContext.previousTargetTool;
+  if (sessionHandoffContentDirty && previousTarget && previousTarget !== targetTool) {
+    const previousLabel = CLI_TOOLS.find(tool => tool.id === previousTarget)?.label || previousTarget;
+    const nextLabel = CLI_TOOLS.find(tool => tool.id === targetTool)?.label || targetTool;
+    el.sessionHandoffContent.value = el.sessionHandoffContent.value.replace(
+      new RegExp(`^- 接手：${previousLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'),
+      `- 接手：${nextLabel}`,
+    );
+  } else {
+    el.sessionHandoffContent.value = buildSessionHandoffMarkdown({
+      project: sessionHandoffContext.project,
+      sourceTool: sessionHandoffContext.sourceTool,
+      targetTool,
+      preview: sessionHandoffContext.preview,
+      context: sessionHandoffContext.workspace,
+    });
+    sessionHandoffContentDirty = false;
+  }
+  sessionHandoffContext.previousTargetTool = targetTool;
+  const targetLabel = CLI_TOOLS.find(tool => tool.id === targetTool)?.label || targetTool;
+  el.sessionHandoffStart.textContent = `交给 ${targetLabel}`;
+  syncSessionHandoffDraftState();
+}
+
+function renderSessionHandoffTargets(targets, selected) {
+  el.sessionHandoffTargets.innerHTML = targets
+    .map(tool => sessionHandoffTargetPickHtml(tool, selected))
+    .join('');
+  el.sessionHandoffTargets.querySelectorAll('input').forEach(input => {
+    input.onchange = () => {
+      if (!input.checked || !sessionHandoffContext) return;
+      sessionHandoffContext.targetTool = input.value;
+      rebuildSessionHandoffContent();
+    };
+  });
+}
+
+function closeSessionHandoff(restoreButtonFocus = true, { force = false } = {}) {
+  if (sessionHandoffBusy && !force) return false;
+  const wasOpen = el.sessionHandoff?.classList.contains('active');
+  sessionHandoffGate.invalidate();
+  setSessionHandoffBusy(false);
+  sessionHandoffOperation = null;
+  sessionHandoffContext = null;
+  sessionHandoffBusy = false;
+  sessionHandoffContentDirty = false;
+  el.sessionHandoff?.classList.remove('active');
+  termEl?.handoffBtn?.classList.remove('active');
+  termEl?.handoffBtn?.setAttribute('aria-expanded', 'false');
+  if (wasOpen && restoreButtonFocus) requestAnimationFrame(() => termEl.handoffBtn?.focus());
+  syncSessionHandoffButton();
+  return true;
+}
+
+async function openSessionHandoff() {
+  const initial = activeSessionHandoffContext();
+  if (!initial.project || !CLI_TOOL_IDS.includes(initial.sourceTool)) {
+    msg('请先切到已登记项目的运行中 CLI 终端', 'info');
+    return;
+  }
+  const request = sessionHandoffGate.begin();
+  closeProjectIdeas(false);
+  closeSnippetMenu();
+  closeMemoryMenu();
+  closeThemeMenu();
+  closeTerminalLayoutMenu();
+  closeFontMenu();
+  await refreshInstalledClis({ force: true });
+  if (!sessionHandoffGate.isCurrent(request)) return;
+  const current = activeSessionHandoffContext();
+  if (current.id !== initial.id
+    || current.sourceTool !== initial.sourceTool
+    || current.project?.id !== initial.project.id) return;
+  const targets = sessionHandoffTargets(current.sourceTool);
+  if (!targets.length) {
+    msg('没有检测到可接手的其他 CLI', 'info');
+    return;
+  }
+  const targetTool = targets[0].id;
+  sessionHandoffContext = {
+    sourceSessionId: current.id,
+    sourceTool: current.sourceTool,
+    project: current.project,
+    targetTool,
+    previousTargetTool: targetTool,
+    preview: null,
+    workspace: null,
+  };
+  sessionHandoffContentDirty = false;
+  renderSessionHandoffTargets(targets, targetTool);
+  const sourceLabel = CLI_TOOLS.find(tool => tool.id === current.sourceTool)?.label || current.sourceTool;
+  el.sessionHandoffSource.textContent = `正在读取 ${sourceLabel} 最新会话…`;
+  el.sessionHandoffSource.classList.remove('is-error');
+  el.sessionHandoffStatus.textContent = '准备中';
+  el.sessionHandoffStatus.classList.remove('is-error');
+  el.sessionHandoffContent.value = '';
+  el.sessionHandoffContent.disabled = true;
+  el.sessionHandoffStart.disabled = true;
+  el.sessionHandoffStart.textContent = `交给 ${CLI_TOOLS.find(tool => tool.id === targetTool)?.label || targetTool}`;
+  el.sessionHandoff.classList.add('active');
+  termEl.handoffBtn.classList.add('active');
+  termEl.handoffBtn.setAttribute('aria-expanded', 'true');
+
+  try {
+    invalidateProjectSessionHistory(current.project.localPath);
+    const [history, workspace] = await Promise.all([
+      loadProjectSessionHistory(current.project.localPath),
+      invoke('project_context', { path: current.project.localPath }),
+    ]);
+    if (!sessionHandoffGate.isCurrent(request)) return;
+    const latest = latestHandoffSession(history.groups, current.sourceTool);
+    if (!latest) throw new Error(`没有找到这个项目的 ${sourceLabel} 历史会话`);
+    const preview = await invoke('preview_session_handoff', {
+      path: current.project.localPath,
+      sourceTool: current.sourceTool,
+      id: latest.id,
+    });
+    if (!sessionHandoffGate.isCurrent(request)) return;
+    sessionHandoffContext.preview = preview;
+    sessionHandoffContext.workspace = workspace;
+    const at = preview.sourceAtMs ? new Date(preview.sourceAtMs).toLocaleString('zh-CN', { hour12: false }) : '';
+    el.sessionHandoffSource.textContent = `${sourceLabel} 最新磁盘会话 · ${preview.sourceTitle || latest.title}${at ? ` · ${at}` : ''}`;
+    el.sessionHandoffStatus.textContent = `${preview.messages?.length || 0} 条最近对话，可编辑`;
+    el.sessionHandoffStatus.classList.remove('is-error');
+    el.sessionHandoffContent.disabled = false;
+    rebuildSessionHandoffContent();
+    el.sessionHandoffContent.focus();
+    el.sessionHandoffContent.setSelectionRange(0, 0);
+  } catch (error) {
+    if (!sessionHandoffGate.isCurrent(request)) return;
+    el.sessionHandoffSource.textContent = error?.message || String(error);
+    el.sessionHandoffSource.classList.add('is-error');
+    el.sessionHandoffStatus.textContent = '读取失败';
+    el.sessionHandoffStart.disabled = true;
+  }
+}
+
+async function startSessionHandoff() {
+  const context = sessionHandoffContext;
+  const current = activeSessionHandoffContext();
+  const targetTool = selectedSessionHandoffTarget();
+  const content = el.sessionHandoffContent.value.trim();
+  if (!context || sessionHandoffBusy || !context.preview) return;
+  if (current.id !== context.sourceSessionId
+    || current.sourceTool !== context.sourceTool
+    || current.project?.id !== context.project.id) {
+    msg('来源终端已变化，请重新打开交接', 'error');
+    closeSessionHandoff();
+    return;
+  }
+  if (!sessionHandoffTargets(context.sourceTool).some(tool => tool.id === targetTool)) {
+    msg('目标 CLI 当前不可用', 'error');
+    return;
+  }
+  const validation = validateSessionHandoffContent(content);
+  if (!validation.valid) {
+    msg(validation.error, 'info');
+    syncSessionHandoffDraftState();
+    el.sessionHandoffContent.focus();
+    return;
+  }
+  const openingToken = beginProjectToolOpening();
+  if (!openingToken) {
+    msg('正在打开另一组终端，请稍后再试', 'info');
+    return;
+  }
+  const operation = Object.freeze({ context, openingToken });
+  sessionHandoffOperation = operation;
+  setSessionHandoffBusy(true);
+  const terminalState = captureTerminalPaneState();
+  let createdId = '';
+  try {
+    const handoff = await invoke('write_session_handoff', {
+      path: context.project.localPath,
+      content,
+    });
+    if (sessionHandoffOperation !== operation) throw new Error('交接任务已失效');
+    createdId = await createProjectToolSession(context.project, targetTool);
+    if (sessionHandoffOperation !== operation) throw new Error('交接任务已失效');
+    const created = sessions.get(createdId);
+    if (!created
+      || created.status === 'failed'
+      || created.status === 'exited'
+      || cliToolName(created.tool) !== targetTool
+      || !sameProjectCwd(created.cwd, context.project.localPath)) {
+      throw new Error('目标终端启动失败');
+    }
+    const prompt = handoffLaunchPrompt(
+      handoff.relativePath,
+      context.sourceTool,
+      targetTool,
+    );
+    if (!await injectToSession(createdId, prompt)) throw new Error('交接提示写入失败');
+    const targetLabel = CLI_TOOLS.find(tool => tool.id === targetTool)?.label || targetTool;
+    closeSessionHandoff(false, { force: true });
+    activateSession(createdId);
+    invalidateProjectSessionHistory(context.project.localPath);
+    reloadVisibleProjectSessionHistory(context.project.localPath);
+    const sourceLabel = CLI_TOOLS.find(tool => tool.id === context.sourceTool)?.label || context.sourceTool;
+    msg(`已交给 ${targetLabel}，${sourceLabel} 原会话仍保留`, 'success');
+  } catch (error) {
+    let rollbackError = '';
+    if (createdId) {
+      try {
+        await rollbackCreatedSessions([createdId], terminalState);
+      } catch (rollback) {
+        rollbackError = `；终端清理失败：${rollback?.message || rollback}`;
+      }
+    }
+    msg(`交接失败：${error?.message || error}${rollbackError}`, 'error');
+  } finally {
+    releaseProjectToolOpening(openingToken);
+    if (sessionHandoffOperation === operation) {
+      sessionHandoffOperation = null;
+      if (sessionHandoffContext === context) setSessionHandoffBusy(false);
+    }
+  }
+}
+
 let orchestraProject = null;
 let activeOrchestra = null;
 let orchestraSending = false;
@@ -1120,24 +1475,26 @@ function syncOrchestraWorkersHint(config = orchestraDraftConfig) {
 }
 
 function orchestraPickHtml(tool, role, config) {
-  const available = config.kit.includes(tool.id);
   const isBrain = tool.id === config.brain;
-  const disabled = !available || (role === 'worker' && isBrain);
+  const disabled = role === 'worker' && isBrain;
   const checked = role === 'brain' ? isBrain : config.workers.includes(tool.id);
   const name = role === 'brain' ? 'orchestra-brain' : 'orchestra-worker';
   const type = role === 'brain' ? 'radio' : 'checkbox';
-  const reason = !available ? '未安装' : (isBrain && role === 'worker' ? '已选为大脑' : '');
+  const reason = isBrain && role === 'worker' ? '已选为大脑' : '';
   return `<label class="orchestra-pick${disabled ? ' is-disabled' : ''}"${reason ? ` title="${escAttr(reason)}"` : ''}>`
     + `<input type="${type}" name="${name}" value="${escAttr(tool.id)}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''} />`
     + `<span>${esc(tool.label)}</span>`
-    + (!available ? '<small>未安装</small>' : '')
     + `</label>`;
 }
 
 function renderOrchestraPicks(config) {
   orchestraDraftConfig = config;
+  const availableTools = installedCliTools(config.kit);
+  const empty = '<span class="orchestra-tools-empty">未检测到已安装的 CLI</span>';
   if (el.orchestraBrainPicks) {
-    el.orchestraBrainPicks.innerHTML = CLI_TOOLS.map(tool => orchestraPickHtml(tool, 'brain', config)).join('');
+    el.orchestraBrainPicks.innerHTML = availableTools.length
+      ? availableTools.map(tool => orchestraPickHtml(tool, 'brain', config)).join('')
+      : empty;
     el.orchestraBrainPicks.querySelectorAll('input:not(:disabled)').forEach(input => {
       input.onchange = () => {
         const previousBrain = orchestraDraftConfig.brain;
@@ -1156,7 +1513,9 @@ function renderOrchestraPicks(config) {
     });
   }
   if (el.orchestraWorkerPicks) {
-    el.orchestraWorkerPicks.innerHTML = CLI_TOOLS.map(tool => orchestraPickHtml(tool, 'worker', config)).join('');
+    el.orchestraWorkerPicks.innerHTML = availableTools.length
+      ? availableTools.map(tool => orchestraPickHtml(tool, 'worker', config)).join('')
+      : empty;
     el.orchestraWorkerPicks.querySelectorAll('input:not(:disabled)').forEach(input => {
       input.onchange = () => {
         orchestraDraftConfig = normalizeOrchestraConfig({
@@ -1179,7 +1538,7 @@ async function openOrchestraModal(project) {
     msg('这个项目没有本地路径', 'info');
     return;
   }
-  await refreshInstalledClis();
+  await refreshInstalledClis({ force: true });
   if (!orchestraModalGate.isCurrent(request)) return;
   orchestraProject = project;
   if (el.orchestraGoal && !el.orchestraGoal.value.trim()) el.orchestraGoal.value = '';
@@ -1317,6 +1676,7 @@ async function injectToSession(id, text, send = true) {
   const data = send ? String(text || '').replace(/[\r\n]+$/, '') + '\r' : String(text || '');
   if (!data.trim()) return false;
   await waitForCliPrompt(session);
+  if (sessions.get(id) !== session || session.status === 'failed' || session.status === 'exited') return false;
   if (session.inputBuffer) session.inputBuffer.write(data);
   else await invoke('terminal_write', { id, data });
   return true;
@@ -1674,6 +2034,14 @@ function bind() {
   el.sessionPreviewCancel.onclick = closeSessionPreview;
   el.sessionPreview.onclick = e => { if (e.target === el.sessionPreview) closeSessionPreview(); };
   el.sessionPreviewOpen.onclick = resumePreviewedSession;
+  el.sessionHandoffClose.onclick = () => closeSessionHandoff();
+  el.sessionHandoffCancel.onclick = () => closeSessionHandoff();
+  el.sessionHandoff.onclick = e => { if (e.target === el.sessionHandoff) closeSessionHandoff(); };
+  el.sessionHandoffStart.onclick = () => void startSessionHandoff();
+  el.sessionHandoffContent.addEventListener('input', () => {
+    sessionHandoffContentDirty = true;
+    syncSessionHandoffDraftState();
+  });
   el.orchestraModalClose.onclick = closeOrchestraModal;
   el.orchestraModalCancel.onclick = closeOrchestraModal;
   el.orchestra.onclick = e => { if (e.target === el.orchestra) closeOrchestraModal(); };
@@ -1698,33 +2066,20 @@ function bind() {
     filterAndRender();
   };
 
-  // 需求清单
-  $('req-entry').onclick = (e) => { e.preventDefault(); openReqModal(); };
-  $('req-modal-close').onclick = closeReqModal;
-  $('req-modal-overlay').onclick = e => { if (e.target === $('req-modal-overlay')) closeReqModal(); };
-  $('req-add-btn').onclick = addRequirement;
-  $('req-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addRequirement(); } });
-  $('req-tabs').querySelectorAll('.req-tab').forEach(tab => {
-    tab.onclick = () => {
-      reqFilter = tab.dataset.filter;
-      $('req-tabs').querySelectorAll('.req-tab').forEach(t => t.classList.toggle('active', t === tab));
-      renderReqList();
-    };
-  });
-
   document.onkeydown = e => {
     if (e.key !== 'Escape') return;
     closeModal();
     closeDel();
     closeServerModal();
     closeServerList();
-    closeReqModal();
+    closeProjectIdeas();
     closeThemeMenu();
     closeSnippetMenu();
     closeMemoryMenu();
     closeTerminalLayoutMenu();
     closeFontMenu();
     closeSessionPreview();
+    closeSessionHandoff();
     closeOrchestraModal();
     closeProxyModal();
   };
@@ -1784,9 +2139,36 @@ function bind() {
   termEl.newBtn.onclick = () => createSession({});
   termEl.bellBtn.onclick = toggleNotify;
   applyBellState();
+  termEl.ideasBtn.onclick = (event) => {
+    event.stopPropagation();
+    if (termEl.ideasDrawer.classList.contains('active')) closeProjectIdeas();
+    else void openProjectIdeas();
+  };
+  termEl.handoffBtn.onclick = event => {
+    event.stopPropagation();
+    if (el.sessionHandoff.classList.contains('active')) closeSessionHandoff();
+    else void openSessionHandoff();
+  };
+  termEl.ideasClose.onclick = () => closeProjectIdeas();
+  termEl.ideasScrim.onclick = () => closeProjectIdeas();
+  termEl.ideaAdd.onclick = () => void addProjectIdea();
+  termEl.ideaInput.addEventListener('input', () => {
+    if (ideaPanelProjectId) ideaCaptureDrafts.set(ideaPanelProjectId, termEl.ideaInput.value);
+  });
+  termEl.ideaInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void addProjectIdea();
+    }
+  });
+  termEl.ideasArchiveToggle.onclick = () => {
+    ideaPanelShowArchived = !ideaPanelShowArchived;
+    renderProjectIdeas();
+  };
   // Prompt 片段库
   termEl.snippetBtn.onclick = (ev) => {
     ev.stopPropagation();
+    closeProjectIdeas(false);
     closeTerminalLayoutMenu();
     closeFontMenu();
     closeMemoryMenu();
@@ -1794,6 +2176,7 @@ function bind() {
   };
   termEl.memoryBtn.onclick = (ev) => {
     ev.stopPropagation();
+    closeProjectIdeas(false);
     closeTerminalLayoutMenu();
     closeFontMenu();
     closeSnippetMenu();
@@ -1811,7 +2194,11 @@ function bind() {
     if (!e.target.closest('#snippet-menu') && !e.target.closest('#terminal-snippet-btn')) closeSnippetMenu();
     if (!e.target.closest('#terminal-memory-menu') && !e.target.closest('#terminal-memory-btn')) closeMemoryMenu();
   });
-  window.addEventListener('resize', () => { closeSnippetMenu(); closeMemoryMenu(); });
+  window.addEventListener('resize', () => {
+    closeSnippetMenu();
+    closeMemoryMenu();
+    closeProjectIdeas(false);
+  });
   // 恢复现场 Modal
   $('context-modal-close').onclick = closeContextModal;
   $('context-modal-overlay').onclick = e => { if (e.target === $('context-modal-overlay')) closeContextModal(); };
@@ -1835,7 +2222,7 @@ function bind() {
     clearTimeout(gitFocusTimer);
     gitFocusTimer = setTimeout(() => {
       refreshGitStatus();
-      void refreshInstalledClis();
+      void refreshInstalledClis({ force: true });
     }, 400); // 防抖：回到窗口稍候再扫
   });
   termEl.usageBtn.onclick = openUsage;
@@ -1852,16 +2239,19 @@ function bind() {
   $('usage-overlay').onclick = e => { if (e.target === $('usage-overlay')) closeUsage(); };
   termEl.themeBtn.onclick = (e) => {
     e.stopPropagation();
+    closeProjectIdeas(false);
     (themeMenuOpening || termEl.themeMenu.classList.contains('active')) ? closeThemeMenu() : void openThemeMenu();
   };
   termEl.layoutBtn.onclick = (e) => {
     e.stopPropagation();
+    closeProjectIdeas(false);
     (terminalLayoutMenuOpening || termEl.layoutMenu.classList.contains('active'))
       ? closeTerminalLayoutMenu()
       : void openTerminalLayoutMenu();
   };
   termEl.fontBtn.onclick = (e) => {
     e.stopPropagation();
+    closeProjectIdeas(false);
     (fontMenuOpening || termEl.fontMenu.classList.contains('active'))
       ? closeFontMenu()
       : void openFontMenu();
@@ -2031,6 +2421,11 @@ function askConfirm(kind, name, onConfirm) {
 
 function del(id, name) {
   askConfirm('项目', name, async () => {
+    if (projectIdeaMutationGate.pending && ideaPanelProjectId === id) {
+      msg('项目想法正在保存，请稍候再删除项目', 'info');
+      return;
+    }
+    if (ideaPanelProjectId === id) closeProjectIdeas(false);
     await invoke('delete_project', { id });
     msg('删除成功', 'success');
     await load();
@@ -2585,6 +2980,23 @@ const termEl = {
   usageBtn: $('terminal-usage-btn'),
   bellBtn: $('terminal-bell-btn'),
   snippetBtn: $('terminal-snippet-btn'),
+  ideasBtn: $('terminal-ideas-btn'),
+  ideasCount: $('terminal-ideas-count'),
+  handoffBtn: $('terminal-handoff-btn'),
+  ideasScrim: $('project-ideas-scrim'),
+  ideasDrawer: $('project-ideas-drawer'),
+  ideasTitle: $('project-ideas-title'),
+  ideasProject: $('project-ideas-project'),
+  ideaInput: $('project-idea-input'),
+  ideaAdd: $('project-idea-add'),
+  ideasSummary: $('project-ideas-summary'),
+  ideasArchiveToggle: $('project-ideas-archive-toggle'),
+  ideasList: $('project-ideas-list'),
+  ideasEmpty: $('project-ideas-empty'),
+  ideasOrphans: $('project-ideas-orphans'),
+  ideasOrphansCount: $('project-ideas-orphans-count'),
+  ideasOrphanList: $('project-ideas-orphans-list'),
+  ideasClose: $('project-ideas-close'),
   memoryBtn: $('terminal-memory-btn'),
   memoryMenu: $('terminal-memory-menu'),
   layoutBtn: $('terminal-layout-btn'),
@@ -3575,7 +3987,7 @@ async function saveSnippetFromEditor() {
   renderSnippetList();
   msg('已保存', 'success');
 }
-// 串行化保存（同 persistRequirements），避免快速增改时整表快照乱序覆盖。
+// 串行化保存，避免快速增改时整表快照乱序覆盖。
 // 关键：不再用后端返回值整体替换数组——那会把「保存在途期间新增/删除的条目」一并覆盖丢掉。
 // 改为按发送顺序把后端补的 id/时间戳回填到原对象引用上（后端保持顺序、只补空字段）。
 // 保存失败时上抛（且弹错），让调用方据此不再弹「已保存」等假成功提示。
@@ -3743,211 +4155,391 @@ function startScheduler() {
   checkSchedules(); // 立即武装运行态（不会立刻发）
 }
 
-// ===== 需求清单：碎片需求收集箱 =====
-let reqFilter = 'all';
-let reqEditId = null; // 正在行内编辑的需求 id
+// ===== 项目想法：只属于活动终端所在项目，整理好后再放入当前对话 =====
+let ideaPanelProjectId = '';
+let ideaPanelProjectCwd = '';
+let ideaPanelEditId = null;
+let ideaPanelShowArchived = false;
+let ideaPanelOpening = false;
+let ideaPanelRevision = 0;
+const projectIdeaMutationGate = createProjectIdeaMutationGate();
+const ideaCaptureDrafts = new Map();
 
-const REQ_STATUS = {
-  todo:  { label: '待办',   next: 'doing' },
-  doing: { label: '进行中', next: 'done'  },
-  done:  { label: '已完成', next: 'todo'  },
-};
-const REQ_PRIORITY = { high: '重要', normal: '普通', low: '次要' };
-
-// 侧栏角标：未完成需求数
-function updateReqBadge() {
-  const badge = $('req-count');
-  if (!badge) return;
-  const n = requirements.filter(r => r.status !== 'done').length;
-  badge.textContent = n;
-  badge.style.display = n > 0 ? '' : 'none';
+function activeProjectIdeaContext() {
+  const session = activeSession ? sessions.get(activeSession) : null;
+  const available = session?.status === 'running'
+    && !sessionCloseCoordinator.isClosing(activeSession);
+  const project = available ? findProjectByCwd(session.cwd) : null;
+  return { session, project };
 }
 
-function reqProjectName(id) {
-  if (!id) return '';
-  const p = projects.find(x => x.id === id);
-  return p ? p.name : '';
+function syncProjectIdeasButton() {
+  if (!termEl.ideasBtn) return;
+  const { project } = activeProjectIdeaContext();
+  const count = project ? projectIdeasFor(projectIdeas, project.id).length : 0;
+  termEl.ideasBtn.disabled = !project || projectIdeaMutationGate.pending;
+  termEl.ideasBtn.title = project ? `${project.name}的项目想法` : '当前终端未关联已登记项目';
+  termEl.ideasCount.textContent = String(count);
+  termEl.ideasCount.hidden = count === 0;
 }
 
-function fillReqProjectSelect(sel, selectedId) {
-  if (!sel) return;
-  sel.innerHTML = ['<option value="">不关联项目</option>']
-    .concat(projects.map(p => `<option value="${escAttr(p.id)}">${esc(p.name)}</option>`))
-    .join('');
-  sel.value = selectedId || '';
-}
-
-function openReqModal() {
-  reqEditId = null;
-  fillReqProjectSelect($('req-project'), '');
-  $('req-input').value = '';
-  $('req-priority').value = 'normal';
-  renderReqList();
-  $('req-modal-overlay').classList.add('active');
-  setTimeout(() => $('req-input').focus(), 50);
-}
-function closeReqModal() { $('req-modal-overlay')?.classList.remove('active'); }
-
-// 串行化保存：连续快速增改时，避免两次保存的整表快照乱序覆盖、把刚记的项挤掉。
-// 同 persistSnippets：不整体替换数组（否则丢在途新增/删除），只按序回填后端 id/时间戳；
-// 失败时上抛，调用方据此不弹假成功。
-let reqSaveChain = Promise.resolve();
-function persistRequirements() {
-  const run = reqSaveChain.then(async () => {
-    const snapshot = requirements.slice();
-    const saved = await invoke('save_requirements', { requirements: snapshot });
-    backfillMeta(snapshot, saved, ['id', 'createdAt', 'updatedAt']);
-    updateReqBadge();
-  }).catch(e => { msg('保存失败: ' + (e.message || e), 'error'); throw e; });
-  reqSaveChain = run.catch(() => {});
-  return run;
-}
-
-async function addRequirement() {
-  const input = $('req-input');
-  const title = input.value.trim();
-  if (!title) { input.focus(); return; }
-  requirements.unshift({
-    id: '', title, note: '',
-    status: 'todo',
-    priority: $('req-priority').value || 'normal',
-    projectId: $('req-project').value || '',
-    createdAt: '', updatedAt: '',
-  });
-  input.value = '';
-  try { await persistRequirements(); } catch (_) { return; }
-  renderReqList();
-  input.focus();
-}
-
-async function cycleReqStatus(r) {
-  const prev = r.status;
-  r.status = REQ_STATUS[r.status]?.next || 'todo';
-  try { await persistRequirements(); } catch (_) { r.status = prev; renderReqList(); return; }
-  renderReqList();
-}
-
-function reqCounts() {
-  const c = { all: requirements.length, todo: 0, doing: 0, done: 0 };
-  requirements.forEach(r => { c[r.status] = (c[r.status] || 0) + 1; });
-  return c;
-}
-
-function reqRowHtml(r) {
-  const st = REQ_STATUS[r.status] || REQ_STATUS.todo;
-  const pname = reqProjectName(r.projectId);
-  const time = (r.createdAt || '').slice(5, 16); // MM-DD HH:MM
-  return `
-  <div class="req-row${r.status === 'done' ? ' req-done' : ''}" data-id="${escAttr(r.id)}">
-    <button class="req-status req-status-${r.status}" title="点击切换：待办 → 进行中 → 已完成" data-act="cycle">
-      <span class="req-status-dot"></span><span class="req-status-label">${esc(st.label)}</span>
-    </button>
-    <div class="req-main">
-      <div class="req-title">${esc(r.title)}</div>
-      ${r.note ? `<div class="req-note">${esc(r.note)}</div>` : ''}
-      <div class="req-meta">
-        <span class="req-pri req-pri-${r.priority}">${esc(REQ_PRIORITY[r.priority] || '普通')}</span>
-        ${pname ? `<span class="req-tag" title="关联项目">${esc(pname)}</span>` : ''}
-        ${time ? `<span class="req-time">${esc(time)}</span>` : ''}
-      </div>
-    </div>
-    <div class="req-actions">
-      <button class="action-btn" data-act="edit" title="编辑">${SNIPPET_ICONS.edit}</button>
-      <button class="action-btn danger" data-act="del" title="删除">${SNIPPET_ICONS.del}</button>
-    </div>
-  </div>`;
-}
-
-function reqEditRowHtml(r) {
-  return `
-  <div class="req-row req-row-editing" data-id="${escAttr(r.id)}">
-    <div class="req-edit">
-      <input class="form-input" type="text" id="req-edit-title" value="${escAttr(r.title)}" maxlength="200" placeholder="需求标题" />
-      <textarea class="form-input" id="req-edit-note" rows="2" placeholder="补充说明（可空）">${esc(r.note || '')}</textarea>
-      <div class="req-edit-row">
-        <select class="form-select" id="req-edit-priority">
-          <option value="normal">普通</option>
-          <option value="high">重要</option>
-          <option value="low">次要</option>
-        </select>
-        <select class="form-select" id="req-edit-project"></select>
-        <span class="req-edit-spacer"></span>
-        <button class="btn btn-default btn-sm" data-act="cancel">取消</button>
-        <button class="btn btn-primary btn-sm" data-act="save">保存</button>
-      </div>
-    </div>
-  </div>`;
-}
-
-function renderReqList() {
-  const c = reqCounts();
-  $('req-c-all').textContent = c.all;
-  $('req-c-todo').textContent = c.todo;
-  $('req-c-doing').textContent = c.doing;
-  $('req-c-done').textContent = c.done;
-
-  const list = $('req-list');
-  const empty = $('req-empty');
-  const items = reqFilter === 'all' ? requirements : requirements.filter(r => r.status === reqFilter);
-
-  if (!items.length) {
-    list.style.display = 'none';
-    empty.style.display = '';
-    empty.textContent = requirements.length ? '该分类下暂无需求' : '还没有需求，在上方随手记一条吧';
+function syncProjectIdeasContext() {
+  syncProjectIdeasButton();
+  syncSessionHandoffButton();
+  if (!termEl.ideasDrawer?.classList.contains('active')) return;
+  const { project } = activeProjectIdeaContext();
+  if (!project || project.id !== ideaPanelProjectId) {
+    closeProjectIdeas(false);
     return;
   }
-  empty.style.display = 'none';
-  list.style.display = '';
-  list.innerHTML = items.map(r => reqEditId === r.id ? reqEditRowHtml(r) : reqRowHtml(r)).join('');
+  renderProjectIdeas();
+}
 
-  list.querySelectorAll('.req-row').forEach(row => {
-    const r = requirements.find(x => x.id === row.dataset.id);
-    if (!r) return;
+async function openProjectIdeas() {
+  const { project } = activeProjectIdeaContext();
+  if (!project) {
+    msg('当前终端未关联已登记项目', 'error');
+    return;
+  }
+  const revision = ++ideaPanelRevision;
+  ideaPanelOpening = true;
+  closeSnippetMenu();
+  closeMemoryMenu();
+  closeThemeMenu();
+  closeTerminalLayoutMenu();
+  closeFontMenu();
+  const webviewHidden = await workspaceController?.setFloatingUiOpen('project-ideas', true);
+  if (revision !== ideaPanelRevision) return;
+  ideaPanelOpening = false;
+  if (webviewHidden === false) return;
+  const current = activeProjectIdeaContext();
+  if (!current.project || current.project.id !== project.id) {
+    void workspaceController?.setFloatingUiOpen('project-ideas', false);
+    return;
+  }
+  ideaPanelProjectId = project.id;
+  ideaPanelProjectCwd = project.localPath;
+  ideaPanelEditId = null;
+  ideaPanelShowArchived = false;
+  termEl.ideaInput.value = ideaCaptureDrafts.get(project.id) || '';
+  renderProjectIdeas();
+  termEl.ideasScrim.classList.add('active');
+  termEl.ideasDrawer.classList.add('active');
+  termEl.ideasDrawer.setAttribute('aria-hidden', 'false');
+  termEl.ideasBtn.classList.add('active');
+  termEl.ideasBtn.setAttribute('aria-expanded', 'true');
+  requestAnimationFrame(() => termEl.ideaInput.focus());
+}
 
-    if (reqEditId === r.id) {
-      $('req-edit-priority').value = r.priority || 'normal';
-      fillReqProjectSelect($('req-edit-project'), r.projectId);
-      const close = () => { reqEditId = null; renderReqList(); };
-      row.querySelector('[data-act="cancel"]').onclick = close;
-      row.querySelector('[data-act="save"]').onclick = async () => {
-        const t = $('req-edit-title').value.trim();
-        if (!t) { msg('标题不能为空', 'error'); $('req-edit-title').focus(); return; }
-        r.title = t;
-        r.note = $('req-edit-note').value.trim();
-        r.priority = $('req-edit-priority').value;
-        r.projectId = $('req-edit-project').value;
-        reqEditId = null;
-        try { await persistRequirements(); } catch (_) { renderReqList(); return; }
-        renderReqList();
+function closeProjectIdeas(restoreButtonFocus = true) {
+  const wasOpen = ideaPanelOpening || termEl.ideasDrawer?.classList.contains('active');
+  ideaPanelRevision += 1;
+  ideaPanelOpening = false;
+  termEl.ideasScrim?.classList.remove('active');
+  termEl.ideasDrawer?.classList.remove('active');
+  termEl.ideasDrawer?.setAttribute('aria-hidden', 'true');
+  termEl.ideasBtn?.classList.remove('active');
+  termEl.ideasBtn?.setAttribute('aria-expanded', 'false');
+  ideaPanelEditId = null;
+  if (wasOpen) void workspaceController?.setFloatingUiOpen('project-ideas', false);
+  if (wasOpen && restoreButtonFocus) {
+    requestAnimationFrame(() => termEl.ideasBtn?.focus());
+  }
+}
+
+async function persistProjectIdeas(snapshot = projectIdeas.slice()) {
+  try {
+    const saved = await invoke('save_project_ideas', { ideas: snapshot });
+    backfillMeta(snapshot, saved, ['id', 'createdAt', 'updatedAt']);
+  } catch (error) {
+    msg('保存想法失败: ' + (error?.message || error), 'error');
+    throw error;
+  }
+}
+
+function refreshProjectIdeasUi() {
+  syncProjectIdeasButton();
+  if (termEl.ideasDrawer?.classList.contains('active')) renderProjectIdeas();
+}
+
+function beginProjectIdeaMutation() {
+  if (!projectIdeaMutationGate.begin()) {
+    msg('上一条想法正在保存，请稍候', 'info');
+    return false;
+  }
+  refreshProjectIdeasUi();
+  return true;
+}
+
+function finishProjectIdeaMutation() {
+  projectIdeaMutationGate.finish();
+  refreshProjectIdeasUi();
+}
+
+async function commitProjectIdeasMutation(previous, next) {
+  try {
+    return await commitProjectIdeaSnapshot({
+      previous,
+      next,
+      persist: persistProjectIdeas,
+      getCurrent: () => projectIdeas,
+      setCurrent: (value) => {
+        projectIdeas = value;
+        refreshProjectIdeasUi();
+      },
+    });
+  } finally {
+    finishProjectIdeaMutation();
+  }
+}
+
+async function addProjectIdea() {
+  const project = projects.find(item => item.id === ideaPanelProjectId);
+  if (!project) {
+    closeProjectIdeas(false);
+    msg('当前项目已不存在', 'error');
+    return;
+  }
+  const text = termEl.ideaInput.value;
+  const created = createProjectIdea(text, project.id);
+  if (!created) {
+    termEl.ideaInput.focus();
+    return;
+  }
+  if (!beginProjectIdeaMutation()) return;
+  const previous = projectIdeas;
+  const next = [created, ...projectIdeas];
+  termEl.ideaInput.value = '';
+  ideaCaptureDrafts.delete(project.id);
+  if (await commitProjectIdeasMutation(previous, next)) {
+    msg('想法已记下', 'success');
+  } else {
+    termEl.ideaInput.value = text;
+    ideaCaptureDrafts.set(project.id, text);
+    return;
+  }
+  termEl.ideaInput.focus();
+}
+
+function projectIdeaTime(value) {
+  const date = new Date(value || '');
+  if (!Number.isFinite(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date);
+}
+
+function canPlaceProjectIdea(project) {
+  const { session, project: activeProject } = activeProjectIdeaContext();
+  return Boolean(
+    session
+    && activeProject?.id === project.id
+    && session.status === 'running'
+    && !sessionCloseCoordinator.isClosing(activeSession),
+  );
+}
+
+function projectIdeaCardHtml(idea, project, canPlace) {
+  if (ideaPanelEditId === idea.id) {
+    return `
+      <article class="project-idea-card" data-id="${escAttr(idea.id)}">
+        <div class="project-idea-edit">
+          <input type="text" data-field="title" maxlength="200" value="${escAttr(idea.title)}" aria-label="想法标题" />
+          <textarea data-field="note" maxlength="10000" rows="4" aria-label="想法详情" placeholder="补充背景、边界或下一步">${esc(idea.note || '')}</textarea>
+          <div class="project-idea-edit-actions">
+            <button type="button" data-action="cancel">取消</button>
+            <button type="button" data-action="save">保存</button>
+          </div>
+        </div>
+      </article>`;
+  }
+  const updated = projectIdeaTime(idea.updatedAt || idea.createdAt);
+  const placed = idea.lastPlacedAt
+    ? `<span class="is-placed">已放入 ${esc(idea.lastPlacedTool || '终端')} ${esc(projectIdeaTime(idea.lastPlacedAt))}</span>`
+    : '';
+  return `
+    <article class="project-idea-card${idea.archived ? ' is-archived' : ''}" data-id="${escAttr(idea.id)}">
+      <div class="project-idea-title">${esc(idea.title)}</div>
+      ${idea.note ? `<div class="project-idea-note">${esc(idea.note)}</div>` : ''}
+      <div class="project-idea-meta">${updated ? `<span>更新 ${esc(updated)}</span>` : ''}${placed}</div>
+      <div class="project-idea-actions">
+        <button class="project-idea-action primary" type="button" data-action="place"${canPlace ? '' : ' disabled'}>放入当前对话</button>
+        <button class="project-idea-action" type="button" data-action="edit">完善</button>
+        <button class="project-idea-action" type="button" data-action="archive">${idea.archived ? '恢复' : '归档'}</button>
+        <button class="project-idea-action danger" type="button" data-action="delete">删除</button>
+      </div>
+    </article>`;
+}
+
+function renderProjectIdeas() {
+  const project = projects.find(item => item.id === ideaPanelProjectId);
+  if (!project || !termEl.ideasList) return;
+  const activeIdeas = projectIdeasFor(projectIdeas, project.id);
+  const archivedIdeas = projectIdeasFor(projectIdeas, project.id, { archivedOnly: true });
+  const shown = ideaPanelShowArchived ? archivedIdeas : activeIdeas;
+  termEl.ideasTitle.textContent = `${project.name} · 想法`;
+  termEl.ideasProject.textContent = project.localPath;
+  termEl.ideasSummary.textContent = ideaPanelShowArchived
+    ? `${archivedIdeas.length} 条已归档`
+    : `${activeIdeas.length} 条想法`;
+  termEl.ideasArchiveToggle.textContent = ideaPanelShowArchived ? '返回想法' : `查看归档 ${archivedIdeas.length || ''}`.trim();
+  termEl.ideasArchiveToggle.classList.toggle('active', ideaPanelShowArchived);
+  termEl.ideaInput.disabled = projectIdeaMutationGate.pending;
+  termEl.ideaAdd.disabled = projectIdeaMutationGate.pending;
+  termEl.ideasArchiveToggle.disabled = projectIdeaMutationGate.pending;
+  termEl.ideasList.innerHTML = shown.map(idea => projectIdeaCardHtml(idea, project, canPlaceProjectIdea(project))).join('');
+  termEl.ideasEmpty.style.display = shown.length ? 'none' : '';
+  termEl.ideasEmpty.textContent = ideaPanelShowArchived
+    ? '还没有归档的想法'
+    : '先记下一条，不需要现在就想完整。';
+
+  termEl.ideasList.querySelectorAll('.project-idea-card').forEach(card => {
+    const idea = findProjectIdea(projectIdeas, card.dataset.id, project.id);
+    if (!idea) return;
+    if (ideaPanelEditId === idea.id) {
+      card.querySelector('[data-action="cancel"]').onclick = () => {
+        ideaPanelEditId = null;
+        renderProjectIdeas();
       };
-      $('req-edit-title').addEventListener('keydown', e => {
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) row.querySelector('[data-act="save"]').click();
+      card.querySelector('[data-action="save"]').onclick = () => void saveProjectIdeaEdit(card, idea, project);
+      card.querySelector('[data-field="title"]').addEventListener('keydown', event => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          card.querySelector('[data-action="save"]').click();
+        }
       });
       return;
     }
-
-    row.querySelectorAll('[data-act]').forEach(elm => {
-      elm.onclick = (ev) => {
-        ev.stopPropagation();
-        const act = elm.dataset.act;
-        if (act === 'cycle') return cycleReqStatus(r);
-        if (act === 'edit') {
-          reqEditId = r.id;
-          renderReqList();
-          setTimeout(() => $('req-edit-title')?.focus(), 30);
-          return;
-        }
-        if (act === 'del') {
-          askConfirm('需求', r.title, async () => {
-            requirements = requirements.filter(x => x.id !== r.id);
-            try { await persistRequirements(); } catch (_) { return; }
-            renderReqList();
-            msg('已删除', 'success');
-          });
-        }
-      };
-    });
+    card.querySelector('[data-action="place"]').onclick = () => void placeProjectIdea(idea, project);
+    card.querySelector('[data-action="edit"]').onclick = () => {
+      ideaPanelEditId = idea.id;
+      renderProjectIdeas();
+      requestAnimationFrame(() => termEl.ideasList.querySelector('[data-field="title"]')?.focus());
+    };
+    card.querySelector('[data-action="archive"]').onclick = () => void archiveProjectIdea(idea, project);
+    card.querySelector('[data-action="delete"]').onclick = () => deleteProjectIdea(idea, project);
   });
+
+  const knownProjectIds = new Set(projects.map(item => item.id));
+  const orphans = orphanProjectIdeas(projectIdeas, knownProjectIds);
+  termEl.ideasOrphans.hidden = orphans.length === 0;
+  termEl.ideasOrphansCount.textContent = String(orphans.length);
+  termEl.ideasOrphanList.innerHTML = orphans.map(idea => `
+    <div class="project-idea-orphan" data-id="${escAttr(idea.id)}">
+      <span title="${escAttr(idea.title)}">${esc(idea.title)}</span>
+      <button type="button">归入当前项目</button>
+    </div>`).join('');
+  termEl.ideasOrphanList.querySelectorAll('.project-idea-orphan').forEach(row => {
+    row.querySelector('button').onclick = () => void claimProjectIdea(row.dataset.id, project, knownProjectIds);
+  });
+  if (projectIdeaMutationGate.pending) {
+    termEl.ideasList.querySelectorAll('button, input, textarea').forEach(control => { control.disabled = true; });
+    termEl.ideasOrphanList.querySelectorAll('button').forEach(control => { control.disabled = true; });
+  }
+}
+
+async function saveProjectIdeaEdit(card, idea, project) {
+  const title = card.querySelector('[data-field="title"]').value.trim();
+  const note = card.querySelector('[data-field="note"]').value.trim();
+  if (!title) {
+    msg('标题不能为空', 'error');
+    card.querySelector('[data-field="title"]').focus();
+    return;
+  }
+  if (!beginProjectIdeaMutation()) return;
+  const previous = projectIdeas;
+  const next = updateProjectIdea(projectIdeas, {
+    id: idea.id, projectId: project.id, title, note,
+  });
+  if (next === projectIdeas) {
+    finishProjectIdeaMutation();
+    return;
+  }
+  ideaPanelEditId = null;
+  if (!await commitProjectIdeasMutation(previous, next)) {
+    ideaPanelEditId = idea.id;
+    refreshProjectIdeasUi();
+    return;
+  }
+  msg('想法已更新', 'success');
+}
+
+async function archiveProjectIdea(idea, project) {
+  if (!beginProjectIdeaMutation()) return;
+  const previous = projectIdeas;
+  const next = updateProjectIdea(projectIdeas, {
+    id: idea.id, projectId: project.id, archived: !idea.archived,
+  });
+  await commitProjectIdeasMutation(previous, next);
+}
+
+function deleteProjectIdea(idea, project) {
+  askConfirm('想法', idea.title, async () => {
+    if (!beginProjectIdeaMutation()) return;
+    const previous = projectIdeas;
+    const next = removeProjectIdea(projectIdeas, idea.id, project.id);
+    if (!await commitProjectIdeasMutation(previous, next)) {
+      return;
+    }
+    msg('想法已删除', 'success');
+  });
+}
+
+async function claimProjectIdea(id, project, knownProjectIds) {
+  if (!beginProjectIdeaMutation()) return;
+  const previous = projectIdeas;
+  const next = claimOrphanProjectIdea(projectIdeas, {
+    id, projectId: project.id, knownProjectIds,
+  });
+  if (next === projectIdeas) {
+    finishProjectIdeaMutation();
+    return;
+  }
+  await commitProjectIdeasMutation(previous, next);
+}
+
+async function placeProjectIdea(idea, project) {
+  const sessionId = activeSession;
+  const session = sessionId ? sessions.get(sessionId) : null;
+  const activeProject = session ? findProjectByCwd(session.cwd) : null;
+  const plan = planProjectIdeaPaste({
+    idea,
+    projectId: activeProject?.id,
+    projectCwd: ideaPanelProjectCwd,
+    sessionId,
+    sessionStatus: session?.status,
+    sessionCwd: session?.cwd,
+  });
+  if (!plan || !session || sessionCloseCoordinator.isClosing(sessionId)) {
+    msg('请先切回这个项目的运行中终端', 'error');
+    syncProjectIdeasContext();
+    return;
+  }
+  if (!beginProjectIdeaMutation()) return;
+  try {
+    session.term.paste(plan.text);
+    session.term.focus();
+  } catch (error) {
+    finishProjectIdeaMutation();
+    msg('放入对话失败: ' + (error?.message || error), 'error');
+    return;
+  }
+  const toolId = cliToolName(session.tool || '');
+  const toolLabel = CLI_TOOLS.find(tool => tool.id === toolId)?.label || session.name || '终端';
+  const previous = projectIdeas;
+  const next = updateProjectIdea(projectIdeas, {
+    id: idea.id,
+    projectId: project.id,
+    lastPlacedAt: new Date().toISOString(),
+    lastPlacedTool: toolLabel,
+    lastPlacedSessionId: sessionId,
+  });
+  closeProjectIdeas(false);
+  if (!await commitProjectIdeasMutation(previous, next)) {
+    msg('内容已放入，但投放记录保存失败', 'error');
+    return;
+  }
+  msg('已放入当前对话，请确认后发送', 'success');
 }
 
 // ===== 项目"恢复现场"：git 概览 + 最近提交 + 改动文件 + CLAUDE.md 摘要 =====
@@ -4108,6 +4700,7 @@ async function bindTermEvents() {
       if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
       refreshExpandedHistoryCards();
       detachOrchestraSession(e.payload, s);
+      if (activeSession === e.payload) syncProjectIdeasContext();
     }
   });
   // 会话状态感知：某会话活跃后静默 → AI 可能跑完/在等你输入
@@ -5457,6 +6050,8 @@ function collapseDock() {
   closeMemoryMenu();
   closeTerminalLayoutMenu();
   closeFontMenu();
+  closeProjectIdeas(false);
+  closeSessionHandoff(false);
   termEl.dock.classList.remove('active');
   termEl.fab.classList.remove('hidden');
   characterTheme.setDockOpen(false);
@@ -5698,6 +6293,7 @@ function setTerminalPaneLayout(layout) {
   if (active && active.cwd !== treeRoot) renderTree(active.cwd);
   closeTerminalLayoutMenu();
   renderTerminalPaneLayout();
+  syncProjectIdeasContext();
   if (active) active.term.focus();
 }
 
@@ -5739,6 +6335,7 @@ function activateSession(id, force = false, onActivated = null) {
   if (rootChanged) renderTree(s.cwd);
   else refreshSessionRailView();
   renderTerminalPaneLayout();
+  syncProjectIdeasContext();
   // 标签栏可横向滚动：激活的标签可能在可视区外，滚进来
   s.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   requestAnimationFrame(() => {
@@ -5789,6 +6386,7 @@ function removeSessionFromPane(id, force = false) {
     }
   }
   renderTerminalPaneLayout();
+  syncProjectIdeasContext();
   if (activeSession) requestAnimationFrame(() => sessions.get(activeSession)?.term.focus());
   msg(`「${session.name}」已移出分屏，会话仍在后台运行`, 'info');
 }
@@ -5858,6 +6456,7 @@ function finalizeSessionClose(id) {
     renderTerminalPaneLayout();
     refreshSessionRailView();
   }
+  syncProjectIdeasContext();
   updateFabBadge();
   persistSessionLayout();
   if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
@@ -6015,6 +6614,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   }
 
   refreshExpandedHistoryCards();
+  syncProjectIdeasContext();
   return id;
 }
 

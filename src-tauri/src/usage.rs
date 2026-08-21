@@ -167,7 +167,12 @@ fn read_claude_oauth_token() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         if let Ok(out) = std::process::Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            .args([
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-w",
+            ])
             .output()
         {
             if out.status.success() {
@@ -189,7 +194,9 @@ fn read_claude_oauth_token() -> Option<String> {
             }
         }
     }
-    crate::log_warn!("读取登录凭据失败：钥匙串未授权/无此项，且 ~/.claude/.credentials.json 不可用");
+    crate::log_warn!(
+        "读取登录凭据失败：钥匙串未授权/无此项，且 ~/.claude/.credentials.json 不可用"
+    );
     None
 }
 
@@ -288,7 +295,10 @@ fn parse_oauth_usage(json: &str) -> Result<OAuthUsage, String> {
         error: None,
         five_hour: win("five_hour"),
         seven_day: win("seven_day"),
-        plan: v.get("plan").and_then(|x| x.as_str()).map(|s| s.to_string()),
+        plan: v
+            .get("plan")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string()),
         stale: false,
         age_secs: 0,
     })
@@ -323,7 +333,9 @@ pub fn fetch_oauth_usage() -> OAuthUsage {
     if is_custom_endpoint {
         return OAuthUsage {
             ok: false,
-            error: Some("当前是第三方 Claude API 地址，未调用用量接口（第三方未声明支持）".to_string()),
+            error: Some(
+                "当前是第三方 Claude API 地址，未调用用量接口（第三方未声明支持）".to_string(),
+            ),
             ..Default::default()
         };
     }
@@ -503,11 +515,11 @@ fn push_bucket_windows(
     seen: &mut HashSet<String>,
 ) {
     for key in ["primary", "secondary"] {
-        if let Some(win) = bucket.get(key).and_then(|w| window_from_json(w, name_prefix)) {
-            let fingerprint = format!(
-                "{}|{:.4}|{}",
-                win.label, win.utilization, win.resets_at
-            );
+        if let Some(win) = bucket
+            .get(key)
+            .and_then(|w| window_from_json(w, name_prefix))
+        {
+            let fingerprint = format!("{}|{:.4}|{}", win.label, win.utilization, win.resets_at);
             if seen.insert(fingerprint) {
                 out.push(win);
             }
@@ -526,7 +538,10 @@ fn collect_codex_windows(result: &Value) -> Vec<LimitWindow> {
     let main_id = result
         .pointer("/rateLimits/limitId")
         .and_then(|x| x.as_str());
-    if let Some(map) = result.get("rateLimitsByLimitId").and_then(|x| x.as_object()) {
+    if let Some(map) = result
+        .get("rateLimitsByLimitId")
+        .and_then(|x| x.as_object())
+    {
         for (id, bucket) in map {
             if main_id == Some(id.as_str()) {
                 continue;
@@ -618,9 +633,8 @@ fn resolve_codex_bin() -> Result<PathBuf, String> {
             }
         }
     }
-    which_in_path("codex").ok_or_else(|| {
-        "未找到 Codex CLI（请确认已安装 `codex`，并用 ChatGPT 登录过）".to_string()
-    })
+    which_in_path("codex")
+        .ok_or_else(|| "未找到 Codex CLI（请确认已安装 `codex`，并用 ChatGPT 登录过）".to_string())
 }
 
 fn kill_child(child: &mut std::process::Child) {
@@ -773,7 +787,9 @@ fn fetch_codex_rate_limits_raw(bin: &Path) -> Result<Value, String> {
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 kill_child(&mut child);
                 if !initialized {
-                    return Err("Codex app-server 已退出（请确认 `codex` 可用且已登录）".to_string());
+                    return Err(
+                        "Codex app-server 已退出（请确认 `codex` 可用且已登录）".to_string()
+                    );
                 }
                 return Err("Codex app-server 在返回限流前退出".to_string());
             }

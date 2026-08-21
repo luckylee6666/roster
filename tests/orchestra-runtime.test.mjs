@@ -19,14 +19,17 @@ const orchestraRuntime = main.slice(
 
 test('协作弹窗从 CLI 登记表动态生成单选大脑和多选干活终端', () => {
   assert.match(main, /function openOrchestraModal/);
-  assert.match(main, /CLI_TOOLS\.map\(tool => orchestraPickHtml\(tool, 'brain', config\)\)/);
-  assert.match(main, /CLI_TOOLS\.map\(tool => orchestraPickHtml\(tool, 'worker', config\)\)/);
+  assert.match(main, /const availableTools = installedCliTools\(config\.kit\)/);
+  assert.match(main, /availableTools\.map\(tool => orchestraPickHtml\(tool, 'brain', config\)\)/);
+  assert.match(main, /availableTools\.map\(tool => orchestraPickHtml\(tool, 'worker', config\)\)/);
+  assert.doesNotMatch(orchestraRuntime, /<small>未安装<\/small>/);
   assert.match(main, /type = role === 'brain' \? 'radio' : 'checkbox'/);
   assert.match(main, /class="action-btn orchestra-btn-card"/);
   assert.match(main, /开协作/);
   assert.match(orchestraModal, /id="orchestra-overlay"/);
   assert.match(orchestraModal, /id="orchestra-brain-picks"/);
   assert.match(orchestraModal, /id="orchestra-worker-picks"/);
+  assert.match(orchestraModal, /只显示本机已安装的 CLI/);
   assert.doesNotMatch(orchestraModal, /name="orchestra-brain"/);
   assert.doesNotMatch(orchestraModal, /干活：Codex|另外两个|三家/);
   assert.match(page, /id="orchestra-bar"/);
@@ -40,7 +43,7 @@ test('协作弹窗从 CLI 登记表动态生成单选大脑和多选干活终端
 test('协作弹窗接入 latest-wins 门闩，旧探测结果和关闭后的结果不会重新打开弹窗', () => {
   assert.match(main, /createLatestRequestGate/);
   assert.match(orchestraRuntime, /const orchestraModalGate = createLatestRequestGate\(\)/);
-  assert.match(orchestraRuntime, /const request = orchestraModalGate\.begin\(\)[\s\S]*?await refreshInstalledClis\(\)[\s\S]*?if \(!orchestraModalGate\.isCurrent\(request\)\) return/);
+  assert.match(orchestraRuntime, /const request = orchestraModalGate\.begin\(\)[\s\S]*?await refreshInstalledClis\(\{ force: true \}\)[\s\S]*?if \(!orchestraModalGate\.isCurrent\(request\)\) return/);
   assert.match(orchestraRuntime, /function closeOrchestraModal\(\)[\s\S]*?orchestraModalGate\.invalidate\(\)/);
 });
 

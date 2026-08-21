@@ -46,7 +46,10 @@ pub fn normalize_proxy_url(raw: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Ok(String::new());
     }
-    if trimmed.chars().any(|ch| ch.is_whitespace() || ch == '<' || ch == '>' || ch == '\\') {
+    if trimmed
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch == '<' || ch == '>' || ch == '\\')
+    {
         return Err("代理地址含有非法字符".into());
     }
     let with_scheme = if trimmed.contains("://") {
@@ -69,11 +72,7 @@ pub fn normalize_proxy_url(raw: &str) -> Result<String, String> {
 }
 
 fn proxy_host_ok(hostport: &str) -> bool {
-    let hostport = hostport
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("")
-        .trim();
+    let hostport = hostport.split(['/', '?', '#']).next().unwrap_or("").trim();
     if hostport.is_empty() || hostport.starts_with('/') {
         return false;
     }
@@ -122,7 +121,9 @@ pub fn normalize_settings(raw: ProxySettings) -> Result<ProxySettings, String> {
 
 fn is_socks_proxy(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
-    lower.starts_with("socks4://") || lower.starts_with("socks5://") || lower.starts_with("socks5h://")
+    lower.starts_with("socks4://")
+        || lower.starts_with("socks5://")
+        || lower.starts_with("socks5h://")
 }
 
 fn env_pairs(settings: &ProxySettings) -> Vec<(&'static str, String)> {
@@ -136,7 +137,10 @@ fn env_pairs(settings: &ProxySettings) -> Vec<(&'static str, String)> {
             if key.eq_ignore_ascii_case("NO_PROXY") {
                 return Some((*key, settings.no_proxy.clone()));
             }
-            if socks && (key.eq_ignore_ascii_case("HTTP_PROXY") || key.eq_ignore_ascii_case("HTTPS_PROXY")) {
+            if socks
+                && (key.eq_ignore_ascii_case("HTTP_PROXY")
+                    || key.eq_ignore_ascii_case("HTTPS_PROXY"))
+            {
                 return None;
             }
             Some((*key, settings.url.clone()))
@@ -169,10 +173,7 @@ pub fn write_env_file(settings: &ProxySettings) -> Result<PathBuf, String> {
     let body = {
         let mut text = String::from("# Roster terminal proxy\n");
         for (key, value) in env_pairs(settings) {
-            text.push_str(&format!(
-                "$env:{key} = '{}'\n",
-                value.replace('\'', "''")
-            ));
+            text.push_str(&format!("$env:{key} = '{}'\n", value.replace('\'', "''")));
         }
         text
     };

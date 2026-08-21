@@ -7,9 +7,9 @@ pub fn is_safe_cli_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     (1..=32).contains(&bytes.len())
         && bytes[0].is_ascii_lowercase()
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-' || *byte == b'_')
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-' || *byte == b'_'
+        })
 }
 
 pub fn filter_safe_cli_names(names: &[String]) -> Vec<String> {

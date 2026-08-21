@@ -49,10 +49,11 @@ test('只有终端坞打开、会话在跑、无浮层且焦点在 xterm 时才�
   }), false);
 });
 
-test('浮层选择器覆盖弹窗、片段菜单、主题/分屏/字号菜单和分组重命名', () => {
+test('浮层选择器覆盖弹窗、项目想法、片段菜单、主题/分屏/字号菜单和分组重命名', () => {
   assert.equal(isNativeEscOverlayOpen(fakeRoot()), false);
   assert.equal(isNativeEscOverlayOpen(fakeRoot(['#snippet-menu.active'])), true);
   assert.equal(isNativeEscOverlayOpen(fakeRoot(['#terminal-font-menu.active'])), true);
+  assert.equal(isNativeEscOverlayOpen(fakeRoot(['#project-ideas-drawer.active'])), true);
   assert.equal(isNativeEscOverlayOpen(fakeRoot(['.group-rename-input'])), true);
   assert.equal(isNativeEscOverlayOpen(null), false);
 });
