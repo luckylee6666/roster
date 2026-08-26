@@ -153,26 +153,6 @@
           <div class="conversation-rail-title"><h2>项目动态</h2></div>
           <div id="conversation-activity-list" class="conversation-activity-list"></div>
         </section>
-        <section class="conversation-rail-section conversation-ideas-section">
-          <div class="conversation-rail-title">
-            <h2>项目想法</h2>
-            <span class="conversation-rail-actions">
-              <button id="conversation-ideas-toggle-archived" class="conversation-rail-action" type="button" title="查看已归档想法" aria-label="查看已归档想法" aria-pressed="false" disabled>归档</button>
-              <button id="conversation-idea-add" class="conversation-rail-action conversation-idea-add" type="button" title="记录新想法" aria-label="记录新想法" aria-expanded="false" disabled>
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
-              </button>
-            </span>
-          </div>
-          <form class="conversation-idea-capture" id="conversation-idea-capture" hidden>
-            <label for="conversation-idea-input">记录一个稍后完善的想法</label>
-            <textarea id="conversation-idea-input" rows="3" maxlength="4000" placeholder="先记下来，之后可以继续整理…"></textarea>
-            <div class="conversation-idea-capture-actions">
-              <button id="conversation-idea-cancel" type="button">取消</button>
-              <button id="conversation-idea-save" type="submit">保存想法</button>
-            </div>
-          </form>
-          <div id="conversation-idea-list" class="conversation-idea-list"></div>
-        </section>
       </aside>
     </section>
 
@@ -627,12 +607,6 @@
           <button class="term-tool-btn" id="terminal-snippet-btn" title="Prompt 片段库：一键注入常用指令">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><path d="M9 5a2 2 0 012-2h2a2 2 0 012 2v0a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/><path d="M9 12h6M9 16h4"/></svg>
           </button>
-          <button class="term-tool-btn terminal-ideas-btn" id="terminal-ideas-btn" type="button"
-                  title="项目想法" aria-label="项目想法" aria-controls="project-ideas-drawer"
-                  aria-expanded="false" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18h6M10 21h4"/><path d="M8.5 15.5c-1.45-1.05-2.5-2.9-2.5-5A6 6 0 0118 10.5c0 2.1-1.05 3.95-2.5 5-.82.6-1.24 1.18-1.35 2.5h-4.3c-.11-1.32-.53-1.9-1.35-2.5z"/><path d="M12 2v2M4.93 4.93l1.42 1.42M19.07 4.93l-1.42 1.42"/></svg>
-            <span class="term-tool-count" id="terminal-ideas-count" hidden>0</span>
-          </button>
           <button class="term-tool-btn" id="terminal-handoff-btn" type="button"
                   title="把当前 CLI 最新会话交给其他 CLI" aria-label="交接会话"
                   aria-controls="session-handoff-overlay" aria-expanded="false" disabled>
@@ -754,45 +728,6 @@
         <button class="orchestra-close" id="orchestra-close" type="button" title="结束这场协作" aria-label="结束这场协作">&times;</button>
       </div>
       <div class="terminal-main">
-        <div class="project-ideas-scrim" id="project-ideas-scrim"></div>
-        <aside class="project-ideas-drawer" id="project-ideas-drawer" role="complementary"
-               aria-labelledby="project-ideas-title" aria-hidden="true">
-          <header class="project-ideas-head">
-            <div class="project-ideas-heading">
-              <strong id="project-ideas-title">项目想法</strong>
-              <span id="project-ideas-project">当前项目</span>
-            </div>
-            <button class="project-ideas-close" id="project-ideas-close" type="button"
-                    title="关闭想法" aria-label="关闭想法">&times;</button>
-          </header>
-          <div class="project-ideas-capture">
-            <textarea id="project-idea-input" rows="3" maxlength="10000"
-                      aria-label="记录项目想法"
-                      placeholder="先记下来，不必一次想完整。可以稍后继续完善……"></textarea>
-            <div class="project-ideas-capture-foot">
-              <span>⌘/Ctrl + Enter 记录</span>
-              <button class="project-idea-add" id="project-idea-add" type="button">记下来</button>
-            </div>
-          </div>
-          <div class="project-ideas-body">
-            <div class="project-ideas-bar">
-              <span id="project-ideas-summary">0 条想法</span>
-              <button id="project-ideas-archive-toggle" type="button">查看归档</button>
-            </div>
-            <div class="project-ideas-list" id="project-ideas-list"></div>
-            <div class="project-ideas-empty" id="project-ideas-empty">
-              灵感冒出来时先记在这里，成熟后再放入当前对话。
-            </div>
-            <section class="project-ideas-orphans" id="project-ideas-orphans" hidden>
-              <div class="project-ideas-orphans-head">
-                <strong>待归属想法</strong>
-                <span id="project-ideas-orphans-count">0</span>
-              </div>
-              <p>这些想法原来的项目已被移除，可逐条归入当前项目。</p>
-              <div id="project-ideas-orphans-list"></div>
-            </section>
-          </div>
-        </aside>
         <aside class="terminal-tree" id="terminal-tree">
           <div class="tree-head">
             <span class="tree-root-name" id="tree-root-name" title="">文件树</span>

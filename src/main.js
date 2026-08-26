@@ -113,18 +113,6 @@ import {
   shouldAutoMountProjectMemory,
   shouldMountProjectMemory,
 } from './project-memory-utils.js';
-import {
-  claimOrphanProjectIdea,
-  commitProjectIdeaSnapshot,
-  createProjectIdea,
-  createProjectIdeaMutationGate,
-  findProjectIdea,
-  orphanProjectIdeas,
-  planProjectIdeaPaste,
-  projectIdeasFor,
-  removeProjectIdea,
-  updateProjectIdea,
-} from './project-ideas-utils.js';
 import { createTerminalSessionCloseCoordinator } from './terminal-session-close.js';
 import {
   applyUiScale,
@@ -168,7 +156,6 @@ window.addEventListener('unhandledrejection', e => {
 let projects = [];
 let servers = [];
 let snippets = [];
-let projectIdeas = [];
 let currentEditId = null;
 let pendingConfirm = null;
 let pendingConfirmCancel = null;
@@ -404,13 +391,11 @@ async function load() {
     projects = await invoke('get_projects');
     servers = await invoke('get_servers');
     try { snippets = await invoke('get_snippets'); } catch (_) { snippets = []; }
-    try { projectIdeas = await invoke('get_project_ideas'); } catch (_) { projectIdeas = []; }
     renderGroups();
     render(projects);
     el.countAll.textContent = projects.length;
-    syncProjectIdeasContext();
+    syncSessionHandoffButton();
     conversationController?.setProjects(projects);
-    conversationController?.setIdeas(projectIdeas);
     renderSnippetQuick();
     startScheduler();
   } catch (e) {
@@ -1394,7 +1379,6 @@ async function openSessionHandoff() {
     return;
   }
   const request = sessionHandoffGate.begin();
-  closeProjectIdeas(false);
   closeSnippetMenu();
   closeMemoryMenu();
   closeThemeMenu();
@@ -2206,7 +2190,6 @@ function bind() {
     closeDel();
     closeServerModal();
     closeServerList();
-    closeProjectIdeas();
     closeThemeMenu();
     closeSnippetMenu();
     closeMemoryMenu();
@@ -2273,36 +2256,14 @@ function bind() {
   termEl.newBtn.onclick = () => createSession({});
   termEl.bellBtn.onclick = toggleNotify;
   applyBellState();
-  termEl.ideasBtn.onclick = (event) => {
-    event.stopPropagation();
-    if (termEl.ideasDrawer.classList.contains('active')) closeProjectIdeas();
-    else void openProjectIdeas();
-  };
   termEl.handoffBtn.onclick = event => {
     event.stopPropagation();
     if (el.sessionHandoff.classList.contains('active')) closeSessionHandoff();
     else void openSessionHandoff();
   };
-  termEl.ideasClose.onclick = () => closeProjectIdeas();
-  termEl.ideasScrim.onclick = () => closeProjectIdeas();
-  termEl.ideaAdd.onclick = () => void addProjectIdea();
-  termEl.ideaInput.addEventListener('input', () => {
-    if (ideaPanelProjectId) ideaCaptureDrafts.set(ideaPanelProjectId, termEl.ideaInput.value);
-  });
-  termEl.ideaInput.addEventListener('keydown', event => {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      void addProjectIdea();
-    }
-  });
-  termEl.ideasArchiveToggle.onclick = () => {
-    ideaPanelShowArchived = !ideaPanelShowArchived;
-    renderProjectIdeas();
-  };
   // Prompt 片段库
   termEl.snippetBtn.onclick = (ev) => {
     ev.stopPropagation();
-    closeProjectIdeas(false);
     closeTerminalLayoutMenu();
     closeFontMenu();
     closeMemoryMenu();
@@ -2310,7 +2271,6 @@ function bind() {
   };
   termEl.memoryBtn.onclick = (ev) => {
     ev.stopPropagation();
-    closeProjectIdeas(false);
     closeTerminalLayoutMenu();
     closeFontMenu();
     closeSnippetMenu();
@@ -2331,7 +2291,6 @@ function bind() {
   window.addEventListener('resize', () => {
     closeSnippetMenu();
     closeMemoryMenu();
-    closeProjectIdeas(false);
   });
   // 恢复现场 Modal
   $('context-modal-close').onclick = closeContextModal;
@@ -2377,19 +2336,16 @@ function bind() {
   $('usage-overlay').onclick = e => { if (e.target === $('usage-overlay')) closeUsage(); };
   termEl.themeBtn.onclick = (e) => {
     e.stopPropagation();
-    closeProjectIdeas(false);
     (themeMenuOpening || termEl.themeMenu.classList.contains('active')) ? closeThemeMenu() : void openThemeMenu();
   };
   termEl.layoutBtn.onclick = (e) => {
     e.stopPropagation();
-    closeProjectIdeas(false);
     (terminalLayoutMenuOpening || termEl.layoutMenu.classList.contains('active'))
       ? closeTerminalLayoutMenu()
       : void openTerminalLayoutMenu();
   };
   termEl.fontBtn.onclick = (e) => {
     e.stopPropagation();
-    closeProjectIdeas(false);
     (fontMenuOpening || termEl.fontMenu.classList.contains('active'))
       ? closeFontMenu()
       : void openFontMenu();
@@ -2582,11 +2538,6 @@ function askConfirm(kind, name, onConfirm) {
 
 function del(id, name) {
   askConfirm('项目', name, async () => {
-    if (projectIdeaMutationGate.pending && ideaPanelProjectId === id) {
-      msg('项目想法正在保存，请稍候再删除项目', 'info');
-      return;
-    }
-    if (ideaPanelProjectId === id) closeProjectIdeas(false);
     await invoke('delete_project', { id });
     msg('删除成功', 'success');
     await load();
@@ -3146,23 +3097,7 @@ const termEl = {
   usageBtn: $('terminal-usage-btn'),
   bellBtn: $('terminal-bell-btn'),
   snippetBtn: $('terminal-snippet-btn'),
-  ideasBtn: $('terminal-ideas-btn'),
-  ideasCount: $('terminal-ideas-count'),
   handoffBtn: $('terminal-handoff-btn'),
-  ideasScrim: $('project-ideas-scrim'),
-  ideasDrawer: $('project-ideas-drawer'),
-  ideasTitle: $('project-ideas-title'),
-  ideasProject: $('project-ideas-project'),
-  ideaInput: $('project-idea-input'),
-  ideaAdd: $('project-idea-add'),
-  ideasSummary: $('project-ideas-summary'),
-  ideasArchiveToggle: $('project-ideas-archive-toggle'),
-  ideasList: $('project-ideas-list'),
-  ideasEmpty: $('project-ideas-empty'),
-  ideasOrphans: $('project-ideas-orphans'),
-  ideasOrphansCount: $('project-ideas-orphans-count'),
-  ideasOrphanList: $('project-ideas-orphans-list'),
-  ideasClose: $('project-ideas-close'),
   memoryBtn: $('terminal-memory-btn'),
   memoryMenu: $('terminal-memory-menu'),
   layoutBtn: $('terminal-layout-btn'),
@@ -4322,200 +4257,9 @@ function startScheduler() {
   checkSchedules(); // 立即武装运行态（不会立刻发）
 }
 
-// ===== 项目想法：只属于活动终端所在项目，整理好后再放入当前对话 =====
-let ideaPanelProjectId = '';
-let ideaPanelProjectCwd = '';
-let ideaPanelEditId = null;
-let ideaPanelShowArchived = false;
-let ideaPanelOpening = false;
-let ideaPanelRevision = 0;
-const projectIdeaMutationGate = createProjectIdeaMutationGate();
-const ideaCaptureDrafts = new Map();
-
-function activeProjectIdeaContext() {
-  const session = activeSession ? sessions.get(activeSession) : null;
-  const available = session?.status === 'running'
-    && !sessionCloseCoordinator.isClosing(activeSession);
-  const project = available ? findProjectByCwd(session.cwd) : null;
-  return { session, project };
-}
-
-function syncProjectIdeasButton() {
-  if (!termEl.ideasBtn) return;
-  const { project } = activeProjectIdeaContext();
-  const count = project ? projectIdeasFor(projectIdeas, project.id).length : 0;
-  termEl.ideasBtn.disabled = !project || projectIdeaMutationGate.pending;
-  termEl.ideasBtn.title = project ? `${project.name}的项目想法` : '当前终端未关联已登记项目';
-  termEl.ideasCount.textContent = String(count);
-  termEl.ideasCount.hidden = count === 0;
-}
-
-function syncProjectIdeasContext() {
-  syncProjectIdeasButton();
-  syncSessionHandoffButton();
-  if (!termEl.ideasDrawer?.classList.contains('active')) return;
-  const { project } = activeProjectIdeaContext();
-  if (!project || project.id !== ideaPanelProjectId) {
-    closeProjectIdeas(false);
-    return;
-  }
-  renderProjectIdeas();
-}
-
-async function openProjectIdeas() {
-  const { project } = activeProjectIdeaContext();
-  if (!project) {
-    msg('当前终端未关联已登记项目', 'error');
-    return;
-  }
-  const revision = ++ideaPanelRevision;
-  ideaPanelOpening = true;
-  closeSnippetMenu();
-  closeMemoryMenu();
-  closeThemeMenu();
-  closeTerminalLayoutMenu();
-  closeFontMenu();
-  const webviewHidden = await workspaceController?.setFloatingUiOpen('project-ideas', true);
-  if (revision !== ideaPanelRevision) return;
-  ideaPanelOpening = false;
-  if (webviewHidden === false) return;
-  const current = activeProjectIdeaContext();
-  if (!current.project || current.project.id !== project.id) {
-    void workspaceController?.setFloatingUiOpen('project-ideas', false);
-    return;
-  }
-  ideaPanelProjectId = project.id;
-  ideaPanelProjectCwd = project.localPath;
-  ideaPanelEditId = null;
-  ideaPanelShowArchived = false;
-  termEl.ideaInput.value = ideaCaptureDrafts.get(project.id) || '';
-  renderProjectIdeas();
-  termEl.ideasScrim.classList.add('active');
-  termEl.ideasDrawer.classList.add('active');
-  termEl.ideasDrawer.setAttribute('aria-hidden', 'false');
-  termEl.ideasBtn.classList.add('active');
-  termEl.ideasBtn.setAttribute('aria-expanded', 'true');
-  requestAnimationFrame(() => termEl.ideaInput.focus());
-}
-
-function closeProjectIdeas(restoreButtonFocus = true) {
-  const wasOpen = ideaPanelOpening || termEl.ideasDrawer?.classList.contains('active');
-  ideaPanelRevision += 1;
-  ideaPanelOpening = false;
-  termEl.ideasScrim?.classList.remove('active');
-  termEl.ideasDrawer?.classList.remove('active');
-  termEl.ideasDrawer?.setAttribute('aria-hidden', 'true');
-  termEl.ideasBtn?.classList.remove('active');
-  termEl.ideasBtn?.setAttribute('aria-expanded', 'false');
-  ideaPanelEditId = null;
-  if (wasOpen) void workspaceController?.setFloatingUiOpen('project-ideas', false);
-  if (wasOpen && restoreButtonFocus) {
-    requestAnimationFrame(() => termEl.ideasBtn?.focus());
-  }
-}
-
-async function persistProjectIdeas(snapshot = projectIdeas.slice()) {
-  try {
-    const saved = await invoke('save_project_ideas', { ideas: snapshot });
-    backfillMeta(snapshot, saved, ['id', 'createdAt', 'updatedAt']);
-  } catch (error) {
-    msg('保存想法失败: ' + (error?.message || error), 'error');
-    throw error;
-  }
-}
-
-function refreshProjectIdeasUi() {
-  syncProjectIdeasButton();
-  if (termEl.ideasDrawer?.classList.contains('active')) renderProjectIdeas();
-  conversationController?.setIdeas(projectIdeas);
-}
-
-function beginProjectIdeaMutation() {
-  if (!projectIdeaMutationGate.begin()) {
-    msg('上一条想法正在保存，请稍候', 'info');
-    return false;
-  }
-  refreshProjectIdeasUi();
-  return true;
-}
-
-function finishProjectIdeaMutation() {
-  projectIdeaMutationGate.finish();
-  refreshProjectIdeasUi();
-}
-
-async function commitProjectIdeasMutation(previous, next) {
-  try {
-    return await commitProjectIdeaSnapshot({
-      previous,
-      next,
-      persist: persistProjectIdeas,
-      getCurrent: () => projectIdeas,
-      setCurrent: (value) => {
-        projectIdeas = value;
-        refreshProjectIdeasUi();
-      },
-    });
-  } finally {
-    finishProjectIdeaMutation();
-  }
-}
-
 function conversationProject(projectId) {
   const id = String(projectId || '').trim();
   return id ? projects.find(project => project.id === id) || null : null;
-}
-
-async function createConversationProjectIdea({ projectId, text } = {}) {
-  const project = conversationProject(projectId);
-  if (!project) throw new Error('当前项目已不存在');
-  const created = createProjectIdea(text, project.id);
-  if (!created || !beginProjectIdeaMutation()) return null;
-  const previous = projectIdeas;
-  const next = [created, ...projectIdeas];
-  if (!await commitProjectIdeasMutation(previous, next)) return null;
-  msg('想法已记下', 'success');
-  return findProjectIdea(projectIdeas, created.id, project.id);
-}
-
-async function updateConversationProjectIdea({
-  projectId,
-  id,
-  title,
-  note,
-  archived,
-} = {}) {
-  const project = conversationProject(projectId);
-  if (!project) throw new Error('当前项目已不存在');
-  const current = findProjectIdea(projectIdeas, id, project.id);
-  if (!current || !beginProjectIdeaMutation()) return null;
-  const previous = projectIdeas;
-  const next = updateProjectIdea(projectIdeas, {
-    id: current.id,
-    projectId: project.id,
-    title,
-    note,
-    archived,
-  });
-  if (next === projectIdeas) {
-    finishProjectIdeaMutation();
-    return null;
-  }
-  if (!await commitProjectIdeasMutation(previous, next)) return null;
-  msg('想法已更新', 'success');
-  return findProjectIdea(projectIdeas, current.id, project.id);
-}
-
-async function deleteConversationProjectIdea({ projectId, id } = {}) {
-  const project = conversationProject(projectId);
-  if (!project) throw new Error('当前项目已不存在');
-  const current = findProjectIdea(projectIdeas, id, project.id);
-  if (!current || !beginProjectIdeaMutation()) return false;
-  const previous = projectIdeas;
-  const next = removeProjectIdea(projectIdeas, current.id, project.id);
-  if (!await commitProjectIdeasMutation(previous, next)) return false;
-  msg('想法已删除', 'success');
-  return true;
 }
 
 async function openConversationProjectFolder({ projectId } = {}) {
@@ -4536,255 +4280,6 @@ async function refreshConversationProject({ projectId } = {}) {
   reloadVisibleProjectSessionHistory(project.localPath);
   void refreshGitStatus();
   return { project, history, context };
-}
-
-async function addProjectIdea() {
-  const project = projects.find(item => item.id === ideaPanelProjectId);
-  if (!project) {
-    closeProjectIdeas(false);
-    msg('当前项目已不存在', 'error');
-    return;
-  }
-  const text = termEl.ideaInput.value;
-  const created = createProjectIdea(text, project.id);
-  if (!created) {
-    termEl.ideaInput.focus();
-    return;
-  }
-  if (!beginProjectIdeaMutation()) return;
-  const previous = projectIdeas;
-  const next = [created, ...projectIdeas];
-  termEl.ideaInput.value = '';
-  ideaCaptureDrafts.delete(project.id);
-  if (await commitProjectIdeasMutation(previous, next)) {
-    msg('想法已记下', 'success');
-  } else {
-    termEl.ideaInput.value = text;
-    ideaCaptureDrafts.set(project.id, text);
-    return;
-  }
-  termEl.ideaInput.focus();
-}
-
-function projectIdeaTime(value) {
-  const date = new Date(value || '');
-  if (!Number.isFinite(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(date);
-}
-
-function canPlaceProjectIdea(project) {
-  const { session, project: activeProject } = activeProjectIdeaContext();
-  return Boolean(
-    session
-    && activeProject?.id === project.id
-    && session.status === 'running'
-    && !sessionCloseCoordinator.isClosing(activeSession),
-  );
-}
-
-function projectIdeaCardHtml(idea, project, canPlace) {
-  if (ideaPanelEditId === idea.id) {
-    return `
-      <article class="project-idea-card" data-id="${escAttr(idea.id)}">
-        <div class="project-idea-edit">
-          <input type="text" data-field="title" maxlength="200" value="${escAttr(idea.title)}" aria-label="想法标题" />
-          <textarea data-field="note" maxlength="10000" rows="4" aria-label="想法详情" placeholder="补充背景、边界或下一步">${esc(idea.note || '')}</textarea>
-          <div class="project-idea-edit-actions">
-            <button type="button" data-action="cancel">取消</button>
-            <button type="button" data-action="save">保存</button>
-          </div>
-        </div>
-      </article>`;
-  }
-  const updated = projectIdeaTime(idea.updatedAt || idea.createdAt);
-  const placed = idea.lastPlacedAt
-    ? `<span class="is-placed">已放入 ${esc(idea.lastPlacedTool || '终端')} ${esc(projectIdeaTime(idea.lastPlacedAt))}</span>`
-    : '';
-  return `
-    <article class="project-idea-card${idea.archived ? ' is-archived' : ''}" data-id="${escAttr(idea.id)}">
-      <div class="project-idea-title">${esc(idea.title)}</div>
-      ${idea.note ? `<div class="project-idea-note">${esc(idea.note)}</div>` : ''}
-      <div class="project-idea-meta">${updated ? `<span>更新 ${esc(updated)}</span>` : ''}${placed}</div>
-      <div class="project-idea-actions">
-        <button class="project-idea-action primary" type="button" data-action="place"${canPlace ? '' : ' disabled'}>放入当前对话</button>
-        <button class="project-idea-action" type="button" data-action="edit">完善</button>
-        <button class="project-idea-action" type="button" data-action="archive">${idea.archived ? '恢复' : '归档'}</button>
-        <button class="project-idea-action danger" type="button" data-action="delete">删除</button>
-      </div>
-    </article>`;
-}
-
-function renderProjectIdeas() {
-  const project = projects.find(item => item.id === ideaPanelProjectId);
-  if (!project || !termEl.ideasList) return;
-  const activeIdeas = projectIdeasFor(projectIdeas, project.id);
-  const archivedIdeas = projectIdeasFor(projectIdeas, project.id, { archivedOnly: true });
-  const shown = ideaPanelShowArchived ? archivedIdeas : activeIdeas;
-  termEl.ideasTitle.textContent = `${project.name} · 想法`;
-  termEl.ideasProject.textContent = project.localPath;
-  termEl.ideasSummary.textContent = ideaPanelShowArchived
-    ? `${archivedIdeas.length} 条已归档`
-    : `${activeIdeas.length} 条想法`;
-  termEl.ideasArchiveToggle.textContent = ideaPanelShowArchived ? '返回想法' : `查看归档 ${archivedIdeas.length || ''}`.trim();
-  termEl.ideasArchiveToggle.classList.toggle('active', ideaPanelShowArchived);
-  termEl.ideaInput.disabled = projectIdeaMutationGate.pending;
-  termEl.ideaAdd.disabled = projectIdeaMutationGate.pending;
-  termEl.ideasArchiveToggle.disabled = projectIdeaMutationGate.pending;
-  termEl.ideasList.innerHTML = shown.map(idea => projectIdeaCardHtml(idea, project, canPlaceProjectIdea(project))).join('');
-  termEl.ideasEmpty.style.display = shown.length ? 'none' : '';
-  termEl.ideasEmpty.textContent = ideaPanelShowArchived
-    ? '还没有归档的想法'
-    : '先记下一条，不需要现在就想完整。';
-
-  termEl.ideasList.querySelectorAll('.project-idea-card').forEach(card => {
-    const idea = findProjectIdea(projectIdeas, card.dataset.id, project.id);
-    if (!idea) return;
-    if (ideaPanelEditId === idea.id) {
-      card.querySelector('[data-action="cancel"]').onclick = () => {
-        ideaPanelEditId = null;
-        renderProjectIdeas();
-      };
-      card.querySelector('[data-action="save"]').onclick = () => void saveProjectIdeaEdit(card, idea, project);
-      card.querySelector('[data-field="title"]').addEventListener('keydown', event => {
-        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-          event.preventDefault();
-          card.querySelector('[data-action="save"]').click();
-        }
-      });
-      return;
-    }
-    card.querySelector('[data-action="place"]').onclick = () => void placeProjectIdea(idea, project);
-    card.querySelector('[data-action="edit"]').onclick = () => {
-      ideaPanelEditId = idea.id;
-      renderProjectIdeas();
-      requestAnimationFrame(() => termEl.ideasList.querySelector('[data-field="title"]')?.focus());
-    };
-    card.querySelector('[data-action="archive"]').onclick = () => void archiveProjectIdea(idea, project);
-    card.querySelector('[data-action="delete"]').onclick = () => deleteProjectIdea(idea, project);
-  });
-
-  const knownProjectIds = new Set(projects.map(item => item.id));
-  const orphans = orphanProjectIdeas(projectIdeas, knownProjectIds);
-  termEl.ideasOrphans.hidden = orphans.length === 0;
-  termEl.ideasOrphansCount.textContent = String(orphans.length);
-  termEl.ideasOrphanList.innerHTML = orphans.map(idea => `
-    <div class="project-idea-orphan" data-id="${escAttr(idea.id)}">
-      <span title="${escAttr(idea.title)}">${esc(idea.title)}</span>
-      <button type="button">归入当前项目</button>
-    </div>`).join('');
-  termEl.ideasOrphanList.querySelectorAll('.project-idea-orphan').forEach(row => {
-    row.querySelector('button').onclick = () => void claimProjectIdea(row.dataset.id, project, knownProjectIds);
-  });
-  if (projectIdeaMutationGate.pending) {
-    termEl.ideasList.querySelectorAll('button, input, textarea').forEach(control => { control.disabled = true; });
-    termEl.ideasOrphanList.querySelectorAll('button').forEach(control => { control.disabled = true; });
-  }
-}
-
-async function saveProjectIdeaEdit(card, idea, project) {
-  const title = card.querySelector('[data-field="title"]').value.trim();
-  const note = card.querySelector('[data-field="note"]').value.trim();
-  if (!title) {
-    msg('标题不能为空', 'error');
-    card.querySelector('[data-field="title"]').focus();
-    return;
-  }
-  if (!beginProjectIdeaMutation()) return;
-  const previous = projectIdeas;
-  const next = updateProjectIdea(projectIdeas, {
-    id: idea.id, projectId: project.id, title, note,
-  });
-  if (next === projectIdeas) {
-    finishProjectIdeaMutation();
-    return;
-  }
-  ideaPanelEditId = null;
-  if (!await commitProjectIdeasMutation(previous, next)) {
-    ideaPanelEditId = idea.id;
-    refreshProjectIdeasUi();
-    return;
-  }
-  msg('想法已更新', 'success');
-}
-
-async function archiveProjectIdea(idea, project) {
-  if (!beginProjectIdeaMutation()) return;
-  const previous = projectIdeas;
-  const next = updateProjectIdea(projectIdeas, {
-    id: idea.id, projectId: project.id, archived: !idea.archived,
-  });
-  await commitProjectIdeasMutation(previous, next);
-}
-
-function deleteProjectIdea(idea, project) {
-  askConfirm('想法', idea.title, async () => {
-    if (!beginProjectIdeaMutation()) return;
-    const previous = projectIdeas;
-    const next = removeProjectIdea(projectIdeas, idea.id, project.id);
-    if (!await commitProjectIdeasMutation(previous, next)) {
-      return;
-    }
-    msg('想法已删除', 'success');
-  });
-}
-
-async function claimProjectIdea(id, project, knownProjectIds) {
-  if (!beginProjectIdeaMutation()) return;
-  const previous = projectIdeas;
-  const next = claimOrphanProjectIdea(projectIdeas, {
-    id, projectId: project.id, knownProjectIds,
-  });
-  if (next === projectIdeas) {
-    finishProjectIdeaMutation();
-    return;
-  }
-  await commitProjectIdeasMutation(previous, next);
-}
-
-async function placeProjectIdea(idea, project) {
-  const sessionId = activeSession;
-  const session = sessionId ? sessions.get(sessionId) : null;
-  const activeProject = session ? findProjectByCwd(session.cwd) : null;
-  const plan = planProjectIdeaPaste({
-    idea,
-    projectId: activeProject?.id,
-    projectCwd: ideaPanelProjectCwd,
-    sessionId,
-    sessionStatus: session?.status,
-    sessionCwd: session?.cwd,
-  });
-  if (!plan || !session || sessionCloseCoordinator.isClosing(sessionId)) {
-    msg('请先切回这个项目的运行中终端', 'error');
-    syncProjectIdeasContext();
-    return;
-  }
-  if (!beginProjectIdeaMutation()) return;
-  try {
-    session.term.paste(plan.text);
-    session.term.focus();
-  } catch (error) {
-    finishProjectIdeaMutation();
-    msg('放入对话失败: ' + (error?.message || error), 'error');
-    return;
-  }
-  const toolId = cliToolName(session.tool || '');
-  const toolLabel = CLI_TOOLS.find(tool => tool.id === toolId)?.label || session.name || '终端';
-  const previous = projectIdeas;
-  const next = updateProjectIdea(projectIdeas, {
-    id: idea.id,
-    projectId: project.id,
-    lastPlacedAt: new Date().toISOString(),
-    lastPlacedTool: toolLabel,
-    lastPlacedSessionId: sessionId,
-  });
-  closeProjectIdeas(false);
-  if (!await commitProjectIdeasMutation(previous, next)) {
-    msg('内容已放入，但投放记录保存失败', 'error');
-    return;
-  }
-  msg('已放入当前对话，请确认后发送', 'success');
 }
 
 // ===== 项目"恢复现场"：git 概览 + 最近提交 + 改动文件 + CLAUDE.md 摘要 =====
@@ -4945,7 +4440,7 @@ async function bindTermEvents() {
       if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
       refreshExpandedHistoryCards();
       detachOrchestraSession(e.payload, s);
-      if (activeSession === e.payload) syncProjectIdeasContext();
+      if (activeSession === e.payload) syncSessionHandoffButton();
     }
   });
   // 会话状态感知：某会话活跃后静默 → AI 可能跑完/在等你输入
@@ -6296,7 +5791,6 @@ function collapseDock() {
   closeMemoryMenu();
   closeTerminalLayoutMenu();
   closeFontMenu();
-  closeProjectIdeas(false);
   closeSessionHandoff(false);
   termEl.dock.classList.remove('active');
   termEl.fab.classList.remove('hidden');
@@ -6539,7 +6033,7 @@ function setTerminalPaneLayout(layout) {
   if (active && active.cwd !== treeRoot) renderTree(active.cwd);
   closeTerminalLayoutMenu();
   renderTerminalPaneLayout();
-  syncProjectIdeasContext();
+  syncSessionHandoffButton();
   if (active) active.term.focus();
 }
 
@@ -6581,7 +6075,7 @@ function activateSession(id, force = false, onActivated = null) {
   if (rootChanged) renderTree(s.cwd);
   else refreshSessionRailView();
   renderTerminalPaneLayout();
-  syncProjectIdeasContext();
+  syncSessionHandoffButton();
   // 标签栏可横向滚动：激活的标签可能在可视区外，滚进来
   s.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   requestAnimationFrame(() => {
@@ -6632,7 +6126,7 @@ function removeSessionFromPane(id, force = false) {
     }
   }
   renderTerminalPaneLayout();
-  syncProjectIdeasContext();
+  syncSessionHandoffButton();
   if (activeSession) requestAnimationFrame(() => sessions.get(activeSession)?.term.focus());
   msg(`「${session.name}」已移出分屏，会话仍在后台运行`, 'info');
 }
@@ -6702,7 +6196,7 @@ function finalizeSessionClose(id) {
     renderTerminalPaneLayout();
     refreshSessionRailView();
   }
-  syncProjectIdeasContext();
+  syncSessionHandoffButton();
   updateFabBadge();
   persistSessionLayout();
   if (historyCwd) reloadVisibleProjectSessionHistory(historyCwd);
@@ -6860,7 +6354,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   }
 
   refreshExpandedHistoryCards();
-  syncProjectIdeasContext();
+  syncSessionHandoffButton();
   return id;
 }
 

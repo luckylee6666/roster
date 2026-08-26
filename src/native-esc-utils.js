@@ -6,7 +6,6 @@ export const NATIVE_ESC_OVERLAY_SELECTORS = [
   '#terminal-layout-menu.active',
   '#terminal-font-menu.active',
   '#workspace-mode-menu.active',
-  '#project-ideas-drawer.active',
   '.term-diy.active',
   '.group-rename-input',
 ];

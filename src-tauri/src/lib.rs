@@ -102,187 +102,15 @@ pub struct Snippet {
     pub schedule: Option<Schedule>,
 }
 
-/// 项目内的想法草稿：可反复完善，成熟后放入当前终端输入区。
-const MAX_PROJECT_IDEAS: usize = 2_000;
-const MAX_PROJECT_IDEAS_TOTAL_CHARS: usize = 2_000_000;
-const MAX_PROJECT_IDEAS_FILE_BYTES: u64 = 4 * 1024 * 1024;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectIdea {
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub note: String,
-    #[serde(default)]
-    pub archived: bool,
-    #[serde(alias = "project_id")]
-    pub project_id: String,
-    /// 最近一次放入终端输入区的时间；只表示已填入，不代表用户已经发送。
-    #[serde(default, alias = "last_placed_at")]
-    pub last_placed_at: String,
-    #[serde(default, alias = "last_placed_tool")]
-    pub last_placed_tool: String,
-    #[serde(default, alias = "last_placed_session_id")]
-    pub last_placed_session_id: String,
-    #[serde(default, alias = "created_at")]
-    pub created_at: String,
-    #[serde(default, alias = "updated_at")]
-    pub updated_at: String,
-}
-
-fn project_idea_changed(previous: &ProjectIdea, current: &ProjectIdea) -> bool {
-    previous.title != current.title
-        || previous.note != current.note
-        || previous.archived != current.archived
-        || previous.project_id != current.project_id
-        || previous.last_placed_at != current.last_placed_at
-        || previous.last_placed_tool != current.last_placed_tool
-        || previous.last_placed_session_id != current.last_placed_session_id
-}
-
-fn project_idea_has_unsafe_control(value: &str, allow_layout_whitespace: bool) -> bool {
-    value
-        .chars()
-        .any(|ch| ch.is_control() && !(allow_layout_whitespace && matches!(ch, '\n' | '\t')))
-}
-
-fn normalize_project_ideas(
-    ideas: Vec<ProjectIdea>,
-    now: &str,
-    project_ids: &HashSet<String>,
-    previous_ideas: &[ProjectIdea],
-) -> Result<Vec<ProjectIdea>, String> {
-    if ideas.len() > MAX_PROJECT_IDEAS {
-        return Err(format!("项目想法不能超过 {MAX_PROJECT_IDEAS} 条"));
-    }
-    let previous_by_id: HashMap<&str, &ProjectIdea> = previous_ideas
-        .iter()
-        .filter(|idea| !idea.id.is_empty())
-        .map(|idea| (idea.id.as_str(), idea))
-        .collect();
-    let mut seen_ids = HashSet::with_capacity(ideas.len());
-    let mut total_chars = 0usize;
-    let mut normalized = Vec::with_capacity(ideas.len());
-
-    for mut idea in ideas {
-        idea.title = idea.title.trim().to_string();
-        idea.note = idea.note.trim().to_string();
-        idea.project_id = idea.project_id.trim().to_string();
-        idea.last_placed_at = idea.last_placed_at.trim().to_string();
-        idea.last_placed_tool = idea.last_placed_tool.trim().to_string();
-        idea.last_placed_session_id = idea.last_placed_session_id.trim().to_string();
-
-        if idea.project_id.is_empty() {
-            return Err("想法必须关联项目".to_string());
-        }
-        if idea.title.is_empty() {
-            return Err("想法标题不能为空".to_string());
-        }
-        if idea.title.chars().count() > 200 || idea.note.chars().count() > 10_000 {
-            return Err("想法内容过长".to_string());
-        }
-        if idea.project_id.len() > 128
-            || idea.last_placed_tool.chars().count() > 128
-            || idea.last_placed_session_id.len() > 128
-            || idea.last_placed_at.len() > 64
-            || idea.created_at.len() > 64
-            || idea.updated_at.len() > 64
-        {
-            return Err("想法元数据过长".to_string());
-        }
-        if project_idea_has_unsafe_control(&idea.title, false)
-            || project_idea_has_unsafe_control(&idea.note, true)
-            || project_idea_has_unsafe_control(&idea.project_id, false)
-            || project_idea_has_unsafe_control(&idea.last_placed_at, false)
-            || project_idea_has_unsafe_control(&idea.last_placed_tool, false)
-            || project_idea_has_unsafe_control(&idea.last_placed_session_id, false)
-            || project_idea_has_unsafe_control(&idea.created_at, false)
-            || project_idea_has_unsafe_control(&idea.updated_at, false)
-        {
-            return Err("想法包含不支持的控制字符".to_string());
-        }
-
-        if idea.id.is_empty() {
-            loop {
-                let candidate = Uuid::new_v4().to_string();
-                if seen_ids.insert(candidate.clone()) {
-                    idea.id = candidate;
-                    break;
-                }
-            }
-        } else {
-            if idea.id.len() > 128
-                || !idea
-                    .id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            {
-                return Err("想法 ID 不合法".to_string());
-            }
-            if !seen_ids.insert(idea.id.clone()) {
-                return Err("想法 ID 重复".to_string());
-            }
-        }
-
-        let previous = previous_by_id.get(idea.id.as_str()).copied();
-        if !project_ids.contains(&idea.project_id) {
-            let same_orphan = previous
-                .map(|old| old.project_id == idea.project_id)
-                .unwrap_or(false);
-            if !same_orphan {
-                return Err("想法关联的项目不存在".to_string());
-            }
-        }
-        if let Some(old) = previous {
-            if old.project_id != idea.project_id
-                && (project_ids.contains(&old.project_id)
-                    || !project_ids.contains(&idea.project_id))
-            {
-                return Err("不能把想法直接移动到其他项目".to_string());
-            }
-            idea.created_at = old.created_at.clone();
-            idea.updated_at = if project_idea_changed(old, &idea) {
-                now.to_string()
-            } else {
-                old.updated_at.clone()
-            };
-        } else {
-            idea.created_at = now.to_string();
-            idea.updated_at = now.to_string();
-        }
-
-        total_chars = total_chars.saturating_add(
-            idea.id.chars().count()
-                + idea.title.chars().count()
-                + idea.note.chars().count()
-                + idea.project_id.chars().count()
-                + idea.last_placed_at.chars().count()
-                + idea.last_placed_tool.chars().count()
-                + idea.last_placed_session_id.chars().count()
-                + idea.created_at.chars().count()
-                + idea.updated_at.chars().count(),
-        );
-        if total_chars > MAX_PROJECT_IDEAS_TOTAL_CHARS {
-            return Err("项目想法总容量过大".to_string());
-        }
-        normalized.push(idea);
-    }
-    Ok(normalized)
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct AppState {
     projects: Vec<Project>,
     servers: Vec<Server>,
     #[serde(default)]
     snippets: Vec<Snippet>,
-    #[serde(default)]
-    ideas: Vec<ProjectIdea>,
     data_path: PathBuf,
     server_path: PathBuf,
     snippet_path: PathBuf,
-    idea_path: PathBuf,
 }
 
 /// 原子写：写同目录临时文件 + fsync，再 rename 覆盖目标。
@@ -388,7 +216,7 @@ fn copy_dir_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// 从指定旧目录迁移到新目录。只有全部复制成功后才写完成标记；目录使用可重试的
 /// 逐项复制而非 rename，迁移中断后可安全补齐，也始终保留旧目录作为恢复来源。
-/// 核心文件包括 projects.json、servers.json、snippets.json、ideas.json、
+/// 核心文件包括 projects.json、servers.json、snippets.json、
 /// term-themes.json、proxy-settings.json，以及 theme-images/、logs/ 和用量缓存。
 fn migrate_legacy_data_between(old: &Path, new: &Path) -> std::io::Result<()> {
     let marker = new.join(".migrated-from-legacy");
@@ -447,14 +275,13 @@ fn backup_root_dir() -> PathBuf {
     data_dir().with_file_name("roster-backups")
 }
 
-/// 当前已存在的 4 个核心数据文件（仅返回磁盘上真实存在的）。
+/// 当前已存在的 3 个核心数据文件（仅返回磁盘上真实存在的）。
 fn existing_data_files() -> Vec<(PathBuf, String)> {
     let f = |n: &str| data_dir().join(n);
     let pairs = [
         (f("projects.json"), "projects".to_string()),
         (f("servers.json"), "servers".to_string()),
         (f("snippets.json"), "snippets".to_string()),
-        (f("ideas.json"), "ideas".to_string()),
     ];
     pairs.into_iter().filter(|(p, _)| p.exists()).collect()
 }
@@ -545,113 +372,6 @@ pub(crate) fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path
     }
 }
 
-fn backup_invalid_project_ideas(path: &Path, reason: &str, data: &[u8]) {
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let bad = path.with_extension(format!("{stamp}-{}.bad", Uuid::new_v4()));
-    match atomic_write(&bad, data) {
-        Ok(()) => crate::log_error!(
-            "读取 ideas.json 失败：{reason}；已备份异常文件到 {:?}",
-            bad.file_name().unwrap_or_default()
-        ),
-        Err(error) => {
-            crate::log_error!("读取 ideas.json 失败：{reason}；备份异常文件失败：{error}")
-        }
-    }
-}
-
-fn read_project_ideas_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    #[cfg(not(unix))]
-    {
-        let metadata = match fs::symlink_metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.to_string()),
-        };
-        #[cfg(windows)]
-        let is_link = {
-            use std::os::windows::fs::MetadataExt;
-            metadata.file_attributes()
-                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-                != 0
-        };
-        #[cfg(not(windows))]
-        let is_link = metadata.file_type().is_symlink();
-        if is_link || !metadata.is_file() {
-            return Err("ideas.json 含符号链接或不是普通文件".to_string());
-        }
-    }
-
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = match options.open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("无法安全打开 ideas.json：{error}")),
-    };
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
-    if !metadata.is_file() {
-        return Err("ideas.json 不是普通文件".to_string());
-    }
-    if metadata.len() > MAX_PROJECT_IDEAS_FILE_BYTES {
-        return Err(format!(
-            "文件超过 {}MB",
-            MAX_PROJECT_IDEAS_FILE_BYTES / 1024 / 1024
-        ));
-    }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
-    file.take(MAX_PROJECT_IDEAS_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > MAX_PROJECT_IDEAS_FILE_BYTES {
-        return Err(format!(
-            "文件超过 {}MB",
-            MAX_PROJECT_IDEAS_FILE_BYTES / 1024 / 1024
-        ));
-    }
-    Ok(Some(bytes))
-}
-
-fn load_project_ideas(path: &Path, project_ids: &HashSet<String>) -> Vec<ProjectIdea> {
-    let data = match read_project_ideas_bytes(path) {
-        Ok(None) => return Vec::new(),
-        Ok(Some(data)) if data.iter().all(u8::is_ascii_whitespace) => return Vec::new(),
-        Ok(Some(data)) => data,
-        Err(error) => {
-            crate::log_error!("读取 ideas.json 失败：{error}");
-            return Vec::new();
-        }
-    };
-    let ideas: Vec<ProjectIdea> = match serde_json::from_slice(&data) {
-        Ok(ideas) => ideas,
-        Err(error) => {
-            backup_invalid_project_ideas(path, &format!("JSON 解析失败：{error}"), &data);
-            return Vec::new();
-        }
-    };
-    if ideas.len() > MAX_PROJECT_IDEAS {
-        backup_invalid_project_ideas(path, "条目数量超过上限", &data);
-        return Vec::new();
-    }
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    match normalize_project_ideas(ideas.clone(), &now, project_ids, &ideas) {
-        Ok(normalized) => normalized,
-        Err(error) => {
-            backup_invalid_project_ideas(path, &error, &data);
-            Vec::new()
-        }
-    }
-}
-
 impl AppState {
     fn new(data_dir: &Path) -> Self {
         fs::create_dir_all(data_dir).ok();
@@ -666,22 +386,13 @@ impl AppState {
         let snippet_path = data_dir.join("snippets.json");
         let snippets = load_json_or_backup(&snippet_path);
 
-        let idea_path = data_dir.join("ideas.json");
-        let project_ids = projects
-            .iter()
-            .map(|project| project.id.clone())
-            .collect::<HashSet<_>>();
-        let ideas = load_project_ideas(&idea_path, &project_ids);
-
         Self {
             projects,
             servers,
             snippets,
-            ideas,
             data_path,
             server_path,
             snippet_path,
-            idea_path,
         }
     }
 
@@ -708,21 +419,6 @@ impl AppState {
         backup_prev(&self.snippet_path, "snippets");
         atomic_write(&self.snippet_path, data.as_bytes()).map_err(|e| {
             crate::log_error!("写 snippets.json 失败：{e}");
-            e.to_string()
-        })
-    }
-
-    fn save_ideas_value(&self, ideas: &[ProjectIdea]) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(ideas).map_err(|e| e.to_string())?;
-        if data.len() as u64 > MAX_PROJECT_IDEAS_FILE_BYTES {
-            return Err(format!(
-                "项目想法总容量超过 {}MB",
-                MAX_PROJECT_IDEAS_FILE_BYTES / 1024 / 1024
-            ));
-        }
-        backup_prev(&self.idea_path, "ideas");
-        atomic_write(&self.idea_path, data.as_bytes()).map_err(|e| {
-            crate::log_error!("写 ideas.json 失败：{e}");
             e.to_string()
         })
     }
@@ -1281,31 +977,6 @@ fn load_theme_image(name: String) -> Result<String, String> {
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
-}
-
-#[tauri::command]
-fn get_project_ideas(state: State<Mutex<AppState>>) -> Result<Vec<ProjectIdea>, String> {
-    let state = state.lock().map_err(|e| e.to_string())?;
-    Ok(state.ideas.clone())
-}
-
-/// 项目想法整表保存：补齐 id / 时间戳，并拒绝无项目或超长内容。
-#[tauri::command]
-fn save_project_ideas(
-    state: State<Mutex<AppState>>,
-    ideas: Vec<ProjectIdea>,
-) -> Result<Vec<ProjectIdea>, String> {
-    let mut state = state.lock().map_err(|e| e.to_string())?;
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let project_ids = state
-        .projects
-        .iter()
-        .map(|project| project.id.clone())
-        .collect();
-    let normalized = normalize_project_ideas(ideas, &now, &project_ids, &state.ideas)?;
-    state.save_ideas_value(&normalized)?;
-    state.ideas = normalized.clone();
-    Ok(normalized)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3542,8 +3213,6 @@ pub fn run() {
             save_term_themes,
             pick_theme_image,
             load_theme_image,
-            get_project_ideas,
-            save_project_ideas,
             oauth_usage,
             codex_usage,
             conversation_chat_start,
@@ -3712,172 +3381,6 @@ mod tests {
         assert_eq!(p3.local_path, "/tmp");
     }
 
-    fn project_idea(id: &str, project_id: &str, title: &str) -> ProjectIdea {
-        ProjectIdea {
-            id: id.to_string(),
-            title: title.to_string(),
-            note: String::new(),
-            archived: false,
-            project_id: project_id.to_string(),
-            last_placed_at: String::new(),
-            last_placed_tool: String::new(),
-            last_placed_session_id: String::new(),
-            created_at: String::new(),
-            updated_at: String::new(),
-        }
-    }
-
-    #[test]
-    fn test_project_ideas_normalize_and_enforce_project_scope() {
-        let now = "2026-08-20 12:00:00";
-        let later = "2026-08-20 12:01:00";
-        let projects = HashSet::from(["project-a".to_string(), "project-b".to_string()]);
-        let mut fresh = project_idea("", "project-a", "  新想法  ");
-        fresh.note = "  保留多行\n详情  ".to_string();
-        let normalized =
-            normalize_project_ideas(vec![fresh], now, &projects, &[]).expect("new idea");
-        assert!(!normalized[0].id.is_empty());
-        assert_eq!(normalized[0].title, "新想法");
-        assert_eq!(normalized[0].note, "保留多行\n详情");
-        assert_eq!(normalized[0].created_at, now);
-        assert_eq!(normalized[0].updated_at, now);
-        let json = serde_json::to_string(&normalized[0]).unwrap();
-        assert!(json.contains("projectId"));
-        assert!(json.contains("lastPlacedAt"));
-
-        let mut edited = normalized[0].clone();
-        edited.archived = true;
-        edited.created_at = "client-overwrite".to_string();
-        edited.updated_at = "client-overwrite".to_string();
-        let saved = normalize_project_ideas(vec![edited], later, &projects, &normalized)
-            .expect("edit idea");
-        assert_eq!(saved[0].created_at, now);
-        assert_eq!(saved[0].updated_at, later);
-        assert!(saved[0].archived);
-
-        let missing = project_idea("idea-missing", "project-missing", "无项目");
-        assert!(normalize_project_ideas(vec![missing], now, &projects, &[]).is_err());
-
-        let mut moved = normalized[0].clone();
-        moved.project_id = "project-b".to_string();
-        assert!(normalize_project_ideas(vec![moved], later, &projects, &normalized).is_err());
-
-        let mut orphan = project_idea("idea-orphan", "project-deleted", "待归属");
-        orphan.created_at = now.to_string();
-        orphan.updated_at = now.to_string();
-        let mut claimed = orphan.clone();
-        claimed.project_id = "project-b".to_string();
-        let claimed = normalize_project_ideas(vec![claimed], later, &projects, &[orphan])
-            .expect("claim orphan");
-        assert_eq!(claimed[0].project_id, "project-b");
-
-        let duplicate = project_idea("idea-duplicate", "project-a", "重复");
-        assert!(
-            normalize_project_ideas(vec![duplicate.clone(), duplicate], now, &projects, &[],)
-                .is_err()
-        );
-        let unsafe_text = project_idea("idea-control", "project-a", "包含\u{1b}控制符");
-        assert!(normalize_project_ideas(vec![unsafe_text], now, &projects, &[]).is_err());
-    }
-
-    #[test]
-    fn test_project_ideas_reject_oversized_content_and_file() {
-        let projects = HashSet::from(["project-a".to_string()]);
-        let mut too_long = project_idea("idea-long", "project-a", "过长");
-        too_long.note = "x".repeat(10_001);
-        assert!(
-            normalize_project_ideas(vec![too_long], "2026-08-20 12:00:00", &projects, &[],)
-                .is_err()
-        );
-
-        let many_cjk = (0..150)
-            .map(|index| {
-                let mut idea = project_idea(
-                    &format!("idea-cjk-{index}"),
-                    "project-a",
-                    &format!("中文想法 {index}"),
-                );
-                idea.note = "想".repeat(10_000);
-                idea
-            })
-            .collect::<Vec<_>>();
-        let normalized = normalize_project_ideas(many_cjk, "2026-08-20 12:00:00", &projects, &[])
-            .expect("字符数未超限");
-        let save_dir = tempfile::tempdir().unwrap();
-        let idea_path = save_dir.path().join("ideas.json");
-        let state = AppState {
-            projects: vec![],
-            servers: vec![],
-            snippets: vec![],
-            ideas: vec![],
-            data_path: save_dir.path().join("projects.json"),
-            server_path: save_dir.path().join("servers.json"),
-            snippet_path: save_dir.path().join("snippets.json"),
-            idea_path: idea_path.clone(),
-        };
-        let error = state.save_ideas_value(&normalized).unwrap_err();
-        assert!(error.contains("4MB"));
-        assert!(!idea_path.exists());
-
-        let mut safe_cjk = project_idea("idea-safe-cjk", "project-a", "可安全读回");
-        safe_cjk.note = "想".repeat(10_000);
-        let safe_cjk =
-            normalize_project_ideas(vec![safe_cjk], "2026-08-20 12:00:00", &projects, &[]).unwrap();
-        state.save_ideas_value(&safe_cjk).unwrap();
-        assert_eq!(load_project_ideas(&idea_path, &projects), safe_cjk);
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ideas.json");
-        let file = fs::File::create(&path).unwrap();
-        file.set_len(MAX_PROJECT_IDEAS_FILE_BYTES + 1).unwrap();
-        assert!(load_project_ideas(&path, &projects).is_empty());
-
-        let invalid_path = dir.path().join("invalid-ideas.json");
-        let duplicate = project_idea("duplicate", "project-a", "重复 ID");
-        let invalid_data = serde_json::to_vec(&vec![duplicate.clone(), duplicate]).unwrap();
-        fs::write(&invalid_path, &invalid_data).unwrap();
-        assert!(load_project_ideas(&invalid_path, &projects).is_empty());
-        let bad = fs::read_dir(dir.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                let name = path.file_name().unwrap().to_string_lossy();
-                name.starts_with("invalid-ideas.") && name.ends_with(".bad")
-            })
-            .expect("invalid ideas backup");
-        assert_eq!(fs::read(bad).unwrap(), invalid_data);
-
-        let orphan_path = dir.path().join("orphan-ideas.json");
-        let mut orphan = project_idea("orphan", "deleted-project", "保留孤立想法");
-        orphan.created_at = "2026-08-20 12:00:00".to_string();
-        orphan.updated_at = orphan.created_at.clone();
-        fs::write(
-            &orphan_path,
-            serde_json::to_vec(&vec![orphan.clone()]).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(load_project_ideas(&orphan_path, &projects), vec![orphan]);
-
-        #[cfg(unix)]
-        {
-            use std::ffi::CString;
-            use std::os::unix::ffi::OsStrExt;
-
-            let external = dir.path().join("external.json");
-            fs::write(&external, b"[]").unwrap();
-            let linked = dir.path().join("linked-ideas.json");
-            std::os::unix::fs::symlink(&external, &linked).unwrap();
-            assert!(load_project_ideas(&linked, &projects).is_empty());
-
-            let fifo = dir.path().join("ideas-fifo.json");
-            let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
-            // SAFETY: fifo_path is a NUL-free path owned by this temporary test directory.
-            assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
-            assert!(load_project_ideas(&fifo, &projects).is_empty());
-        }
-    }
-
     #[test]
     fn test_add_and_save() {
         let dir = std::env::temp_dir().join("vibe-test");
@@ -3889,11 +3392,9 @@ mod tests {
             projects: vec![],
             servers: vec![],
             snippets: vec![],
-            ideas: vec![],
             data_path: data_path.clone(),
             server_path: dir.join("servers.json"),
             snippet_path: dir.join("snippets.json"),
-            idea_path: dir.join("ideas.json"),
         };
 
         let now = "2025-01-01 00:00:00".to_string();

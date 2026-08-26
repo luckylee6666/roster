@@ -29,7 +29,8 @@ test('终端工具栏为任意已登记 CLI 提供跨 CLI 交接预览和目标�
   assert.match(main, /validateSessionHandoffContent\(content\)/);
   assert.match(main, /if \(!validation\.valid\)[\s\S]*?return;/);
   assert.doesNotMatch(main, /SESSION_HANDOFF_SOURCE_TOOL/);
-  assert.match(main, /syncProjectIdeasContext\(\)[\s\S]*?syncSessionHandoffButton\(\)/);
+  // 终端会话状态变化（活动会话结束、切换分屏等）要立刻刷新交接按钮可用性
+  assert.match(main, /if \(activeSession === e\.payload\) syncSessionHandoffButton\(\)/);
 });
 
 test('交接读取最新磁盘会话和 Git 现场，再安全新开目标终端', async () => {

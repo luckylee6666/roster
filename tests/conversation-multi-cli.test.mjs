@@ -30,7 +30,7 @@ test('对话模式提供多 CLI 选择和常用项目操作', async () => {
   for (const id of [
     'conversation-provider-select',
     'conversation-project-context',
-    'conversation-idea-add',
+    'conversation-handoff',
     'conversation-open-folder',
     'conversation-refresh-project',
   ]) {

@@ -204,17 +204,6 @@ function newRunId() {
   return `chat-${token}`.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 90);
 }
 
-function ideaText(idea) {
-  return [idea?.title, idea?.note].filter(Boolean).join('\n\n').trim();
-}
-
-function ideaFields(value) {
-  const lines = String(value || '').replace(/\r\n?/g, '\n').trim().split('\n');
-  const title = String(lines.shift() || '').trim().slice(0, 200);
-  const note = lines.join('\n').trim().slice(0, 10_000);
-  return { title, note };
-}
-
 export const CONVERSATION_UNGROUPED_LABEL = '未分组';
 
 export function conversationProjectGroupName(project) {
@@ -1038,122 +1027,6 @@ export function installConversationMode({
     if (files.length || commits.length) dom.projectContext.appendChild(list);
   }
 
-  function closeIdeaCapture() {
-    editingIdeaId = '';
-    if (dom.ideaCapture) dom.ideaCapture.hidden = true;
-    if (dom.ideaInput) dom.ideaInput.value = '';
-    if (dom.ideaAdd) dom.ideaAdd.setAttribute('aria-expanded', 'false');
-  }
-
-  function openIdeaCapture(idea = null) {
-    if (!selectedProject || ideaSaving || !dom.ideaCapture || !dom.ideaInput) return;
-    editingIdeaId = idea?.id || '';
-    dom.ideaCapture.hidden = false;
-    dom.ideaInput.value = idea ? ideaText(idea) : '';
-    const label = dom.ideaCapture.querySelector('label');
-    if (label) label.textContent = idea ? '完善这条项目想法' : '记录一个稍后完善的想法';
-    if (dom.ideaSave) dom.ideaSave.textContent = idea ? '保存修改' : '保存想法';
-    if (dom.ideaAdd) dom.ideaAdd.setAttribute('aria-expanded', 'true');
-    requestAnimationFrame(() => dom.ideaInput?.focus());
-  }
-
-  function ideaAction(label, action, idea, className = '') {
-    const button = element(document, 'button', `conversation-idea-action ${className}`.trim(), label);
-    button.type = 'button';
-    button.disabled = ideaSaving;
-    button.addEventListener('click', event => {
-      event.stopPropagation();
-      void action(idea);
-    });
-    return button;
-  }
-
-  async function updateIdea(idea, changes) {
-    if (!selectedProject || !onUpdateIdea || ideaSaving) return;
-    ideaSaving = true;
-    renderIdeas();
-    try {
-      await onUpdateIdea({
-        projectId: selectedProject.id,
-        id: idea.id,
-        title: changes.title ?? idea.title,
-        note: changes.note ?? idea.note,
-        archived: changes.archived ?? idea.archived,
-      });
-      if (editingIdeaId === idea.id) closeIdeaCapture();
-    } catch (error) {
-      notify?.(`更新想法失败：${error?.message || error}`, 'error');
-    } finally {
-      ideaSaving = false;
-      renderIdeas();
-      renderControls();
-    }
-  }
-
-  async function removeIdea(idea) {
-    if (!selectedProject || !onDeleteIdea || ideaSaving) return;
-    const approved = await confirmConversationDeletion(
-      confirm,
-      notify,
-      `确定删除想法“${idea.title || '未命名想法'}”吗？`,
-      '确认功能不可用，未删除想法',
-    );
-    if (!approved || !selectedProject || ideaSaving) return;
-    ideaSaving = true;
-    renderIdeas();
-    try {
-      await onDeleteIdea({ projectId: selectedProject.id, id: idea.id });
-      if (editingIdeaId === idea.id) closeIdeaCapture();
-    } catch (error) {
-      notify?.(`删除想法失败：${error?.message || error}`, 'error');
-    } finally {
-      ideaSaving = false;
-      renderIdeas();
-      renderControls();
-    }
-  }
-
-  function placeIdea(idea) {
-    if (!dom.composer || dom.composer.disabled || isRunning()) return;
-    dom.composer.value = [dom.composer.value.trim(), ideaText(idea)].filter(Boolean).join('\n\n');
-    dom.composer.focus();
-    syncComposer();
-  }
-
-  function renderIdeas() {
-    if (!dom.ideaList) return;
-    dom.ideaList.replaceChildren();
-    const visible = ideas
-      .filter(idea => idea.projectId === selectedProject?.id && Boolean(idea.archived) === showingArchivedIdeas)
-      .slice(0, 12);
-    if (!visible.length) {
-      dom.ideaList.appendChild(element(document, 'p', 'conversation-rail-empty', showingArchivedIdeas ? '这个项目还没有已归档想法' : '这个项目还没有想法草稿'));
-      return;
-    }
-    visible.forEach(idea => {
-      const entry = element(document, 'article', 'conversation-idea-entry');
-      const button = element(document, 'button', 'conversation-idea-item');
-      button.type = 'button';
-      button.disabled = isRunning() || showingArchivedIdeas;
-      button.title = showingArchivedIdeas ? '已归档想法不能直接放入输入框' : '放入输入框';
-      button.append(
-        element(document, 'strong', '', idea.title || '未命名想法'),
-        element(document, 'span', '', idea.note || ''),
-      );
-      button.addEventListener('click', () => placeIdea(idea));
-      const actions = element(document, 'div', 'conversation-idea-actions');
-      const ideaActions = [
-        ideaAction(showingArchivedIdeas ? '恢复' : '完善', item => showingArchivedIdeas
-          ? updateIdea(item, { archived: false }) : openIdeaCapture(item), idea),
-        !showingArchivedIdeas && ideaAction('归档', item => updateIdea(item, { archived: true }), idea),
-        ideaAction('删除', removeIdea, idea, 'is-danger'),
-      ].filter(Boolean);
-      actions.append(...ideaActions);
-      entry.append(button, actions);
-      dom.ideaList.appendChild(entry);
-    });
-  }
-
   function renderSnippets() {
     if (!dom.snippetSelect) return;
     dom.snippetSelect.replaceChildren();
@@ -1199,17 +1072,7 @@ export function installConversationMode({
     if (dom.providerSelect) dom.providerSelect.disabled = busy || installedCliIds === null || runnableProviders().length === 0;
     if (dom.openFolder) dom.openFolder.disabled = !selectedProject;
     if (dom.refreshProject) dom.refreshProject.disabled = !selectedProject || contextLoading;
-    if (dom.ideaAdd) dom.ideaAdd.disabled = !selectedProject || ideaSaving || !onCreateIdea;
-    if (dom.ideasToggleArchived) {
-      dom.ideasToggleArchived.disabled = !selectedProject || ideaSaving;
-      dom.ideasToggleArchived.textContent = showingArchivedIdeas ? '草稿' : '归档';
-      dom.ideasToggleArchived.title = showingArchivedIdeas ? '返回想法草稿' : '查看已归档想法';
-      dom.ideasToggleArchived.setAttribute('aria-pressed', showingArchivedIdeas ? 'true' : 'false');
-    }
     dom.starters?.querySelectorAll('button').forEach(button => { button.disabled = unavailable || busy || deleting; });
-    if (dom.ideaInput) dom.ideaInput.disabled = ideaSaving;
-    if (dom.ideaSave) dom.ideaSave.disabled = ideaSaving;
-    if (dom.ideaCancel) dom.ideaCancel.disabled = ideaSaving;
     if (dom.composerHint) {
       dom.composerHint.textContent = !selectedProjectExists()
         ? '先选择一个项目'
@@ -1250,7 +1113,6 @@ export function installConversationMode({
     renderPlan();
     renderActivities();
     renderProjectContext();
-    renderIdeas();
     renderSnippets();
     renderSlashMenu();
     renderControls();
@@ -1478,7 +1340,6 @@ export function installConversationMode({
     projectContext = null;
     projectContextError = '';
     contextLoading = false;
-    closeIdeaCapture();
     state = createConversationState({
       projectId: next?.id || '',
       providerId: providerForNewChat(),
@@ -1779,39 +1640,6 @@ export function installConversationMode({
     }
   }
 
-  async function saveIdea(event) {
-    event.preventDefault();
-    if (!selectedProject || ideaSaving || !dom.ideaInput) return;
-    const fields = ideaFields(dom.ideaInput.value);
-    if (!fields.title) {
-      dom.ideaInput.focus();
-      return;
-    }
-    const editing = ideas.find(idea => (
-      idea.id === editingIdeaId && idea.projectId === selectedProject.id
-    ));
-    if (editing) {
-      await updateIdea(editing, fields);
-      return;
-    }
-    if (!onCreateIdea) return;
-    ideaSaving = true;
-    renderControls();
-    try {
-      const created = await onCreateIdea({
-        projectId: selectedProject.id,
-        text: dom.ideaInput.value,
-      });
-      if (created) closeIdeaCapture();
-    } catch (error) {
-      notify?.(`保存想法失败：${error?.message || error}`, 'error');
-    } finally {
-      ideaSaving = false;
-      renderIdeas();
-      renderControls();
-    }
-  }
-
   async function openProjectFolder() {
     if (!selectedProject) return;
     try {
@@ -1906,18 +1734,6 @@ export function installConversationMode({
   dom.stop?.addEventListener('click', () => void stop());
   dom.openFolder?.addEventListener('click', () => void openProjectFolder());
   dom.refreshProject?.addEventListener('click', () => void refreshProjectContext({ force: true }));
-  dom.ideaAdd?.addEventListener('click', () => {
-    if (dom.ideaCapture?.hidden) openIdeaCapture();
-    else closeIdeaCapture();
-  });
-  dom.ideasToggleArchived?.addEventListener('click', () => {
-    showingArchivedIdeas = !showingArchivedIdeas;
-    closeIdeaCapture();
-    renderIdeas();
-    renderControls();
-  });
-  dom.ideaCancel?.addEventListener('click', closeIdeaCapture);
-  dom.ideaCapture?.addEventListener('submit', event => void saveIdea(event));
   dom.stream?.addEventListener('click', event => {
     const link = event.target?.closest?.('a[href]');
     if (!link) return;
@@ -1972,7 +1788,6 @@ export function installConversationMode({
         contextLoading = false;
         resumeLatestOnHistory = Boolean(next);
         if (dom.writeAccess) dom.writeAccess.checked = false;
-        closeIdeaCapture();
       }
       persistSelection();
       renderProjects();
@@ -1993,10 +1808,6 @@ export function installConversationMode({
       persistSelection();
       renderState();
       void refreshSlashCommands();
-    },
-    setIdeas(nextIdeas) {
-      ideas = Array.isArray(nextIdeas) ? nextIdeas : [];
-      renderIdeas();
     },
     setSnippets(nextSnippets) {
       snippets = Array.isArray(nextSnippets) ? nextSnippets : [];

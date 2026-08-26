@@ -283,7 +283,6 @@ test('对话删除复用双模式共用的应用内确认，不依赖 WKWebView 
   assert.doesNotMatch(conversation, /defaultView\?\.confirm|window\.confirm/);
   assert.match(conversation, /confirm,\n\}\) \{/);
   assert.match(conversation, /confirmConversationDeletion\(/);
-  assert.match(conversation, /确认功能不可用，未删除想法/);
   assert.match(conversation, /确认功能不可用，未删除历史对话/);
   assert.match(main, /confirm: requestConfirm/);
   assert.match(main, /function requestConfirm\(options\)/);
