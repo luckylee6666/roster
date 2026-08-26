@@ -29,50 +29,47 @@ test('对话工作台具有项目、历史、消息、输入和进度三区结�
     'conversation-send',
     'conversation-plan-list',
     'conversation-activity-list',
-    'conversation-idea-list',
   ]) {
     assert.equal((html.match(new RegExp(`id=["']${id}["']`, 'g')) || []).length, 1, `${id} 应唯一存在`);
   }
 });
 
-test('对话工作台复用项目想法、项目现场和 Prompt 片段能力', async () => {
+test('对话工作台复用项目现场和 Prompt 片段能力', async () => {
   const [html, conversation, main] = await Promise.all([
     read('src/index.html'),
     read('src/conversation-mode.js'),
     read('src/main.js'),
   ]);
   assert.match(html, /id="conversation-project-context"/);
-  assert.match(html, /id="conversation-idea-capture"/);
   assert.match(html, /id="conversation-snippet-select"/);
   assert.match(conversation, /setSnippets\(nextSnippets\)/);
-  assert.match(conversation, /onCreateIdea\(\{/);
-  assert.match(conversation, /onUpdateIdea\(\{/);
   assert.match(conversation, /delete_conversation_project_session/);
   assert.match(conversation, /projectId: project\.id/);
   assert.doesNotMatch(conversation, /delete_conversation_project_session', \{[\s\S]{0,100}path: project\.localPath/);
   assert.match(main, /conversationController\.setSnippets\(snippets\)/);
 });
 
-test('对话工作台补齐归档想法、片段管理、交接与无项目入口', async () => {
+test('对话工作台补齐片段管理、交接与无项目入口', async () => {
   const [html, conversation, main, css] = await Promise.all([
     read('src/index.html'),
     read('src/conversation-mode.js'),
     read('src/main.js'),
     read('src/styles.css'),
   ]);
-  assert.match(html, /id="conversation-ideas-toggle-archived"/);
   assert.match(html, /id="conversation-manage-snippets"/);
   assert.match(html, /id="conversation-handoff"/);
   assert.match(html, /id="snippet-modal-overlay" data-app-global-overlay/);
-  assert.match(conversation, /Boolean\(idea\.archived\) === showingArchivedIdeas/);
-  assert.match(conversation, /showingArchivedIdeas \? '恢复' : '完善'/);
   assert.match(conversation, /onManageSnippets\?\.\(\)/);
   assert.match(conversation, /providerSelect\?\.showPicker/);
   assert.match(conversation, /conversationHasOpenSession\(state\)[\s\S]{0,100}runnableProviders\(\)\.length < 2/);
   assert.match(conversation, /conversation-create-project/);
   assert.match(conversation, /仅含用户记录/);
   assert.match(main, /onManageSnippets: openSnippetModal/);
-  assert.match(main, /onCreateProject: async \(\) => \{[\s\S]{0,120}setView\('developer'\)[\s\S]{0,80}openModal\(\)/);
+  assert.match(main, /onReloadProjects: \(\) => load\(\)/);
+  assert.match(html, /id="conversation-create-overlay" data-app-global-overlay/);
+  assert.match(html, /id="conversation-add-project"/);
+  assert.match(conversation, /invoke\('add_project'/);
+  assert.match(conversation, /invoke\('open_folder_dialog'\)/);
   assert.match(css, /\.conversation-starter-list button:disabled/);
   assert.match(css, /\.conversation-compact-action/);
 });

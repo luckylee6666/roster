@@ -25,7 +25,9 @@ import {
   conversationHistoryKey,
   conversationProvider,
   conversationProviderOptions,
+  dataUrlBase64,
   flattenConversationHistory,
+  inspectPastedImage,
   latestConversationSession,
 } from './conversation-tools.js';
 
@@ -139,10 +141,28 @@ function renderConversationAttachments(document, target, attachments) {
     image.decoding = 'async';
     image.setAttribute('referrerpolicy', 'no-referrer');
     image.addEventListener('error', () => conversationMediaFallback(document, image, '这张历史图片无法显示'));
+    image.addEventListener('click', () => openImagePreview(attachment.dataUrl));
     image.src = attachment.dataUrl;
     group.appendChild(image);
   });
   if (group.children.length) target.appendChild(group);
+}
+
+function openImagePreview(source) {
+  const mask = document.getElementById('conversation-image-preview');
+  const image = document.getElementById('conversation-image-preview-img');
+  if (!mask || !image || !String(source || '').startsWith('data:image/')) return;
+  image.src = source;
+  mask.hidden = false;
+  mask.focus?.();
+}
+
+function closeImagePreview() {
+  const mask = document.getElementById('conversation-image-preview');
+  const image = document.getElementById('conversation-image-preview-img');
+  if (!mask || mask.hidden) return;
+  mask.hidden = true;
+  if (image) image.src = '';
 }
 
 function renderMarkdown(document, target, text, loadLocalMedia) {
@@ -252,13 +272,10 @@ export function installConversationMode({
   loadHistory,
   invalidateHistory,
   onProjectPreference,
-  onCreateIdea,
-  onUpdateIdea,
-  onDeleteIdea,
   onOpenFolder,
   onRefreshProject,
   onManageSnippets,
-  onCreateProject,
+  onReloadProjects,
   confirm,
 }) {
   const dom = {
@@ -276,6 +293,18 @@ export function installConversationMode({
     empty: document.getElementById('conversation-empty'),
     starters: document.getElementById('conversation-starter-list'),
     composer: document.getElementById('conversation-composer'),
+    attachments: document.getElementById('conversation-attachments'),
+    imagePreview: document.getElementById('conversation-image-preview'),
+    addProject: document.getElementById('conversation-add-project'),
+    createOverlay: document.getElementById('conversation-create-overlay'),
+    createClose: document.getElementById('conversation-create-close'),
+    createFolder: document.getElementById('conversation-create-folder'),
+    createFolderPath: document.getElementById('conversation-create-folder-path'),
+    createName: document.getElementById('conversation-create-name'),
+    createGroup: document.getElementById('conversation-create-group'),
+    createGroupList: document.getElementById('conversation-create-group-list'),
+    createCancel: document.getElementById('conversation-create-cancel'),
+    createSave: document.getElementById('conversation-create-save'),
     slashMenu: document.getElementById('conversation-slash-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
     manageSnippets: document.getElementById('conversation-manage-snippets'),
@@ -292,28 +321,19 @@ export function installConversationMode({
     projectContext: document.getElementById('conversation-project-context'),
     openFolder: document.getElementById('conversation-open-folder'),
     refreshProject: document.getElementById('conversation-refresh-project'),
-    ideaList: document.getElementById('conversation-idea-list'),
-    ideaAdd: document.getElementById('conversation-idea-add'),
-    ideasToggleArchived: document.getElementById('conversation-ideas-toggle-archived'),
-    ideaCapture: document.getElementById('conversation-idea-capture'),
-    ideaInput: document.getElementById('conversation-idea-input'),
-    ideaCancel: document.getElementById('conversation-idea-cancel'),
-    ideaSave: document.getElementById('conversation-idea-save'),
   };
 
   const initialPreference = readAppShellPreference(storage);
   let projects = [];
-  let ideas = [];
   let snippets = [];
   let installedCliIds = null;
   let selectedProject = null;
+  let pendingAttachments = [];
+  let createFolderValue = '';
   let state = createConversationState({ providerId: initialPreference.providerId });
   let projectContext = null;
   let projectContextError = '';
   let contextLoading = false;
-  let editingIdeaId = '';
-  let ideaSaving = false;
-  let showingArchivedIdeas = false;
   let historyRevision = 0;
   let transcriptRevision = 0;
   let contextRevision = 0;
@@ -703,10 +723,10 @@ export function installConversationMode({
     const visible = projects.filter(project => conversationProjectMatchesQuery(project, query));
     if (!visible.length) {
       dom.projectList.appendChild(element(document, 'p', 'conversation-list-empty', query ? '没有匹配的项目' : '还没有项目'));
-      if (!query && onCreateProject) {
+      if (!query) {
         const create = element(document, 'button', 'conversation-create-project', '新建项目');
         create.type = 'button';
-        create.addEventListener('click', () => onCreateProject());
+        create.addEventListener('click', () => openCreateProject());
         dom.projectList.appendChild(create);
       }
       return;
@@ -1502,6 +1522,127 @@ export function installConversationMode({
     dom.composer?.focus();
   }
 
+  function renderPendingAttachments() {
+    const target = dom.attachments;
+    if (!target) return;
+    target.replaceChildren();
+    target.hidden = pendingAttachments.length === 0;
+    pendingAttachments.forEach(attachment => {
+      const thumb = element(document, 'div', 'conversation-attachment-thumb');
+      const image = element(document, 'img');
+      image.src = attachment.dataUrl;
+      image.alt = '待发送图片';
+      image.title = '点击放大预览';
+      image.addEventListener('click', () => openImagePreview(attachment.dataUrl));
+      const remove = element(document, 'button', 'conversation-attachment-remove', '×');
+      remove.type = 'button';
+      remove.title = '移除这张图片';
+      remove.setAttribute('aria-label', '移除这张图片');
+      remove.addEventListener('click', () => {
+        pendingAttachments = pendingAttachments.filter(item => item.id !== attachment.id);
+        renderPendingAttachments();
+        dom.composer?.focus();
+      });
+      thumb.append(image, remove);
+      target.append(thumb);
+    });
+  }
+
+  function addPastedImages(files) {
+    const accepted = [];
+    for (const file of files) {
+      const checked = inspectPastedImage(file, pendingAttachments.length + accepted.length);
+      if (!checked.ok) {
+        notify?.(checked.reason, 'error');
+        continue;
+      }
+      accepted.push(file);
+    }
+    accepted.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || '');
+        if (!dataUrl.startsWith('data:image/')) return;
+        pendingAttachments = [...pendingAttachments, {
+          id: `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          mime: String(file.type || '').trim().toLowerCase(),
+          dataUrl,
+        }];
+        renderPendingAttachments();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function openCreateProject() {
+    if (!dom.createOverlay || isRunning()) return;
+    createFolderValue = '';
+    if (dom.createFolderPath) dom.createFolderPath.textContent = '未选择';
+    if (dom.createName) dom.createName.value = '';
+    if (dom.createGroup) dom.createGroup.value = '';
+    if (dom.createGroupList) {
+      dom.createGroupList.replaceChildren();
+      const names = Array.from(new Set(
+        projects.map(project => String(project.group || '').trim()).filter(Boolean),
+      )).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+      names.forEach(name => {
+        const option = element(document, 'option');
+        option.value = name;
+        dom.createGroupList.appendChild(option);
+      });
+    }
+    dom.createOverlay.classList.add('active');
+    dom.createFolder?.focus();
+  }
+
+  function closeCreateProject() {
+    dom.createOverlay?.classList.remove('active');
+  }
+
+  async function chooseCreateFolder() {
+    try {
+      const folder = String(await invoke('open_folder_dialog') || '').trim();
+      if (!folder) return;
+      createFolderValue = folder;
+      if (dom.createFolderPath) dom.createFolderPath.textContent = folder;
+      if (dom.createName && !dom.createName.value.trim()) {
+        const parts = folder.split(/[\\/]/).filter(Boolean);
+        dom.createName.value = parts[parts.length - 1] || '';
+      }
+    } catch (error) {
+      notify?.(`选择文件夹失败：${error?.message || error}`, 'error');
+    }
+  }
+
+  async function saveCreatedProject() {
+    if (!createFolderValue) {
+      notify?.('请先选择项目文件夹', 'error');
+      return;
+    }
+    if (dom.createSave) dom.createSave.disabled = true;
+    try {
+      const parts = createFolderValue.split(/[\\/]/).filter(Boolean);
+      const created = await invoke('add_project', {
+        name: (dom.createName?.value || '').trim() || parts[parts.length - 1] || '本地项目',
+        localPath: createFolderValue,
+        remoteUrl: '',
+        description: '',
+        machine: 'local',
+        serverId: '',
+        group: (dom.createGroup?.value || '').trim(),
+      });
+      closeCreateProject();
+      notify?.('项目已添加', 'success');
+      await onReloadProjects?.();
+      if (created?.id) selectProject(created.id);
+      dom.composer?.focus();
+    } catch (error) {
+      notify?.(`添加项目失败：${error?.message || error}`, 'error');
+    } finally {
+      if (dom.createSave) dom.createSave.disabled = false;
+    }
+  }
+
   async function send() {
     const project = selectedProject;
     const provider = currentProvider();
@@ -1511,7 +1652,8 @@ export function installConversationMode({
       return;
     }
     const promptState = inspectConversationPrompt(planned.prompt);
-    const prompt = promptState.prompt;
+    const prompt = promptState.prompt
+      || (pendingAttachments.length ? '请查看我粘贴的图片，结合图片回答。' : '');
     if (!project || !selectedProjectExists() || !prompt || isRunning() || isDeletingHistory() || !providerReady(provider.id) || !listenerReady) return;
     if (promptState.tooLong) {
       syncComposer();
@@ -1525,13 +1667,17 @@ export function installConversationMode({
     const runContext = conversationRunContext(state);
     const allowWrite = !!dom.writeAccess?.checked;
     runProject = { ...project };
+    const sentAttachments = pendingAttachments;
     state = startConversationTurn(state, {
       runId,
       projectId: project.id,
       providerId: runContext.providerId,
       prompt,
+      attachments: sentAttachments.map(item => ({ kind: 'image', id: item.id, mime: item.mime, dataUrl: item.dataUrl })),
     });
     dom.composer.value = '';
+    pendingAttachments = [];
+    renderPendingAttachments();
     syncComposer();
     renderState();
     try {
@@ -1546,6 +1692,11 @@ export function installConversationMode({
         handoffSessionId: runContext.handoffSessionId,
         model: currentModel(),
         effort: currentEffort(),
+        attachments: sentAttachments.map(item => ({
+          id: item.id,
+          mime: item.mime,
+          dataBase64: dataUrlBase64(item.dataUrl),
+        })),
       });
       if (state.runId === runId && state.status === 'starting') {
         state = { ...state, status: 'running' };
@@ -1699,6 +1850,25 @@ export function installConversationMode({
   dom.composer?.addEventListener('input', () => {
     slashDismissed = false;
     syncComposer();
+  });
+  dom.composer?.addEventListener('paste', event => {
+    const files = Array.from(event.clipboardData?.files || [])
+      .filter(file => String(file.type || '').startsWith('image/'));
+    if (!files.length) return;
+    event.preventDefault();
+    addPastedImages(files);
+  });
+  dom.imagePreview?.addEventListener('click', () => closeImagePreview());
+  dom.imagePreview?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeImagePreview();
+  });
+  dom.addProject?.addEventListener('click', () => openCreateProject());
+  dom.createFolder?.addEventListener('click', () => void chooseCreateFolder());
+  dom.createCancel?.addEventListener('click', () => closeCreateProject());
+  dom.createClose?.addEventListener('click', () => closeCreateProject());
+  dom.createSave?.addEventListener('click', () => void saveCreatedProject());
+  dom.createOverlay?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeCreateProject();
   });
   dom.composer?.addEventListener('keydown', event => {
     if (event.isComposing) return;

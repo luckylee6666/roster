@@ -320,19 +320,13 @@ function installApplicationSurfaces() {
     notify: msg,
     loadHistory: loadProjectSessionHistory,
     invalidateHistory: invalidateProjectSessionHistory,
-    onCreateIdea: createConversationProjectIdea,
-    onUpdateIdea: updateConversationProjectIdea,
-    onDeleteIdea: deleteConversationProjectIdea,
     onOpenFolder: openConversationProjectFolder,
     onRefreshProject: refreshConversationProject,
     onManageSnippets: openSnippetModal,
-    onCreateProject: async () => {
-      if (await appViewController?.setView('developer')) openModal();
-    },
+    onReloadProjects: () => load(),
     confirm: requestConfirm,
   });
   conversationController.setProjects(projects);
-  conversationController.setIdeas(projectIdeas);
   conversationController.setSnippets(snippets);
   if (installedCliIds !== null) conversationController.setInstalledCliIds(installedCliIds);
 

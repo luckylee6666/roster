@@ -139,6 +139,7 @@ export function startConversationTurn(state, {
   projectId,
   providerId = state.providerId,
   prompt,
+  attachments = [],
 }) {
   const provider = normalizedTool(providerId);
   if (!runId
@@ -182,6 +183,7 @@ export function startConversationTurn(state, {
         text: String(prompt).trim(),
         tool: provider,
         pending: false,
+        attachments: Array.isArray(attachments) ? attachments : [],
       },
       {
         id: `${runId}-assistant`,

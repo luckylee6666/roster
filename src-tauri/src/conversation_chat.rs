@@ -109,6 +109,16 @@ pub struct ConversationChatStartInput {
     pub model: String,
     #[serde(default)]
     pub effort: String,
+    #[serde(default)]
+    pub attachments: Vec<ConversationAttachmentInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAttachmentInput {
+    pub id: String,
+    pub mime: String,
+    pub data_base64: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -593,6 +603,107 @@ fn looks_like_slash_command(prompt: &str) -> bool {
                 byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.')
             }
         })
+}
+
+const MAX_ATTACHMENTS: usize = 4;
+const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PASTE_FILES: usize = 64;
+
+fn attachment_extension(mime: &str) -> Option<&'static str> {
+    match mime.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+/// 粘贴图片落盘到指定目录，返回稳定路径。各家无头 CLI 都没有原生图片
+/// 传参，统一靠提示里的本机路径让 CLI 用读文件能力查看。
+pub(crate) fn prepare_attachments(
+    inputs: &[ConversationAttachmentInput],
+    dir: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if inputs.len() > MAX_ATTACHMENTS {
+        return Err(format!("一条消息最多附带 {MAX_ATTACHMENTS} 张图片"));
+    }
+    use base64::Engine as _;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let mut paths = Vec::new();
+    std::fs::create_dir_all(dir).map_err(|_| "无法创建图片保存目录".to_string())?;
+    for (index, input) in inputs.iter().enumerate() {
+        let extension = attachment_extension(&input.mime)
+            .ok_or_else(|| "只支持 PNG、JPEG、GIF、WebP 图片".to_string())?;
+        let id_ok = !input.id.is_empty()
+            && input.id.len() <= 64
+            && input
+                .id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'));
+        if !id_ok {
+            return Err("图片标识不合法".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(input.data_base64.trim())
+            .map_err(|_| "图片数据不是有效的 Base64".to_string())?;
+        if bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err("单张图片不能超过 8MB".into());
+        }
+        let path = dir.join(format!("paste-{stamp}-{index}-{}.{extension}", input.id));
+        std::fs::write(&path, &bytes).map_err(|_| "图片保存失败".to_string())?;
+        paths.push(path);
+    }
+    prune_paste_files(dir, MAX_PASTE_FILES);
+    Ok(paths)
+}
+
+fn prune_paste_files(dir: &std::path::Path, keep: usize) {
+    let mut entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries.filter_map(|entry| entry.ok()).collect::<Vec<_>>(),
+        Err(_) => return,
+    };
+    if entries.len() <= keep {
+        return;
+    }
+    entries.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::UNIX_EPOCH)
+    });
+    for entry in entries.iter().take(entries.len() - keep) {
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
+fn prompt_with_attachments(prompt: &str, paths: &[std::path::PathBuf], provider_id: &str) -> String {
+    if paths.is_empty() {
+        return prompt.to_string();
+    }
+    if provider_id == "gemini" {
+        // Gemini CLI 原生支持 @路径 引用图片。
+        let refs = paths
+            .iter()
+            .map(|path| format!("@{}", path.display()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        return format!("{prompt}\n\n{refs}");
+    }
+    let list = paths
+        .iter()
+        .map(|path| format!("- {}", path.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{prompt}\n\n[图片附件] 用户在本条消息粘贴了图片，已保存到本机路径；请先用读文件工具查看图片，再结合图片回答：\n{list}"
+    )
 }
 
 fn codex_prompt_for_slash(
@@ -1577,6 +1688,7 @@ pub fn start(
         handoff_session_id,
         model,
         effort,
+        attachments,
     } = input;
     crate::codex_chat::validate_run_id(&run_id)?;
     let prompt = crate::codex_chat::validate_prompt(&prompt)?;
@@ -1613,6 +1725,13 @@ pub fn start(
             &prompt,
         )?
     };
+    crate::codex_chat::validate_prompt(&prompt)?;
+    let attachment_paths =
+        prepare_attachments(&attachments, &crate::data_dir().join("media").join("pastes"))?;
+    if !attachment_paths.is_empty() && slash.is_some() {
+        return Err("执行 / 命令时暂不支持图片附件；请去掉图片直接发送，或先执行命令".into());
+    }
+    let prompt = prompt_with_attachments(&prompt, &attachment_paths, &provider_id);
     crate::codex_chat::validate_prompt(&prompt)?;
 
     if provider_id == "codex" {
@@ -2331,5 +2450,69 @@ mod tests {
             .unwrap(),
             std::fs::canonicalize(file).unwrap().to_string_lossy(),
         );
+    }
+
+    fn attachment_input(id: &str, mime: &str, bytes: &[u8]) -> ConversationAttachmentInput {
+        use base64::Engine as _;
+        ConversationAttachmentInput {
+            id: id.to_string(),
+            mime: mime.to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+
+    #[test]
+    fn attachments_are_saved_with_stable_names_and_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let inputs = vec![
+            attachment_input("shot-1", "image/png", &[1, 2, 3]),
+            attachment_input("shot_2", "image/jpeg", &[4, 5]),
+        ];
+        let paths = prepare_attachments(&inputs, dir.path()).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].extension().and_then(|ext| ext.to_str()) == Some("png"));
+        assert!(paths[1].extension().and_then(|ext| ext.to_str()) == Some("jpg"));
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), vec![1, 2, 3]);
+
+        for index in 0..70 {
+            std::fs::write(dir.path().join(format!("paste-old-{index:03}.png")), b"x").unwrap();
+        }
+        let paths = prepare_attachments(&inputs[..1], dir.path()).unwrap();
+        assert!(paths.len() == 1);
+        let remaining = std::fs::read_dir(dir.path()).unwrap().count();
+        assert!(remaining <= MAX_PASTE_FILES);
+    }
+
+    #[test]
+    fn attachments_reject_unsupported_mime_size_and_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_mime = vec![attachment_input("a", "text/plain", b"hi")];
+        assert!(prepare_attachments(&bad_mime, dir.path()).is_err());
+        let empty = vec![attachment_input("a", "image/png", &[])];
+        assert!(prepare_attachments(&empty, dir.path()).is_err());
+        let oversized = vec![attachment_input("a", "image/png", &vec![0u8; MAX_ATTACHMENT_BYTES + 1])];
+        assert!(prepare_attachments(&oversized, dir.path()).is_err());
+        let too_many = vec![
+            attachment_input("a", "image/png", &[1]),
+            attachment_input("b", "image/png", &[1]),
+            attachment_input("c", "image/png", &[1]),
+            attachment_input("d", "image/png", &[1]),
+            attachment_input("e", "image/png", &[1]),
+        ];
+        assert!(prepare_attachments(&too_many, dir.path()).is_err());
+        let bad_id = vec![attachment_input("../evil", "image/png", &[1])];
+        assert!(prepare_attachments(&bad_id, dir.path()).is_err());
+    }
+
+    #[test]
+    fn prompt_hint_lists_paths_and_gemini_uses_at_refs() {
+        let paths = vec![std::path::PathBuf::from("/tmp/paste-1.png")];
+        let hint = prompt_with_attachments("看看这个", &paths, "claude");
+        assert!(hint.contains("看看这个"));
+        assert!(hint.contains("/tmp/paste-1.png"));
+        assert!(hint.contains("[图片附件]"));
+        let gemini = prompt_with_attachments("看看这个", &paths, "gemini");
+        assert!(gemini.ends_with("@/tmp/paste-1.png"));
+        assert_eq!(prompt_with_attachments("纯文本", &[], "claude"), "纯文本");
     }
 }

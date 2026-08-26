@@ -147,3 +147,35 @@ export function flattenConversationHistory(historyOrGroups, { limit = 12 } = {})
 export function latestConversationSession(historyOrGroups) {
   return flattenConversationHistory(historyOrGroups, { limit: 30 }).find(session => session.id) || null;
 }
+
+export const CONVERSATION_ATTACHMENT_LIMITS = Object.freeze({
+  maxCount: 4,
+  maxBytes: 8 * 1024 * 1024,
+  mimeTypes: Object.freeze(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+});
+
+/** 粘贴图片的前端预检；最终校验仍由后端 prepare_attachments 负责。 */
+export function inspectPastedImage(file, existingCount = 0) {
+  const mime = String(file?.type || '').trim().toLowerCase();
+  if (!CONVERSATION_ATTACHMENT_LIMITS.mimeTypes.includes(mime)) {
+    return { ok: false, reason: '只支持 PNG、JPEG、GIF、WebP 图片' };
+  }
+  const size = Number(file?.size);
+  if (!Number.isFinite(size) || size <= 0 || size > CONVERSATION_ATTACHMENT_LIMITS.maxBytes) {
+    return { ok: false, reason: '单张图片不能超过 8MB' };
+  }
+  if (existingCount >= CONVERSATION_ATTACHMENT_LIMITS.maxCount) {
+    return { ok: false, reason: `一条消息最多附带 ${CONVERSATION_ATTACHMENT_LIMITS.maxCount} 张图片` };
+  }
+  return { ok: true, reason: '' };
+}
+
+/** 从 dataURL 取 Base64 负载；非 base64 dataURL 返回空串由后端拒绝。 */
+export function dataUrlBase64(dataUrl = '') {
+  const text = String(dataUrl || '');
+  const comma = text.indexOf(',');
+  if (comma < 0 || !text.startsWith('data:image/') || !text.slice(0, comma).includes(';base64')) {
+    return '';
+  }
+  return text.slice(comma + 1);
+}

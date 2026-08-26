@@ -138,3 +138,25 @@ test('进入项目时取时间线最近一条历史，没有有效会话才视�
   assert.equal(latestConversationSession({ groups: [] }), null);
   assert.equal(latestConversationSession(null), null);
 });
+
+test('粘贴图片预检只放行白名单格式、大小与数量', async () => {
+  const { inspectPastedImage, CONVERSATION_ATTACHMENT_LIMITS } = await import('../src/conversation-tools.js');
+  assert.equal(inspectPastedImage({ type: 'image/png', size: 1024 }).ok, true);
+  assert.equal(inspectPastedImage({ type: 'image/webp', size: 1024 }).ok, true);
+  assert.match(inspectPastedImage({ type: 'text/plain', size: 1024 }).reason, /只支持/);
+  assert.match(inspectPastedImage({ type: 'image/png', size: 0 }).reason, /8MB/);
+  assert.match(
+    inspectPastedImage({ type: 'image/png', size: CONVERSATION_ATTACHMENT_LIMITS.maxBytes + 1 }).reason,
+    /8MB/,
+  );
+  assert.equal(inspectPastedImage({ type: 'image/png', size: 10 }, 3).ok, true);
+  assert.match(inspectPastedImage({ type: 'image/png', size: 10 }, 4).reason, /最多附带/);
+});
+
+test('dataUrlBase64 只接受 base64 图片 dataURL', async () => {
+  const { dataUrlBase64 } = await import('../src/conversation-tools.js');
+  assert.equal(dataUrlBase64('data:image/png;base64,aGVsbG8='), 'aGVsbG8=');
+  assert.equal(dataUrlBase64('data:image/png,aGVsbG8='), '');
+  assert.equal(dataUrlBase64('data:text/plain;base64,aGVsbG8='), '');
+  assert.equal(dataUrlBase64(''), '');
+});

@@ -36,7 +36,10 @@
           <input id="conversation-project-search" type="search" placeholder="搜索项目" autocomplete="off" />
         </label>
         <div class="conversation-side-section conversation-project-section">
-          <div class="conversation-side-title"><span>项目</span></div>
+          <div class="conversation-side-title">
+            <span>项目</span>
+            <button class="conversation-add-project" id="conversation-add-project" type="button" title="新建项目" aria-label="新建项目">＋</button>
+          </div>
           <div class="conversation-project-list" id="conversation-project-list"></div>
         </div>
         <div class="conversation-sidebar-foot">
@@ -73,6 +76,7 @@
           </div>
           <div class="conversation-slash-menu" id="conversation-slash-menu" hidden role="listbox" aria-label="斜杠命令"></div>
           <div class="conversation-composer-box">
+            <div class="conversation-attachments" id="conversation-attachments" hidden aria-label="待发送图片"></div>
             <textarea id="conversation-composer" rows="1" maxlength="65536" data-max-utf8-bytes="65536"
                       placeholder="描述你想完成的事情…" aria-label="给 AI 助手的消息"
                       aria-describedby="conversation-composer-hint conversation-safety-note"
@@ -1076,6 +1080,45 @@
           <div class="modal-footer">
             <button class="btn btn-default" id="confirm-cancel">取消</button>
             <button class="btn btn-danger" id="confirm-delete">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全局图片预览：对话缩略图与消息内图片点击放大，需与确认弹窗同层 -->
+    <div class="image-preview-mask" id="conversation-image-preview" data-app-global-overlay tabindex="-1" hidden>
+      <img id="conversation-image-preview-img" alt="图片预览" />
+    </div>
+
+    <!-- 对话模式新建项目：不离开对话工作台即可添加项目和分组 -->
+    <div class="modal-mask" id="conversation-create-overlay" data-app-global-overlay>
+      <div class="modal-wrap">
+        <div class="modal">
+          <div class="modal-header">
+            <span class="modal-title">新建项目</span>
+            <button class="modal-x" id="conversation-create-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="conversation-create-row">
+              <span>项目文件夹</span>
+              <div class="conversation-create-folder-box">
+                <button class="btn btn-default" id="conversation-create-folder" type="button">选择文件夹</button>
+                <small id="conversation-create-folder-path">未选择</small>
+              </div>
+            </div>
+            <label class="conversation-create-row">
+              <span>名称</span>
+              <input id="conversation-create-name" type="text" maxlength="60" placeholder="默认用文件夹名" autocomplete="off" />
+            </label>
+            <label class="conversation-create-row">
+              <span>分组</span>
+              <input id="conversation-create-group" type="text" maxlength="40" list="conversation-create-group-list" placeholder="填写新分组或选择已有分组" autocomplete="off" />
+            </label>
+            <datalist id="conversation-create-group-list"></datalist>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="conversation-create-cancel" type="button">取消</button>
+            <button class="btn btn-primary" id="conversation-create-save" type="button">添加</button>
           </div>
         </div>
       </div>
