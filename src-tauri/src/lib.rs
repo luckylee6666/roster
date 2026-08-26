@@ -17,6 +17,10 @@ mod remote;
 use remote::{PtySession, RemoteHub, SessionMeta};
 mod applog;
 mod cli_detect;
+mod codex_chat;
+mod conversation_chat;
+mod conversation_media;
+mod conversation_slash;
 mod native_esc;
 mod orchestra;
 mod project_memory;
@@ -722,6 +726,15 @@ impl AppState {
             e.to_string()
         })
     }
+}
+
+/// 对话工作台只能用已保存项目的 ID 定位目录，不能信任前端传来的路径。
+fn saved_project_path(projects: &[Project], project_id: &str) -> Result<String, String> {
+    projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .map(|project| project.local_path.clone())
+        .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())
 }
 
 #[tauri::command]
@@ -2212,12 +2225,76 @@ async fn preview_session_handoff(
 }
 
 #[tauri::command]
+async fn preview_conversation_transcript(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    source_tool: String,
+    id: String,
+) -> Result<project_sessions::ConversationTranscriptPreview, String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        project_sessions::preview_conversation_transcript(&path, &source_tool, &id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_conversation_project_media(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    source: String,
+) -> Result<conversation_media::ConversationMedia, String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        conversation_media::read_project_media(&path, &source)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn delete_project_session(path: String, tool: String, id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         project_sessions::delete_project_session(&path, &tool, &id)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 对话工作台删除历史会话：路径只从后端已保存的项目记录中解析。
+#[tauri::command]
+async fn delete_conversation_project_session(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    tool: String,
+    id: String,
+) -> Result<(), String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        saved_project_path(&state.projects, &project_id)?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        project_sessions::delete_project_session(&path, &tool, &id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3081,7 +3158,118 @@ async fn codex_usage() -> Result<usage::CodexUsage, String> {
         .map_err(|e| e.to_string())
 }
 
-/// 探测本机 PATH 上已安装的登记 CLI。走登录壳，才能看到 nvm / Homebrew。
+/// 在普通用户对话工作台里启动一轮已登记 CLI。项目路径始终从后端保存的项目记录
+/// 读取，不接受前端自行传入 cwd、可执行文件或参数。
+#[tauri::command]
+async fn conversation_chat_start(
+    app: AppHandle,
+    app_state: State<'_, Mutex<AppState>>,
+    request: conversation_chat::ConversationChatStartInput,
+) -> Result<conversation_chat::ConversationChatStartResult, String> {
+    let project_path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == request.project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    let start_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let chat_state = start_app.state::<conversation_chat::ConversationChatState>();
+        conversation_chat::start(
+            start_app.clone(),
+            chat_state.inner(),
+            &project_path,
+            request,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// 列出当前项目里该 CLI 实际可发现的斜杠命令（skills / 自定义命令）。
+#[tauri::command]
+async fn conversation_slash_list(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    provider_id: String,
+) -> Result<conversation_slash::ConversationSlashList, String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        conversation_slash::list_slash_commands(&provider_id, &path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// 列出当前 CLI 在本机实际可用的模型，供 /model 选择。
+#[tauri::command]
+async fn conversation_model_list(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    provider_id: String,
+) -> Result<conversation_slash::ConversationModelList, String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        conversation_slash::list_models(&provider_id, &path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// 列出当前 CLI 实际支持的推理强度，供 /effort 选择。
+#[tauri::command]
+async fn conversation_effort_list(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    provider_id: String,
+) -> Result<conversation_slash::ConversationEffortList, String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        conversation_slash::list_efforts(&provider_id, &path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// 停止指定的对话 turn。后端按进程组回收，避免遗留工具子进程。
+#[tauri::command]
+async fn conversation_chat_cancel(app: AppHandle, run_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let chat_state = app.state::<conversation_chat::ConversationChatState>();
+        conversation_chat::cancel(chat_state.inner(), &run_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// 探测本机 PATH 上已安装的登记 CLI。优先当前进程 PATH，登录壳仅补充 nvm / Homebrew。
 #[tauri::command]
 async fn list_installed_clis(names: Vec<String>) -> Vec<String> {
     tauri::async_runtime::spawn_blocking(move || cli_detect::list_installed_cli_names(&names))
@@ -3234,6 +3422,7 @@ pub fn run() {
         .manage(TermThemeLock(Mutex::new(())))
         .manage(proxy_settings::ProxySettingsLock(Mutex::new(())))
         .manage(EditorExitGuard::default())
+        .manage(conversation_chat::ConversationChatState::default())
         .setup(move |app| {
             // macOS WKWebView 会吞掉 ESC；本地 NSEvent 监听把裸 ESC 转成 native-esc。
             native_esc::install_native_esc_monitor(app.handle().clone());
@@ -3335,7 +3524,10 @@ pub fn run() {
             list_project_sessions,
             preview_project_session,
             preview_session_handoff,
+            preview_conversation_transcript,
+            read_conversation_project_media,
             delete_project_session,
+            delete_conversation_project_session,
             ensure_orchestra,
             write_orchestra_file,
             read_orchestra_file,
@@ -3354,6 +3546,11 @@ pub fn run() {
             save_project_ideas,
             oauth_usage,
             codex_usage,
+            conversation_chat_start,
+            conversation_slash_list,
+            conversation_model_list,
+            conversation_effort_list,
+            conversation_chat_cancel,
             list_installed_clis,
             has_bash,
             open_url,
@@ -3740,6 +3937,28 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conversation_session_delete_resolves_only_saved_project_id() {
+        let projects = vec![Project {
+            id: "project-a".into(),
+            name: "A".into(),
+            local_path: "/safe/project-a".into(),
+            remote_url: String::new(),
+            description: String::new(),
+            machine: "local".into(),
+            server_id: String::new(),
+            group: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        assert_eq!(
+            saved_project_path(&projects, "project-a").unwrap(),
+            "/safe/project-a"
+        );
+        assert!(saved_project_path(&projects, "missing-project").is_err());
     }
 
     #[test]

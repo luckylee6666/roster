@@ -228,6 +228,7 @@ async function withWorkspaceHarness(run, {
   storedState,
   stored: providedStored,
   gameCatalog: providedGameCatalog,
+  initialAppVisible = true,
 } = {}) {
   const originalMutationObserver = globalThis.MutationObserver;
   const originalResizeObserver = globalThis.ResizeObserver;
@@ -290,11 +291,14 @@ async function withWorkspaceHarness(run, {
     { id: 'tetris', name: '俄罗斯方块', hint: '方向键 / 空格', factory: () => games.tetris },
     { id: '2048', name: '2048', hint: '方向键 / 滑动', factory: () => games['2048'] },
   ];
+  const expandedChanges = [];
   const controller = installWorkspaceMode({
     documentRef: document,
     windowRef: window,
     dock,
     terminalMain,
+    initialAppVisible,
+    onExpandedChange: (expanded, previous) => expandedChanges.push({ expanded, previous }),
     WebviewClass: FakeWebview,
     gameCatalog,
   });
@@ -316,6 +320,7 @@ async function withWorkspaceHarness(run, {
       controller,
       document,
       dock,
+      expandedChanges,
       games,
       emitNativeFocus(focused) { nativeFocusHandler?.({ payload: focused }); },
       settle,
@@ -793,6 +798,119 @@ test('添加网页弹窗未激活时不拦截 Escape 或 Tab', async () => {
     assert.equal(escapePrevented, false);
     assert.equal(tabPrevented, false);
     assert.equal(document.activeElement, document.body);
+  });
+});
+
+test('应用级隐藏会等待原生 WebView 隐藏，并在恢复后复用原子模式', async () => {
+  await withWorkspaceHarness(async ({ controller, expandedChanges, settle, stored, webview }) => {
+    const createsBefore = countCalls(webview, 'create');
+    const showsBefore = countCalls(webview, 'show');
+    const changesBefore = expandedChanges.length;
+
+    assert.equal(controller.mode, 'relax');
+    assert.equal(controller.appVisible, true);
+    assert.equal(await controller.setAppVisible(false), true);
+    await settle();
+
+    assert.equal(controller.appVisible, false);
+    assert.equal(controller.mode, 'relax');
+    assert.equal(controller.settings.mode, 'relax');
+    assert.equal(JSON.parse(stored.get('workspace-mode-settings-v2')).mode, 'relax');
+    assert.equal(countCalls(webview, 'hide') >= 1, true);
+    assert.equal(countCalls(webview, 'close'), 0, '应用级隐藏不得销毁网页实例');
+    assert.equal(expandedChanges.length, changesBefore, '隐藏应用不得改写开发区展开状态');
+
+    const resuming = controller.setAppVisible(true);
+    await settle();
+    assert.equal(await resuming, true);
+    assert.equal(controller.appVisible, true);
+    assert.equal(controller.mode, 'relax');
+    assert.equal(countCalls(webview, 'create'), createsBefore, '恢复时应复用原 WebView');
+    assert.equal(countCalls(webview, 'show') > showsBefore, true);
+    assert.deepEqual(expandedChanges.at(-1), { expanded: true, previous: 'relax' });
+    assert.equal(JSON.parse(stored.get('workspace-mode-settings-v2')).mode, 'relax');
+  });
+});
+
+test('应用初始隐藏时不创建轻松模式 WebView，恢复后才打开保存的网站', async () => {
+  await withWorkspaceHarness(async ({ controller, expandedChanges, settle, stored, webview }) => {
+    assert.equal(controller.appVisible, false);
+    assert.equal(controller.mode, 'relax');
+    assert.equal(countCalls(webview, 'create'), 0);
+    assert.equal(countCalls(webview, 'show'), 0);
+    assert.equal(expandedChanges.length, 0);
+    assert.equal(JSON.parse(stored.get('workspace-mode-settings-v2')).mode, 'relax');
+
+    const resuming = controller.setAppVisible(true);
+    await settle();
+    assert.equal(await resuming, true);
+    assert.equal(countCalls(webview, 'create'), 1);
+    assert.equal(countCalls(webview, 'show'), 1);
+    assert.deepEqual(expandedChanges, [{ expanded: true, previous: 'relax' }]);
+  }, { initialAppVisible: false });
+});
+
+test('应用初始隐藏时不创建娱乐模式游戏，恢复与再次隐藏不覆盖保存模式', async () => {
+  await withWorkspaceHarness(async ({ controller, games, settle, stored }) => {
+    assert.equal(controller.appVisible, false);
+    assert.equal(controller.mode, 'entertainment');
+    assert.equal(games.tetris.state.mounted, 0);
+    assert.equal(games.tetris.state.resumed, 0);
+
+    const firstResume = controller.setAppVisible(true);
+    await settle();
+    assert.equal(await firstResume, true);
+    assert.equal(games.tetris.state.mounted, 1);
+    assert.equal(games.tetris.state.resumed, 1);
+
+    const pausesBefore = games.tetris.state.paused;
+    assert.equal(await controller.setAppVisible(false), true);
+    assert.equal(games.tetris.state.paused, pausesBefore + 1);
+    assert.equal(controller.mode, 'entertainment');
+    assert.equal(JSON.parse(stored.get('workspace-mode-settings-v2')).mode, 'entertainment');
+
+    const secondResume = controller.setAppVisible(true);
+    await settle();
+    assert.equal(await secondResume, true);
+    assert.equal(games.tetris.state.mounted, 1, '恢复不得重复 mount 游戏');
+    assert.equal(games.tetris.state.resumed, 2);
+  }, {
+    initialAppVisible: false,
+    initialSettings: {
+      mode: 'entertainment',
+      companionWidth: 42,
+      sites: [{ id: 'example', name: '示例', url: 'https://example.com/' }],
+      activeSiteId: 'example',
+      activeGameId: 'tetris',
+    },
+  });
+});
+
+test('应用级隐藏失败会回滚可见状态，且并发恢复不会被旧隐藏覆盖', async () => {
+  await withWorkspaceHarness(async ({ controller, document, settle, webview }) => {
+    const failedHide = webview.deferNextHide();
+    const failing = controller.setAppVisible(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(controller.appVisible, false);
+    failedHide.reject(new Error('native hide failed'));
+    assert.equal(await failing, false);
+    await settle();
+    assert.equal(controller.appVisible, true);
+    assert.match(document.getElementById('companion-web-status').textContent, /无法隐藏/);
+
+    const delayedHide = webview.deferNextHide();
+    const staleSuspend = controller.setAppVisible(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    const resume = controller.setAppVisible(true);
+    delayedHide.resolve();
+    await settle();
+    assert.equal(await staleSuspend, false, '被恢复请求取代的隐藏任务应报告失效');
+    assert.equal(await resume, true);
+    assert.equal(controller.appVisible, true);
+    assert.equal(controller.mode, 'relax');
+    assert.equal(countCalls(webview, 'show') >= 2, true, '旧 hide 完成后必须重新 show');
   });
 });
 

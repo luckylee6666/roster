@@ -14,6 +14,9 @@ Latest release: **v1.2.24** — per-project ideas, handoff between any installed
 
 ## Features
 
+- **Two workspaces** — Roster opens in a calm conversation workspace for everyday use; switch to Developer mode at any time for the full terminal, file editing, split panes, and multi-CLI collaboration tools
+- **Structured multi-CLI conversations** — the conversation workspace only offers locally installed assistants and can run all eight registered CLIs: **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**. Their recent sessions share one timeline with source badges, preview/delete, same-tool resume, and cross-CLI takeover. History browsing is independent of the smaller handoff context, and saved inline screenshots plus project-local image/video links render in place
+- **Project-aware slash commands** — use Roster actions such as `/model`, `/effort` where supported, `/new`, and `/help`, plus skills/custom commands discovered for the current project and current CLI. The backend rediscovers the selection immediately before launch and rejects stale or cross-provider commands
 - **Project management** — add, edit, delete projects
 - **Run target (optional)** — local machine / server, or leave it unset
 - **Server management** — configure SSH servers (host, port, user, password/key login method)
@@ -27,8 +30,8 @@ Latest release: **v1.2.24** — per-project ideas, handoff between any installed
 - **Session attention awareness** — when a terminal session goes quiet after a burst of output (an AI CLI likely finished or is waiting for input), you get a desktop notification + chime + an amber pulsing dot on the tab; the session you're actively watching won't interrupt you, and a bell icon in the toolbar toggles it
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
 - **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude, OpenCode, Grok, Qwen, and MiMo Code use `--continue`, while Codex uses `resume --last` in the saved project directory. Picking a specific Qwen or MiMo Code history row uses `qwen --resume <id>` or `mimo --session <id>`
-- **Prompt/snippet library** — a toolbar bookmark icon holds reusable prompts/commands; click one to inject it into the current terminal (text only, no auto-Enter, so you can review before sending); add/edit/delete via a management dialog, stored in `snippets.json`
-- **Per-project ideas** — the terminal lightbulb keeps multiple rough ideas beside the active project, where they can be refined, archived, or later placed into that project's current CLI input without pressing Enter
+- **Prompt/snippet library** — keep reusable prompts/commands; manage and inject them in Developer mode or place one into the conversation composer. Insertion never sends automatically, and data stays in `snippets.json`
+- **Per-project ideas** — keep multiple rough ideas per project; both workspaces can capture, refine, archive, delete, and place them into the current input without sending automatically
 - **Cross-CLI handoff** — from any running registered CLI tab, review that tool's latest project conversation plus the current Git state, edit the handoff draft, then open any other installed CLI to continue without modifying the source session
 - **Restore context** — a history icon on each project card opens a one-glance snapshot to resume work: git overview + recent commits + changed files + CLAUDE.md summary + the CLI you last launched there; footer buttons jump back in (open terminal / Claude)
 - **Rate-limit usage (no Node)** — usage panel: Claude uses the official `api/oauth/usage` endpoint (5-hour / 7-day, Keychain token; first read prompts authorization); Codex uses the local `codex app-server` `account/rateLimits/read` RPC (ChatGPT plan windows, duration from the server). Cached 60s, near-instant
@@ -49,6 +52,18 @@ Latest release: **v1.2.24** — per-project ideas, handoff between any installed
 - Run target (optional: local / server)
 - Server association
 - Description
+
+## Using the conversation workspace
+
+The conversation workspace is the default view. It is designed for people who want to work on a project through normal language without managing a terminal.
+
+- Install and sign in to at least one supported CLI. The participant picker only shows locally installed structured adapters for **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**
+- Choose a project on the left. The recent timeline combines Claude, Grok, Codex, OpenCode, Gemini, agy, Qwen, and MiMo Code with an explicit source badge. Reopen a row to continue with its CLI, or choose another participant to take over using a filtered natural-language handoff; source IDs are never passed as target resume IDs
+- Turns start with the selected CLI's **read-only/plan policy**. Codex uses its `readOnly` sandbox; ordinary Claude and Qwen turns use safe mode; Grok, Gemini, agy, and Qwen request their own sandbox; OpenCode and MiMo Code use their built-in plan agent without enabling dangerous auto-approval flags. Enable **Allow project changes** for one turn when the assistant should edit files or run project commands; the toggle resets afterward. Roster does not auto-grant extra approvals, but third-party plugins, local configuration, and network behavior remain governed by that CLI rather than an OS-level Roster sandbox
+- Type `/` in the composer for commands. `/model <id>` works even when a CLI cannot enumerate models; `/effort` appears only for adapters with a mapped effort/variant flag (OpenCode and MiMo Code map it to `--variant`). Project skills and custom commands are discovered per CLI, then rechecked by the backend before execution. A missing, changed, cross-project, or cross-provider command fails closed instead of becoming plain chat. Slash commands cannot run in the same turn as a cross-CLI handoff
+- Running an explicitly selected local slash command may require that CLI's safe/customization-disable flag to be relaxed for that one verified command. The existing plan/write policy and sandbox flags remain in force, and Roster still never adds auto-approval or trust-bypass flags
+- The center shows the conversation, including validated historical screenshots and project-local image/video links. Long histories use a dedicated bounded transcript instead of the shorter cross-CLI handoff summary. The right rail shows branch/change/commit context, plans, activity, and full current-project idea actions, with folder-open and refresh controls. Existing prompt snippets can be placed into the composer
+- Use **Developer mode** when you need the full terminal, file editor, split panes, or collaboration. Switching views preserves the conversation and suspends hidden companion views
 
 ## Using the built-in terminal
 
@@ -76,7 +91,7 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 **Project ideas**
 - The lightbulb in the terminal toolbar is enabled when the active running tab belongs to a registered project. Each project has its own list, stored locally in `ideas.json`
 - Capture as many rough ideas as needed, then edit, archive, or delete them as they evolve. If a project is removed, its remaining ideas can be explicitly reassigned from another project's drawer
-- **Place in current conversation** rechecks the active tab and project, then pastes a single-line draft into that CLI without pressing Enter. Review or extend it before sending
+- In Developer mode, **Place in current conversation** rechecks the active tab and project, then pastes a single-line draft into that CLI without pressing Enter. The conversation workspace also shows the selected project's active ideas in its right rail; clicking one places it in the composer for review
 
 **Cross-CLI handoff**
 - Open any running registered CLI tab in a registered project, then click the two-arrow handoff icon in the terminal toolbar

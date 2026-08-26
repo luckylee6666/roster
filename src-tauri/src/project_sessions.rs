@@ -1,3 +1,4 @@
+use crate::conversation_media::{inline_image_attachment, ConversationAttachment};
 use crate::project_memory::encode_claude_project_dir;
 use serde::Serialize;
 use std::fs;
@@ -14,6 +15,11 @@ const HANDOFF_FILE_READ_LIMIT: u64 = 512 * 1024;
 const GEMINI_SESSION_READ_LIMIT: u64 = 8 * 1024 * 1024;
 const HANDOFF_MESSAGE_LIMIT: usize = 24;
 const HANDOFF_TEXT_LIMIT: usize = 18_000;
+const TRANSCRIPT_FILE_READ_LIMIT: u64 = 32 * 1024 * 1024;
+const TRANSCRIPT_MESSAGE_LIMIT: usize = 500;
+const TRANSCRIPT_TEXT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
+const TRANSCRIPT_INLINE_IMAGE_LIMIT: usize = 8 * 1024 * 1024;
+const TRANSCRIPT_ATTACHMENT_LIMIT: usize = 32;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +70,25 @@ pub struct SessionHandoffPreview {
     pub source_title: String,
     pub source_at_ms: u64,
     pub messages: Vec<SessionHandoffMessage>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTranscriptMessage {
+    pub role: String,
+    pub text: String,
+    pub attachments: Vec<ConversationAttachment>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTranscriptPreview {
+    pub source_tool: String,
+    pub source_id: String,
+    pub source_title: String,
+    pub source_at_ms: u64,
+    pub messages: Vec<ConversationTranscriptMessage>,
     pub truncated: bool,
 }
 
@@ -416,8 +441,18 @@ fn sorted_named_dirs(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn same_project_cwd(left: &str, right: &str) -> bool {
-    crate::project_memory::normalize_project_cwd(left)
-        == crate::project_memory::normalize_project_cwd(right)
+    let left_normalized = crate::project_memory::normalize_project_cwd(left);
+    let right_normalized = crate::project_memory::normalize_project_cwd(right);
+    if left_normalized == right_normalized {
+        return true;
+    }
+    match (
+        Path::new(&left_normalized).canonicalize(),
+        Path::new(&right_normalized).canonicalize(),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn is_codex_subagent(payload: &serde_json::Value) -> bool {
@@ -1372,6 +1407,231 @@ fn gemini_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMes
     })
 }
 
+fn transcript_role<'a>(tool: &str, value: &'a serde_json::Value) -> Option<&'a str> {
+    match tool {
+        "claude" => {
+            if value.get("isSidechain").and_then(|item| item.as_bool()) == Some(true) {
+                return None;
+            }
+            match value.get("type").and_then(|item| item.as_str())? {
+                "user" => Some("user"),
+                "assistant" => Some("assistant"),
+                _ => None,
+            }
+        }
+        "codex" => {
+            if value.get("type").and_then(|item| item.as_str()) != Some("response_item") {
+                return None;
+            }
+            let payload = value.get("payload")?;
+            if payload.get("type").and_then(|item| item.as_str()) != Some("message") {
+                return None;
+            }
+            match payload.get("role").and_then(|item| item.as_str())? {
+                "user" => Some("user"),
+                "assistant" => Some("assistant"),
+                _ => None,
+            }
+        }
+        "grok" => {
+            let role = value.get("type").and_then(|item| item.as_str())?;
+            if role == "user" && value.get("synthetic_reason").is_some() {
+                return None;
+            }
+            match role {
+                "user" => Some("user"),
+                "assistant" => Some("assistant"),
+                _ => None,
+            }
+        }
+        "qwen" => match value.get("type").and_then(|item| item.as_str())? {
+            "user" => Some("user"),
+            "assistant" => Some("assistant"),
+            _ => None,
+        },
+        "gemini" => match value.get("type").and_then(|item| item.as_str())? {
+            "user" => Some("user"),
+            "assistant" | "model" | "gemini" => Some("assistant"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn inline_data_url_from_item(item: &serde_json::Value) -> Option<String> {
+    for key in ["url", "image_url"] {
+        if let Some(url) = item.get(key).and_then(|value| value.as_str()) {
+            if url.starts_with("data:image/") {
+                return Some(url.to_string());
+            }
+        }
+    }
+    for key in ["source", "inlineData", "inline_data"] {
+        let Some(source) = item.get(key) else {
+            continue;
+        };
+        if let Some(url) = source
+            .as_str()
+            .filter(|value| value.starts_with("data:image/"))
+        {
+            return Some(url.to_string());
+        }
+        let mime = source
+            .get("media_type")
+            .or_else(|| source.get("mime_type"))
+            .or_else(|| source.get("mimeType"))
+            .and_then(|value| value.as_str());
+        let data = source.get("data").and_then(|value| value.as_str());
+        if let (Some(mime), Some(data)) = (mime, data) {
+            if mime.starts_with("image/") {
+                return Some(format!("data:{mime};base64,{data}"));
+            }
+        }
+    }
+    let mime = item
+        .get("media_type")
+        .or_else(|| item.get("mime_type"))
+        .or_else(|| item.get("mimeType"))
+        .and_then(|value| value.as_str());
+    let data = item.get("data").and_then(|value| value.as_str());
+    match (mime, data) {
+        (Some(mime), Some(data)) if mime.starts_with("image/") => {
+            Some(format!("data:{mime};base64,{data}"))
+        }
+        _ => None,
+    }
+}
+
+fn transcript_content_items<'a>(
+    tool: &str,
+    value: &'a serde_json::Value,
+) -> Vec<&'a serde_json::Value> {
+    let content = match tool {
+        "claude" => value
+            .get("message")
+            .and_then(|message| message.get("content")),
+        "codex" => value
+            .get("payload")
+            .and_then(|payload| payload.get("content")),
+        "grok" | "gemini" => value.get("content"),
+        "qwen" => value
+            .get("message")
+            .and_then(|message| message.get("parts")),
+        _ => None,
+    };
+    content
+        .and_then(|items| items.as_array())
+        .map(|items| items.iter().collect())
+        .unwrap_or_default()
+}
+
+fn transcript_message_from_value(
+    tool: &str,
+    value: &serde_json::Value,
+    remaining_image_bytes: &mut usize,
+    attachment_count: &mut usize,
+) -> Option<ConversationTranscriptMessage> {
+    let role = transcript_role(tool, value)?;
+    let base = match tool {
+        "claude" => claude_handoff_message(value),
+        "codex" => codex_handoff_message(value),
+        "grok" => grok_handoff_message(value),
+        "qwen" => qwen_handoff_message(value),
+        "gemini" => gemini_handoff_message(value),
+        _ => None,
+    };
+    let mut attachments = Vec::new();
+    if *attachment_count < TRANSCRIPT_ATTACHMENT_LIMIT && *remaining_image_bytes > 0 {
+        for item in transcript_content_items(tool, value) {
+            if *attachment_count >= TRANSCRIPT_ATTACHMENT_LIMIT || *remaining_image_bytes == 0 {
+                break;
+            }
+            let Some(data_url) = inline_data_url_from_item(item) else {
+                continue;
+            };
+            let alt = format!("会话图片 {}", *attachment_count + 1);
+            if let Some(attachment) =
+                inline_image_attachment(&data_url, &alt, remaining_image_bytes)
+            {
+                attachments.push(attachment);
+                *attachment_count += 1;
+            }
+        }
+    }
+    let mut text = base.map(|message| message.text).unwrap_or_default();
+    if !attachments.is_empty() {
+        for index in 1..=attachments.len() {
+            text = text.replace(&format!("[Image #{index}]"), "");
+        }
+        text = sanitize_handoff_text(&text);
+    }
+    if text.is_empty() && attachments.is_empty() {
+        return None;
+    }
+    Some(ConversationTranscriptMessage {
+        role: role.into(),
+        text,
+        attachments,
+    })
+}
+
+fn jsonl_transcript_candidates(buf: &str, tool: &str) -> Vec<ConversationTranscriptMessage> {
+    let mut remaining_image_bytes = TRANSCRIPT_INLINE_IMAGE_LIMIT;
+    let mut attachment_count = 0;
+    let mut candidates = Vec::new();
+    for line in buf.lines().rev() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(message) = transcript_message_from_value(
+            tool,
+            &value,
+            &mut remaining_image_bytes,
+            &mut attachment_count,
+        ) {
+            candidates.push(message);
+            if candidates.len() > TRANSCRIPT_MESSAGE_LIMIT {
+                break;
+            }
+        }
+    }
+    candidates.reverse();
+    candidates
+}
+
+fn limit_transcript_messages(
+    candidates: Vec<ConversationTranscriptMessage>,
+    source_truncated: bool,
+) -> (Vec<ConversationTranscriptMessage>, bool) {
+    let mut remaining = TRANSCRIPT_TEXT_BYTE_LIMIT;
+    let mut selected = Vec::new();
+    let mut truncated = source_truncated || candidates.len() > TRANSCRIPT_MESSAGE_LIMIT;
+    for message in candidates.iter().rev().take(TRANSCRIPT_MESSAGE_LIMIT) {
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let text = if message.text.len() > remaining {
+            truncated = true;
+            let mut end = remaining.min(message.text.len());
+            while end > 0 && !message.text.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.text[..end].to_string()
+        } else {
+            message.text.clone()
+        };
+        remaining = remaining.saturating_sub(text.len());
+        selected.push(ConversationTranscriptMessage {
+            role: message.role.clone(),
+            text,
+            attachments: message.attachments.clone(),
+        });
+    }
+    selected.reverse();
+    (selected, truncated)
+}
+
 fn read_lossy_tail(path: &Path, limit: u64) -> Result<(String, bool), String> {
     let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
     let len = file.metadata().map_err(|error| error.to_string())?.len();
@@ -2126,11 +2386,15 @@ fn jsonl_handoff_candidates(
         .collect()
 }
 
-fn sqlite_handoff_candidates(
+fn sqlite_message_candidates_bounded(
     db_path: &Path,
     cwd: &str,
     session_id: &str,
-) -> Result<Vec<SessionHandoffMessage>, String> {
+    part_limit: i64,
+) -> Result<(Vec<SessionHandoffMessage>, bool), String> {
+    if part_limit <= 0 {
+        return Err("SQLite 会话读取上限必须大于 0".into());
+    }
     let connection =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| error.to_string())?;
@@ -2154,14 +2418,22 @@ fn sqlite_handoff_candidates(
                    AND (s.parent_id IS NULL OR s.parent_id = '')
                    AND s.directory IN (?2, ?3, ?4)
                  ORDER BY m.rowid DESC, p.rowid DESC
-                 LIMIT 96
+                 LIMIT ?5
              )
              ORDER BY message_rowid, part_rowid",
         )
         .map_err(|error| error.to_string())?;
-    let rows = statement
+    // 多读一个 part，明确区分“刚好到上限”和“还有更早内容”。查询先按倒序取
+    // 最近的 part，外层再恢复时间顺序；超出时丢弃外层结果中的第一个（最旧）part。
+    let mut rows = statement
         .query_map(
-            rusqlite::params![session_id, normalized, slash, backslash],
+            rusqlite::params![
+                session_id,
+                normalized,
+                slash,
+                backslash,
+                part_limit.saturating_add(1)
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -2171,12 +2443,19 @@ fn sqlite_handoff_candidates(
             },
         )
         .map_err(|error| error.to_string())?;
+    let mut rows = rows
+        .by_ref()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let truncated = rows.len() > part_limit as usize;
+    if truncated {
+        rows.remove(0);
+    }
     let mut candidates = Vec::new();
     let mut current_id = String::new();
     let mut current_role = String::new();
     let mut current_parts = Vec::new();
-    for row in rows {
-        let (message_id, message_data, part_data) = row.map_err(|error| error.to_string())?;
+    for (message_id, message_data, part_data) in rows {
         let message = serde_json::from_str::<serde_json::Value>(&message_data).ok();
         let part = serde_json::from_str::<serde_json::Value>(&part_data).ok();
         let role = message
@@ -2219,7 +2498,25 @@ fn sqlite_handoff_candidates(
             });
         }
     }
-    Ok(candidates)
+    Ok((candidates, truncated))
+}
+
+fn sqlite_message_candidates(
+    db_path: &Path,
+    cwd: &str,
+    session_id: &str,
+    part_limit: i64,
+) -> Result<Vec<SessionHandoffMessage>, String> {
+    sqlite_message_candidates_bounded(db_path, cwd, session_id, part_limit)
+        .map(|(messages, _)| messages)
+}
+
+fn sqlite_handoff_candidates(
+    db_path: &Path,
+    cwd: &str,
+    session_id: &str,
+) -> Result<Vec<SessionHandoffMessage>, String> {
+    sqlite_message_candidates(db_path, cwd, session_id, 96)
 }
 
 fn source_handoff_messages(
@@ -2351,6 +2648,182 @@ fn source_handoff_messages(
         _ => return Err("还不支持从这个工具交接会话".into()),
     };
     Ok(limit_handoff_messages(candidates, source_truncated))
+}
+
+fn transcript_from_text_messages(
+    messages: Vec<SessionHandoffMessage>,
+) -> Vec<ConversationTranscriptMessage> {
+    messages
+        .into_iter()
+        .map(|message| ConversationTranscriptMessage {
+            role: message.role,
+            text: message.text,
+            attachments: Vec::new(),
+        })
+        .collect()
+}
+
+fn source_transcript_messages(
+    home: &Path,
+    cwd: &str,
+    source_tool: &str,
+    session_id: &str,
+) -> Result<(Vec<ConversationTranscriptMessage>, bool), String> {
+    let (candidates, source_truncated) = match source_tool {
+        "claude" => {
+            let path = claude_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, TRANSCRIPT_FILE_READ_LIMIT)?;
+            (jsonl_transcript_candidates(&buf, "claude"), truncated)
+        }
+        "codex" => {
+            let path = find_codex_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, TRANSCRIPT_FILE_READ_LIMIT)?;
+            (jsonl_transcript_candidates(&buf, "codex"), truncated)
+        }
+        "grok" => {
+            let path = grok_session_dir(home, cwd, session_id)?;
+            let history = path.join("chat_history.jsonl");
+            let (mut candidates, truncated) = if history.is_file() {
+                let (buf, truncated) = read_lossy_tail(&history, TRANSCRIPT_FILE_READ_LIMIT)?;
+                (jsonl_transcript_candidates(&buf, "grok"), truncated)
+            } else {
+                (Vec::new(), false)
+            };
+            if candidates.is_empty() {
+                let summary_path = path.join("summary.json");
+                if summary_path.is_file() {
+                    let text = read_utf8_file_bounded(
+                        &summary_path,
+                        TRANSCRIPT_FILE_READ_LIMIT,
+                        "Grok 会话摘要",
+                    )?;
+                    if let Ok(summary) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(raw) = summary
+                            .get("session_summary")
+                            .and_then(|item| item.as_str())
+                        {
+                            let text = sanitize_handoff_text(raw);
+                            if !text.is_empty() {
+                                candidates.push(ConversationTranscriptMessage {
+                                    role: "assistant".into(),
+                                    text,
+                                    attachments: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            (candidates, truncated)
+        }
+        "qwen" => {
+            let path = qwen_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, TRANSCRIPT_FILE_READ_LIMIT)?;
+            (jsonl_transcript_candidates(&buf, "qwen"), truncated)
+        }
+        "gemini" => {
+            let path = resolve_gemini_session_file(home, cwd, session_id)?;
+            let raw = read_utf8_file_bounded(&path, TRANSCRIPT_FILE_READ_LIMIT, "Gemini 历史会话")?;
+            let value = serde_json::from_str::<serde_json::Value>(raw.trim())
+                .ok()
+                .or_else(|| {
+                    raw.lines()
+                        .next()
+                        .and_then(|line| serde_json::from_str(line).ok())
+                })
+                .unwrap_or(serde_json::Value::Null);
+            let mut remaining_image_bytes = TRANSCRIPT_INLINE_IMAGE_LIMIT;
+            let mut attachment_count = 0;
+            let mut candidates = value
+                .get("messages")
+                .and_then(|messages| messages.as_array())
+                .into_iter()
+                .flatten()
+                .rev()
+                .filter_map(|message| {
+                    transcript_message_from_value(
+                        "gemini",
+                        message,
+                        &mut remaining_image_bytes,
+                        &mut attachment_count,
+                    )
+                })
+                .take(TRANSCRIPT_MESSAGE_LIMIT + 1)
+                .collect::<Vec<_>>();
+            candidates.reverse();
+            (candidates, false)
+        }
+        "agy" => {
+            require_component_id(session_id)?;
+            let history = home.join(".gemini/antigravity-cli/history.jsonl");
+            let (buf, truncated) = read_lossy_tail(&history, TRANSCRIPT_FILE_READ_LIMIT)?;
+            let candidates = buf
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|value| {
+                    value.get("conversationId").and_then(|item| item.as_str()) == Some(session_id)
+                        && value
+                            .get("workspace")
+                            .and_then(|item| item.as_str())
+                            .is_some_and(|workspace| same_project_cwd(workspace, cwd))
+                })
+                .filter_map(|value| {
+                    let text = sanitize_handoff_text(
+                        value
+                            .get("display")
+                            .and_then(|item| item.as_str())
+                            .unwrap_or(""),
+                    );
+                    (!text.is_empty()).then(|| ConversationTranscriptMessage {
+                        role: "user".into(),
+                        text,
+                        attachments: Vec::new(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            (candidates, truncated)
+        }
+        "opencode" => {
+            let db = find_opencode_db(home).ok_or_else(|| "找不到 OpenCode 会话库".to_string())?;
+            let (messages, truncated) =
+                sqlite_message_candidates_bounded(&db, cwd, session_id, 4000)?;
+            (transcript_from_text_messages(messages), truncated)
+        }
+        "mimo" => {
+            let db = find_mimo_db(home).ok_or_else(|| "找不到 MiMo Code 会话库".to_string())?;
+            let (messages, truncated) =
+                sqlite_message_candidates_bounded(&db, cwd, session_id, 4000)?;
+            (transcript_from_text_messages(messages), truncated)
+        }
+        _ => return Err("还不支持读取这个工具的历史对话".into()),
+    };
+    Ok(limit_transcript_messages(candidates, source_truncated))
+}
+
+pub fn preview_conversation_transcript_with_home(
+    project_path: &str,
+    source_tool: &str,
+    session_id: &str,
+    home: &Path,
+) -> Result<ConversationTranscriptPreview, String> {
+    let cwd = require_cwd(project_path)?;
+    let source_tool = source_tool.trim();
+    let (messages, truncated) = source_transcript_messages(home, &cwd, source_tool, session_id)?;
+    let source = preview_project_session_with_home(project_path, source_tool, session_id, home)?;
+    if messages.is_empty() {
+        return Err(format!(
+            "这个 {} 会话没有可显示的对话内容",
+            handoff_tool_label(source_tool)
+        ));
+    }
+    Ok(ConversationTranscriptPreview {
+        source_tool: source.tool,
+        source_id: source.id,
+        source_title: source.title,
+        source_at_ms: source.at_ms,
+        messages,
+        truncated,
+    })
 }
 
 pub fn preview_session_handoff_with_home(
@@ -2521,6 +2994,15 @@ pub fn preview_session_handoff(
     preview_session_handoff_with_home(project_path, source_tool, session_id, &home)
 }
 
+pub fn preview_conversation_transcript(
+    project_path: &str,
+    source_tool: &str,
+    session_id: &str,
+) -> Result<ConversationTranscriptPreview, String> {
+    let home = dirs::home_dir().ok_or_else(|| "找不到用户主目录".to_string())?;
+    preview_conversation_transcript_with_home(project_path, source_tool, session_id, &home)
+}
+
 pub fn delete_project_session(
     project_path: &str,
     tool: &str,
@@ -2540,6 +3022,22 @@ mod tests {
         let home = root.path().join("home");
         fs::create_dir_all(&home).unwrap();
         (root, home)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_cwd_matches_an_existing_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real-project");
+        let link = root.path().join("linked-project");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, &link).unwrap();
+        assert!(same_project_cwd(
+            &real.to_string_lossy(),
+            &link.to_string_lossy()
+        ));
     }
 
     fn seed_sqlite_handoff_db(db: &Path, cwd: &str, session_id: &str, title: &str) {
@@ -2591,6 +3089,23 @@ mod tests {
                 rusqlite::params![session_id],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn bounded_sqlite_messages_marks_omitted_older_parts() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        let cwd = "/Users/lucky/git/sqlite-transcript";
+        let session_id = "sqlite-transcript-main";
+        seed_sqlite_handoff_db(&db, cwd, session_id, "长会话");
+
+        let (messages, truncated) =
+            sqlite_message_candidates_bounded(&db, cwd, session_id, 2).unwrap();
+
+        assert!(truncated);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[0].text, "还需要补失败回滚");
     }
 
     #[test]
@@ -3424,6 +3939,83 @@ mod tests {
     }
 
     #[test]
+    fn conversation_transcript_is_not_limited_like_handoff() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/long-conversation";
+        let session_id = "33333333-3333-3333-3333-333333333333";
+        let directory = home
+            .join(".claude/projects")
+            .join(encode_claude_project_dir(cwd));
+        fs::create_dir_all(&directory).unwrap();
+        let mut lines = Vec::new();
+        for index in 0..30 {
+            lines.push(
+                serde_json::json!({"type":"user","cwd":cwd,"message":{"role":"user","content":format!("问题 {index}")}})
+                    .to_string(),
+            );
+            lines.push(
+                serde_json::json!({"type":"assistant","cwd":cwd,"message":{"role":"assistant","content":format!("回答 {index}")}})
+                    .to_string(),
+            );
+        }
+        fs::write(
+            directory.join(format!("{session_id}.jsonl")),
+            format!("{}\n", lines.join("\n")),
+        )
+        .unwrap();
+
+        let transcript =
+            preview_conversation_transcript_with_home(cwd, "claude", session_id, &home).unwrap();
+        let handoff = preview_session_handoff_with_home(cwd, "claude", session_id, &home).unwrap();
+        assert_eq!(transcript.messages.len(), 60);
+        assert_eq!(transcript.messages.first().unwrap().text, "问题 0");
+        assert_eq!(transcript.messages.last().unwrap().text, "回答 29");
+        assert!(!transcript.truncated);
+        assert_eq!(handoff.messages.len(), HANDOFF_MESSAGE_LIMIT);
+        assert!(handoff.truncated);
+    }
+
+    #[test]
+    fn grok_conversation_transcript_restores_inline_user_image() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/grok-image";
+        let session_id = "grok-image-main";
+        let directory = home
+            .join(".grok/sessions")
+            .join(encode_grok_cwd(cwd))
+            .join(session_id);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("summary.json"),
+            r#"{"generated_title":"设置截图","last_active_at":"2026-08-25T10:00:00Z"}"#,
+        )
+        .unwrap();
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+        fs::write(
+            directory.join("chat_history.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"user","content":[
+                    {"type":"text","text":"<user_query>[Image #1] 是这个 setting 页面吗</user_query>"},
+                    {"type":"image","url":png}
+                ]}),
+                serde_json::json!({"type":"assistant","content":"是这个页面。"}),
+            ),
+        )
+        .unwrap();
+
+        let transcript =
+            preview_conversation_transcript_with_home(cwd, "grok", session_id, &home).unwrap();
+        assert_eq!(transcript.messages.len(), 2);
+        assert_eq!(transcript.messages[0].text, "是这个 setting 页面吗");
+        assert_eq!(transcript.messages[0].attachments.len(), 1);
+        assert_eq!(transcript.messages[0].attachments[0].mime_type, "image/png");
+        assert!(transcript.messages[0].attachments[0]
+            .data_url
+            .starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
     fn handoff_rejects_oversized_gemini_and_grok_json_before_parsing() {
         let (_root, home) = temp_home();
         let cwd = "/Users/lucky/git/bounded-handoff";
@@ -3458,6 +4050,21 @@ mod tests {
     fn handoff_supports_every_registered_cli_history_format() {
         let (_root, home) = temp_home();
         let cwd = "/Users/lucky/git/all-handoff";
+
+        let claude_id = "11111111-1111-1111-1111-111111111111";
+        let claude = home
+            .join(".claude/projects")
+            .join(encode_claude_project_dir(cwd));
+        fs::create_dir_all(&claude).unwrap();
+        fs::write(
+            claude.join(format!("{claude_id}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"user","cwd":cwd,"message":{"role":"user","content":"检查 Claude 登录"}}),
+                serde_json::json!({"type":"assistant","cwd":cwd,"message":{"role":"assistant","content":"Claude 登录还需要回归测试。"}}),
+            ),
+        )
+        .unwrap();
 
         let grok_id = "grok-main";
         let grok = home
@@ -3546,6 +4153,12 @@ mod tests {
         );
 
         let cases = [
+            (
+                "claude",
+                claude_id,
+                "检查 Claude 登录",
+                "Claude 登录还需要回归测试。",
+            ),
             ("grok", grok_id, "检查登录功能", "登录校验还需要收紧。"),
             ("codex", codex_id, "继续修登录", "我会先检查现有改动。"),
             ("qwen", qwen_id, "检查部署", "还要核对服务状态。"),
@@ -3565,22 +4178,72 @@ mod tests {
             ("mimo", "mimo-main", "检查登录实现", "还需要补失败回滚"),
         ];
         for (tool, id, first, last) in cases {
-            let preview = preview_session_handoff_with_home(cwd, tool, id, &home).unwrap();
-            assert_eq!(preview.source_tool, tool);
-            assert!(preview
+            let handoff = preview_session_handoff_with_home(cwd, tool, id, &home).unwrap();
+            assert_eq!(handoff.source_tool, tool);
+            assert!(handoff
                 .messages
                 .iter()
                 .any(|message| message.text.contains(first)));
-            assert!(preview
+            assert!(handoff
                 .messages
                 .iter()
                 .any(|message| message.text.contains(last)));
-            assert!(preview.messages.iter().all(|message| {
+            assert!(handoff.messages.iter().all(|message| {
+                !message.text.contains("内部规则")
+                    && !message.text.contains("合成消息")
+                    && !message.text.contains("工具内容")
+            }));
+
+            let transcript =
+                preview_conversation_transcript_with_home(cwd, tool, id, &home).unwrap();
+            assert_eq!(transcript.source_tool, tool);
+            assert!(transcript
+                .messages
+                .iter()
+                .any(|message| message.text.contains(first)));
+            assert!(transcript
+                .messages
+                .iter()
+                .any(|message| message.text.contains(last)));
+            assert!(transcript.messages.iter().all(|message| {
                 !message.text.contains("内部规则")
                     && !message.text.contains("合成消息")
                     && !message.text.contains("工具内容")
             }));
         }
+    }
+
+    #[test]
+    fn codex_conversation_transcript_restores_inline_user_image() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/codex-image";
+        let session_id = "codex-image-main";
+        let directory = home.join(".codex/sessions/2026/08/25");
+        fs::create_dir_all(&directory).unwrap();
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+        fs::write(
+            directory.join("rollout-codex-image.jsonl"),
+            format!(
+                "{}\n{}\n{}\n",
+                serde_json::json!({"type":"session_meta","payload":{"session_id":session_id,"cwd":cwd,"timestamp":"2026-08-25T10:00:00Z","thread_source":"user"}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                    {"type":"input_text","text":"[Image #1] 这是设置页面吗"},
+                    {"type":"input_image","image_url":png}
+                ]}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"是这个页面。"}]}}),
+            ),
+        )
+        .unwrap();
+
+        let transcript =
+            preview_conversation_transcript_with_home(cwd, "codex", session_id, &home).unwrap();
+        assert_eq!(transcript.messages.len(), 2);
+        assert_eq!(transcript.messages[0].text, "这是设置页面吗");
+        assert_eq!(transcript.messages[0].attachments.len(), 1);
+        assert_eq!(transcript.messages[0].attachments[0].mime_type, "image/png");
+        assert!(transcript.messages[0].attachments[0]
+            .data_url
+            .starts_with("data:image/png;base64,"));
     }
 
     #[test]

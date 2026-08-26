@@ -263,6 +263,15 @@ pub fn apply_to_command(cmd: &mut CommandBuilder) {
     }
 }
 
+/// 给不经过 PTY 的后台子进程应用同一套代理设置。对话工作台里的 Codex
+/// app-server 走这条路径，避免“终端里能联网、对话里不能”的配置漂移。
+pub fn apply_to_std_command(cmd: &mut std::process::Command) {
+    let settings = load_settings();
+    for (key, value) in env_pairs(&settings) {
+        cmd.env(key, value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

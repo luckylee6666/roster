@@ -80,6 +80,13 @@ import {
 import { setFilePreviewLayerOpen } from './file-preview-layer.js';
 import { createTerminalInputBuffer } from './terminal-input-buffer.js';
 import { installWorkspaceMode } from './workspace-mode.js';
+import { installAppShell } from './app-shell.js';
+import {
+  isDeveloperTerminalVisible,
+  normalizeAppView,
+  readAppShellPreference,
+} from './app-shell-utils.js';
+import { installConversationMode } from './conversation-mode.js';
 import {
   createShellScriptCommand,
   isShellScriptEntry,
@@ -164,6 +171,7 @@ let snippets = [];
 let projectIdeas = [];
 let currentEditId = null;
 let pendingConfirm = null;
+let pendingConfirmCancel = null;
 let activeGroup = 'all';
 let currentServerEditId = null;
 
@@ -264,9 +272,26 @@ const el = {
   treeCtxMenu: $('tree-context-menu'),
 };
 
+const initialAppView = normalizeAppView(document.documentElement.dataset.appView);
+let appViewController = null;
+let conversationController = null;
+let terminalRestoreOffered = false;
+
+function currentAppView() {
+  return appViewController?.view || initialAppView;
+}
+
+function developerTerminalVisible() {
+  return isDeveloperTerminalVisible(
+    currentAppView(),
+    !!termEl?.dock?.classList.contains('active'),
+  );
+}
+
 async function init() {
   await load();
   bind();
+  installApplicationSurfaces();
   void refreshInstalledClis();
   void refreshProxyIndicator();
   try {
@@ -276,7 +301,78 @@ async function init() {
   }
   await initTermTheme(); // 自定义主题表 + 恢复上次主题（可能是 custom:*），先于会话还原
   await bindNativeEscListener();
+  if (currentAppView() === 'developer') offerTerminalSessionRestore();
+}
+
+function offerTerminalSessionRestore() {
+  if (terminalRestoreOffered) return;
+  terminalRestoreOffered = true;
   maybeRestoreSessions();
+}
+
+function installApplicationSurfaces() {
+  if (appViewController || conversationController) return;
+  conversationController = installConversationMode({
+    document,
+    storage: localStorage,
+    invoke,
+    listen: window.__TAURI__?.event?.listen,
+    notify: msg,
+    loadHistory: loadProjectSessionHistory,
+    invalidateHistory: invalidateProjectSessionHistory,
+    onCreateIdea: createConversationProjectIdea,
+    onUpdateIdea: updateConversationProjectIdea,
+    onDeleteIdea: deleteConversationProjectIdea,
+    onOpenFolder: openConversationProjectFolder,
+    onRefreshProject: refreshConversationProject,
+    onManageSnippets: openSnippetModal,
+    onCreateProject: async () => {
+      if (await appViewController?.setView('developer')) openModal();
+    },
+    confirm: requestConfirm,
+  });
+  conversationController.setProjects(projects);
+  conversationController.setIdeas(projectIdeas);
+  conversationController.setSnippets(snippets);
+  if (installedCliIds !== null) conversationController.setInstalledCliIds(installedCliIds);
+
+  appViewController = installAppShell({
+    document,
+    storage: localStorage,
+    initialView: initialAppView,
+    beforeConversation: async () => {
+      const hidden = await workspaceController?.setAppVisible(false);
+      if (hidden === false) return false;
+      cleanupTreeDrag();
+      setTerminalPaneDragTarget(null);
+      characterTheme?.setDockOpen(false);
+      return true;
+    },
+    beforeDeveloper: async () => {
+      const visible = await workspaceController?.setAppVisible(true);
+      if (visible === false) return false;
+      offerTerminalSessionRestore();
+      requestAnimationFrame(() => {
+        characterTheme?.setDockOpen(termEl.dock.classList.contains('active'));
+        scheduleFitVisibleSessions(true);
+      });
+      return true;
+    },
+    onViewChange: view => {
+      if (view === 'conversation') conversationController?.focusComposer();
+    },
+    notify: msg,
+  });
+
+  document.querySelectorAll('[data-conversation-starter]').forEach(button => {
+    button.addEventListener('click', () => {
+      const composer = $('conversation-composer');
+      if (!composer || composer.disabled || conversationController?.isRunning()) return;
+      composer.value = button.dataset.conversationStarter || '';
+      composer.dispatchEvent(new Event('input', { bubbles: true }));
+      composer.focus();
+    });
+  });
 }
 
 let nativeEscBound = false;
@@ -286,6 +382,7 @@ async function bindNativeEscListener() {
   const listen = window.__TAURI__?.event?.listen;
   if (typeof listen !== 'function') return;
   await listen('native-esc', () => {
+    if (!developerTerminalVisible()) return;
     const renameInput = document.querySelector('.group-rename-input');
     if (renameInput) {
       renameInput.blur();
@@ -318,12 +415,15 @@ async function load() {
     render(projects);
     el.countAll.textContent = projects.length;
     syncProjectIdeasContext();
+    conversationController?.setProjects(projects);
+    conversationController?.setIdeas(projectIdeas);
     renderSnippetQuick();
     startScheduler();
   } catch (e) {
     console.error('加载失败:', e);
     appLog('error', '初始数据加载失败：' + (e.message || e));
     msg('加载失败: ' + (e.message || e), 'error');
+    conversationController?.setProjects([]);
   }
 }
 
@@ -492,7 +592,19 @@ function machineTagHtml(machine) {
 
 let installedCliIds = null;
 let installedCliAt = 0;
+let installedCliProbeRevision = 0;
+let installedCliProbeRetries = 0;
+let installedCliRetryTimer = null;
 const INSTALLED_CLI_TTL_MS = 60_000;
+const INSTALLED_CLI_MAX_RETRIES = 2;
+
+function scheduleInstalledCliRetry() {
+  clearTimeout(installedCliRetryTimer);
+  installedCliRetryTimer = setTimeout(() => {
+    installedCliRetryTimer = null;
+    void refreshInstalledClis({ force: true });
+  }, 500 * installedCliProbeRetries);
+}
 
 function cardCliButtonsHtml(project) {
   const last = cliToolName(getProjectActivity(project?.id)?.cli);
@@ -522,22 +634,56 @@ async function refreshInstalledClis({ force = false } = {}) {
   if (!force && installedCliIds && Date.now() - installedCliAt < INSTALLED_CLI_TTL_MS) {
     paintCardCliRows();
     syncSessionHandoffButton();
+    conversationController?.setInstalledCliIds(installedCliIds);
     return;
   }
+  // A pending retry is an older probe. If it fires while this forced request is
+  // in flight it would advance the revision and discard this newer result,
+  // briefly turning an installed CLI into “not installed”.
+  if (force && installedCliRetryTimer !== null) {
+    clearTimeout(installedCliRetryTimer);
+    installedCliRetryTimer = null;
+  }
+  const revision = ++installedCliProbeRevision;
   try {
     const found = await invoke('list_installed_clis', { names: [...CLI_TOOL_IDS] });
-    installedCliIds = normalizeInstalledCliIds(found);
+    if (revision !== installedCliProbeRevision) return;
+    const detected = normalizeInstalledCliIds(found);
+    // Login-shell startup can fail transiently while the app itself is still
+    // opening. Do not turn one empty probe into a false “not installed” state.
+    if (!detected.length && installedCliProbeRetries < INSTALLED_CLI_MAX_RETRIES) {
+      installedCliProbeRetries += 1;
+      installedCliAt = 0;
+      conversationController?.setInstalledCliIds(installedCliIds);
+      scheduleInstalledCliRetry();
+      return;
+    }
+    installedCliIds = detected;
   } catch (_) {
-    // 探测失败不能谎报“全部已安装”；保留上一次成功结果，首次失败则安全显示为空。
+    if (revision !== installedCliProbeRevision) return;
+    // 探测失败不能谎报“全部已安装”；保留上一次成功结果，
+    // 首次启动则先有界重试，多次失败后才安全显示为空。
+    if (installedCliProbeRetries < INSTALLED_CLI_MAX_RETRIES) {
+      installedCliProbeRetries += 1;
+      installedCliAt = 0;
+      conversationController?.setInstalledCliIds(installedCliIds);
+      scheduleInstalledCliRetry();
+      return;
+    }
     installedCliIds ??= [];
     installedCliAt = 0;
     paintCardCliRows();
     syncSessionHandoffButton();
+    conversationController?.setInstalledCliIds(installedCliIds);
     return;
   }
+  clearTimeout(installedCliRetryTimer);
+  installedCliRetryTimer = null;
+  installedCliProbeRetries = 0;
   installedCliAt = Date.now();
   paintCardCliRows();
   syncSessionHandoffButton();
+  conversationController?.setInstalledCliIds(installedCliIds);
 }
 
 function render(list) {
@@ -2202,14 +2348,18 @@ function bind() {
   // 只在切出前焦点确实位于当前终端时恢复，避免抢走表单、弹窗和文件编辑器的焦点。
   let restoreTerminalFocus = false;
   window.addEventListener('blur', () => {
+    if (currentAppView() !== 'developer') {
+      restoreTerminalFocus = false;
+      return;
+    }
     const session = activeSession ? sessions.get(activeSession) : null;
     restoreTerminalFocus = !!(session && session.bodyEl.contains(document.activeElement));
   });
   // 窗口重新获得焦点时，正在看的会话就别再亮"需要关注"了 + 刷新 git 状态
   let gitFocusTimer = null;
   window.addEventListener('focus', () => {
-    if (activeSession && termEl.dock.classList.contains('active')) clearAttention(activeSession);
-    if (restoreTerminalFocus && activeSession && termEl.dock.classList.contains('active')) {
+    if (activeSession && developerTerminalVisible()) clearAttention(activeSession);
+    if (restoreTerminalFocus && activeSession && developerTerminalVisible()) {
       requestAnimationFrame(() => sessions.get(activeSession)?.term.focus());
     }
     restoreTerminalFocus = false;
@@ -2272,7 +2422,7 @@ function bind() {
   });
   // 终端字号快捷键：⌘/Ctrl + 加号放大、减号缩小、0 复位（capture 阶段抢在 xterm 之前）
   document.addEventListener('keydown', (e) => {
-    if (!termEl.dock.classList.contains('active')) return;
+    if (!developerTerminalVisible()) return;
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     if (e.key === '=' || e.key === '+') { e.preventDefault(); setTermFontSize(currentFontSize + 1); }
     else if (e.key === '-' || e.key === '_') { e.preventDefault(); setTermFontSize(currentFontSize - 1); }
@@ -2398,14 +2548,37 @@ function closeModal() {
 }
 
 // 通用确认弹窗（WKWebView 不支持原生 confirm，统一走应用内弹窗）
-function showConfirm({ title = '确认', message, confirmText = '确认', danger = true, onConfirm }) {
+function showConfirm({ title = '确认', message, confirmText = '确认', danger = true, onConfirm, onCancel }) {
+  // A later application-level prompt supersedes the visible one. Resolve the
+  // previous Promise-backed request as cancelled instead of leaving its caller
+  // suspended forever behind callbacks that are about to be replaced.
+  const supersededCancel = pendingConfirmCancel;
+  pendingConfirm = null;
+  pendingConfirmCancel = null;
+  supersededCancel?.();
   el.confirmTitle.textContent = title;
   el.confirmMessage.textContent = message;
   el.confirmDelete.textContent = confirmText;
   el.confirmDelete.classList.toggle('btn-danger', danger);
   el.confirmDelete.classList.toggle('btn-primary', !danger);
   pendingConfirm = onConfirm;
+  pendingConfirmCancel = onCancel;
   el.confirm.classList.add('active');
+}
+
+// Promise adapter for feature modules. It deliberately reuses the one app-wide
+// dialog because WKWebView does not provide reliable native confirm dialogs.
+function requestConfirm(options) {
+  if (!el.confirm || !el.confirmTitle || !el.confirmMessage || !el.confirmDelete) {
+    return Promise.resolve(false);
+  }
+  return new Promise(resolve => {
+    showConfirm({
+      ...options,
+      onConfirm: () => resolve(true),
+      onCancel: () => resolve(false),
+    });
+  });
 }
 
 // 删除类确认的便捷封装
@@ -2429,6 +2602,9 @@ function del(id, name) {
 function closeDel() {
   el.confirm.classList.remove('active');
   pendingConfirm = null;
+  const onCancel = pendingConfirmCancel;
+  pendingConfirmCancel = null;
+  onCancel?.();
   exitPromptPending = false;
 }
 
@@ -2523,6 +2699,8 @@ async function submit(e) {
 async function doDelete() {
   if (!pendingConfirm) return;
   const fn = pendingConfirm;
+  pendingConfirm = null;
+  pendingConfirmCancel = null;
   try {
     await fn();
   } catch (e) {
@@ -3603,7 +3781,7 @@ function beep() {
 function shouldNotify(id) {
   if (!notifyEnabled) return false;
   const focusedOnIt = document.hasFocus()
-    && termEl.dock.classList.contains('active')
+    && developerTerminalVisible()
     && activeSession === id;
   return !focusedOnIt;
 }
@@ -3999,6 +4177,7 @@ function persistSnippets() {
 
 // 终端右下角片段快捷浮层：列出片段卡片，单击即注入并回车。无片段时整体隐藏。
 function renderSnippetQuick() {
+  conversationController?.setSnippets(snippets);
   const root = $('snippet-quick');
   if (!root) return;
   if (!snippets.length) { root.style.display = 'none'; return; }
@@ -4254,6 +4433,7 @@ async function persistProjectIdeas(snapshot = projectIdeas.slice()) {
 function refreshProjectIdeasUi() {
   syncProjectIdeasButton();
   if (termEl.ideasDrawer?.classList.contains('active')) renderProjectIdeas();
+  conversationController?.setIdeas(projectIdeas);
 }
 
 function beginProjectIdeaMutation() {
@@ -4285,6 +4465,83 @@ async function commitProjectIdeasMutation(previous, next) {
   } finally {
     finishProjectIdeaMutation();
   }
+}
+
+function conversationProject(projectId) {
+  const id = String(projectId || '').trim();
+  return id ? projects.find(project => project.id === id) || null : null;
+}
+
+async function createConversationProjectIdea({ projectId, text } = {}) {
+  const project = conversationProject(projectId);
+  if (!project) throw new Error('当前项目已不存在');
+  const created = createProjectIdea(text, project.id);
+  if (!created || !beginProjectIdeaMutation()) return null;
+  const previous = projectIdeas;
+  const next = [created, ...projectIdeas];
+  if (!await commitProjectIdeasMutation(previous, next)) return null;
+  msg('想法已记下', 'success');
+  return findProjectIdea(projectIdeas, created.id, project.id);
+}
+
+async function updateConversationProjectIdea({
+  projectId,
+  id,
+  title,
+  note,
+  archived,
+} = {}) {
+  const project = conversationProject(projectId);
+  if (!project) throw new Error('当前项目已不存在');
+  const current = findProjectIdea(projectIdeas, id, project.id);
+  if (!current || !beginProjectIdeaMutation()) return null;
+  const previous = projectIdeas;
+  const next = updateProjectIdea(projectIdeas, {
+    id: current.id,
+    projectId: project.id,
+    title,
+    note,
+    archived,
+  });
+  if (next === projectIdeas) {
+    finishProjectIdeaMutation();
+    return null;
+  }
+  if (!await commitProjectIdeasMutation(previous, next)) return null;
+  msg('想法已更新', 'success');
+  return findProjectIdea(projectIdeas, current.id, project.id);
+}
+
+async function deleteConversationProjectIdea({ projectId, id } = {}) {
+  const project = conversationProject(projectId);
+  if (!project) throw new Error('当前项目已不存在');
+  const current = findProjectIdea(projectIdeas, id, project.id);
+  if (!current || !beginProjectIdeaMutation()) return false;
+  const previous = projectIdeas;
+  const next = removeProjectIdea(projectIdeas, current.id, project.id);
+  if (!await commitProjectIdeasMutation(previous, next)) return false;
+  msg('想法已删除', 'success');
+  return true;
+}
+
+async function openConversationProjectFolder({ projectId } = {}) {
+  const project = conversationProject(projectId);
+  if (!project) throw new Error('当前项目已不存在');
+  await invoke('open_folder', { path: project.localPath });
+  return true;
+}
+
+async function refreshConversationProject({ projectId } = {}) {
+  const project = conversationProject(projectId);
+  if (!project) throw new Error('当前项目已不存在');
+  invalidateProjectSessionHistory(project.localPath);
+  const [history, context] = await Promise.all([
+    loadProjectSessionHistory(project.localPath),
+    invoke('project_context', { path: project.localPath }),
+  ]);
+  reloadVisibleProjectSessionHistory(project.localPath);
+  void refreshGitStatus();
+  return { project, history, context };
 }
 
 async function addProjectIdea() {
@@ -4673,7 +4930,7 @@ async function bindTermEvents() {
     if (s) {
       s.term.write(b64ToBytes(e.payload.data));
       if (s.attention) clearAttention(e.payload.id); // 又有新输出 = 重新在干活，撤掉提醒
-      if (s.status !== 'exited' && activeSession === e.payload.id) {
+      if (s.status !== 'exited' && activeSession === e.payload.id && developerTerminalVisible()) {
         characterTheme.handleTerminalEvent('output');
       }
     }
@@ -4686,7 +4943,7 @@ async function bindTermEvents() {
       s.tabEl.classList.add('exited');
       updateTerminalPaneStatus(s);
       s.term.write('\r\n\x1b[90m[会话已结束]\x1b[0m\r\n');
-      if (activeSession === e.payload) characterTheme.handleTerminalEvent('exit');
+      if (activeSession === e.payload && currentAppView() === 'developer') characterTheme.handleTerminalEvent('exit');
       if (shouldNotify(e.payload)) {
         beep();
         invoke('notify', { title: `${s.name || '终端'} 已结束`, body: '终端会话已退出' }).catch(() => {});
@@ -4703,7 +4960,7 @@ async function bindTermEvents() {
     const s = sessions.get(id);
     if (!s || s.status === 'exited') return;
     markAttention(id);
-    if (activeSession === id) characterTheme.handleTerminalEvent('attention');
+    if (activeSession === id && currentAppView() === 'developer') characterTheme.handleTerminalEvent('attention');
     if (shouldNotify(id)) {
       beep();
       const label = name || s.name || '终端';
@@ -4714,7 +4971,7 @@ async function bindTermEvents() {
 
   // 拖拽文件/文件夹到终端窗格 → 写入鼠标命中的会话（同 macOS 终端）。
   const targetAtNativePosition = (pos) => {
-    if (!pos || !termEl.dock.classList.contains('active')) return null;
+    if (!pos || !developerTerminalVisible()) return null;
     const dpr = window.devicePixelRatio || 1;
     const x = pos.x / dpr, y = pos.y / dpr;
     return terminalSessionAtViewportPoint(x, y);
@@ -5895,7 +6152,7 @@ let treeDrag = null;
 let treeDragSuppressClick = false;
 
 function terminalSessionAtViewportPoint(x, y) {
-  if (!termEl.dock.classList.contains('active')) return null;
+  if (!developerTerminalVisible()) return null;
   const panes = visibleTerminalSessionIds(terminalPaneAssignments).map(id => {
     const rect = sessions.get(id)?.bodyEl.getBoundingClientRect();
     return rect ? { id, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
@@ -5998,6 +6255,7 @@ function setupWorkspaceMode() {
   workspaceController = installWorkspaceMode({
     dock: termEl.dock,
     terminalMain: termEl.main,
+    initialAppVisible: initialAppView === 'developer',
     onExpandedChange: expanded => {
       if (expanded) {
         openDock();

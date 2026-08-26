@@ -10,18 +10,178 @@
         document.documentElement.dataset.uiScale =
           savedUiScale === 'standard' || savedUiScale === 'large' ? savedUiScale : 'large';
       } catch (e) {}
+      try {
+        var savedAppShell = JSON.parse(localStorage.getItem('roster-app-view-v1') || 'null');
+        document.documentElement.dataset.appView =
+          savedAppShell && savedAppShell.version === 1 && savedAppShell.appView === 'developer'
+            ? 'developer'
+            : 'conversation';
+      } catch (e) {
+        document.documentElement.dataset.appView = 'conversation';
+      }
     </script>
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="vendor/highlight-atom-one-dark.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="layout">
+    <section class="conversation-shell" id="conversation-surface" aria-label="对话工作台">
+      <aside class="conversation-sidebar">
+        <div class="conversation-brand">
+          <img src="assets/logo.png" width="34" height="34" alt="" />
+          <div><strong>Roster</strong><span>AI 项目助手</span></div>
+        </div>
+        <label class="conversation-search" for="conversation-project-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+          <input id="conversation-project-search" type="search" placeholder="搜索项目" autocomplete="off" />
+        </label>
+        <div class="conversation-side-section conversation-project-section">
+          <div class="conversation-side-title"><span>项目</span></div>
+          <div class="conversation-project-list" id="conversation-project-list"></div>
+        </div>
+        <div class="conversation-sidebar-foot">
+          <button class="conversation-mode-switch" type="button" data-app-view-target="developer" aria-pressed="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
+            <span><strong>开发模式</strong><small>终端、文件和 Git</small></span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="conversation-main">
+        <header class="conversation-header">
+          <div class="conversation-project-heading">
+            <span class="conversation-project-kicker">当前项目</span>
+            <h1 id="conversation-project-name">选择一个项目</h1>
+            <p id="conversation-project-path">先在开发模式中添加项目</p>
+          </div>
+          <span class="conversation-run-status" id="conversation-status" data-status="idle" aria-live="polite">等待你的消息</span>
+        </header>
+
+        <div class="conversation-scroll">
+          <div class="conversation-empty" id="conversation-empty">
+            <h2>今天想推进什么？</h2>
+            <p>用日常语言说明目标，Roster 会在当前项目里处理。</p>
+          </div>
+          <div class="conversation-messages" id="conversation-messages"></div>
+        </div>
+
+        <div class="conversation-compose-wrap">
+          <div class="conversation-starter-list" id="conversation-starter-list">
+            <button type="button" data-conversation-starter="帮我看看这个项目目前做到哪里了，并给出下一步建议">梳理项目现状</button>
+            <button type="button" data-conversation-starter="检查这个项目最近的改动，找出可能的问题并说明影响">检查最近改动</button>
+            <button type="button" data-conversation-starter="阅读这个项目，帮我把接下来要做的事情整理成清晰计划">整理下一步计划</button>
+          </div>
+          <div class="conversation-slash-menu" id="conversation-slash-menu" hidden role="listbox" aria-label="斜杠命令"></div>
+          <div class="conversation-composer-box">
+            <textarea id="conversation-composer" rows="1" maxlength="65536" data-max-utf8-bytes="65536"
+                      placeholder="描述你想完成的事情…" aria-label="给 AI 助手的消息"
+                      aria-describedby="conversation-composer-hint conversation-safety-note"
+                      data-app-view-focus></textarea>
+            <div class="conversation-composer-foot">
+              <label class="conversation-provider-picker" for="conversation-provider-select">
+                <span class="conversation-provider-label">助手</span>
+                <span class="conversation-provider" id="conversation-provider-state" data-state="loading" title="正在检查本机 CLI">
+                  <i aria-hidden="true"></i>
+                  <span class="visually-hidden">正在检查本机 CLI</span>
+                </span>
+                <span class="conversation-provider-select-wrap">
+                  <select id="conversation-provider-select" aria-label="选择当前 AI 助手" disabled>
+                    <option value="">正在检查本机 CLI</option>
+                  </select>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+                </span>
+              </label>
+              <label class="conversation-snippet-picker" for="conversation-snippet-select" title="把常用片段放入输入框">
+                <select id="conversation-snippet-select" aria-label="选择常用片段" disabled>
+                  <option value="">常用片段</option>
+                </select>
+              </label>
+              <button id="conversation-manage-snippets" class="conversation-compact-action" type="button" title="管理常用片段" aria-label="管理常用片段">管理</button>
+              <button id="conversation-handoff" class="conversation-compact-action" type="button" title="选择另一位助手接手当前对话" aria-label="交接当前对话" disabled>交接</button>
+              <label class="conversation-write-access" for="conversation-write-access" title="打开后，当前 AI 助手可以在项目中修改文件和执行项目命令">
+                <input id="conversation-write-access" type="checkbox" />
+                <span>允许修改项目</span>
+              </label>
+              <span id="conversation-composer-hint">正在检查本机 CLI</span>
+              <button class="conversation-stop" id="conversation-stop" type="button" hidden>停止</button>
+              <button class="conversation-send" id="conversation-send" type="button" aria-label="发送消息" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 19V5M6.5 10.5L12 5l5.5 5.5"/></svg>
+              </button>
+            </div>
+          </div>
+          <p class="conversation-safety-note" id="conversation-safety-note">默认使用所选 CLI 的只读/计划策略；打开“允许修改项目”后才切换到写入模式。</p>
+        </div>
+      </main>
+
+      <aside class="conversation-rail">
+        <section class="conversation-rail-section conversation-context-section">
+          <div class="conversation-rail-title">
+            <h2>项目现场</h2>
+            <span class="conversation-rail-actions">
+              <button id="conversation-open-folder" class="conversation-rail-action" type="button" title="在访达或文件管理器中打开" aria-label="打开项目文件夹" disabled>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.75 5.5h5l1.5 1.75h8v7.25a1.75 1.75 0 0 1-1.75 1.75h-11a1.75 1.75 0 0 1-1.75-1.75z"/><path d="M2.75 7.25v-2A1.5 1.5 0 0 1 4.25 3.75h3l1.5 1.75"/></svg>
+              </button>
+              <button id="conversation-refresh-project" class="conversation-rail-action" type="button" title="刷新项目现场" aria-label="刷新项目现场" disabled>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M16.25 6.75V3.5l-1.7 1.7A6.25 6.25 0 1 0 16 12.75"/><path d="M16.25 3.5H13"/></svg>
+              </button>
+            </span>
+          </div>
+          <div id="conversation-project-context" class="conversation-project-context" data-state="empty" aria-live="polite">
+            <p class="conversation-rail-empty">选择项目后，这里会显示分支、改动和最近提交</p>
+          </div>
+        </section>
+        <section class="conversation-rail-section conversation-history-section">
+          <div class="conversation-rail-title">
+            <h2>最近对话</h2>
+            <button class="conversation-new-chat" id="conversation-new-chat" type="button" hidden title="在当前项目开始新对话">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              <span>新对话</span>
+            </button>
+          </div>
+          <p class="conversation-history-state" id="conversation-history-state" aria-live="polite"></p>
+          <div class="conversation-history-list" id="conversation-history-list"></div>
+        </section>
+        <section class="conversation-rail-section conversation-plan-section" hidden>
+          <div class="conversation-rail-title"><h2>处理步骤</h2><span>实时</span></div>
+          <div id="conversation-plan-list" class="conversation-plan-list"></div>
+        </section>
+        <section class="conversation-rail-section conversation-activity-section" hidden>
+          <div class="conversation-rail-title"><h2>项目动态</h2></div>
+          <div id="conversation-activity-list" class="conversation-activity-list"></div>
+        </section>
+        <section class="conversation-rail-section conversation-ideas-section">
+          <div class="conversation-rail-title">
+            <h2>项目想法</h2>
+            <span class="conversation-rail-actions">
+              <button id="conversation-ideas-toggle-archived" class="conversation-rail-action" type="button" title="查看已归档想法" aria-label="查看已归档想法" aria-pressed="false" disabled>归档</button>
+              <button id="conversation-idea-add" class="conversation-rail-action conversation-idea-add" type="button" title="记录新想法" aria-label="记录新想法" aria-expanded="false" disabled>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
+              </button>
+            </span>
+          </div>
+          <form class="conversation-idea-capture" id="conversation-idea-capture" hidden>
+            <label for="conversation-idea-input">记录一个稍后完善的想法</label>
+            <textarea id="conversation-idea-input" rows="3" maxlength="4000" placeholder="先记下来，之后可以继续整理…"></textarea>
+            <div class="conversation-idea-capture-actions">
+              <button id="conversation-idea-cancel" type="button">取消</button>
+              <button id="conversation-idea-save" type="submit">保存想法</button>
+            </div>
+          </form>
+          <div id="conversation-idea-list" class="conversation-idea-list"></div>
+        </section>
+      </aside>
+    </section>
+
+    <div class="layout" id="development-surface" aria-label="开发工作台">
       <aside class="sider">
         <div class="sider-logo">
           <img src="assets/logo.png" width="32" height="32" alt="logo" />
           <span>Roster</span>
         </div>
+        <button class="developer-back-to-chat" type="button" data-app-view-target="conversation" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M7 8h10a3 3 0 013 3v3a3 3 0 01-3 3h-4l-4 3v-3H7a3 3 0 01-3-3v-3a3 3 0 013-3z"/></svg>
+          对话模式
+        </button>
         <nav class="sider-menu">
           <div class="menu-group">
             <div class="menu-label">工作台</div>
@@ -47,7 +207,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
               </svg>
-              <input id="search-input" type="text" placeholder="搜索项目名称、路径..." />
+              <input id="search-input" type="text" placeholder="搜索项目名称、路径..." data-app-view-focus />
             </div>
             <button class="btn" id="proxy-settings-entry" type="button" title="终端代理：开着时新启动的 CLI 走这个地址">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -104,6 +264,7 @@
       </main>
     </div>
 
+    <div id="development-overlays">
     <!-- 新建/编辑 Modal -->
     <div class="modal-mask" id="modal-overlay">
       <div class="modal-wrap">
@@ -292,30 +453,6 @@
       </div>
     </div>
 
-    <!-- 删除确认 -->
-    <div class="modal-mask" id="confirm-overlay">
-      <div class="modal-wrap">
-        <div class="modal modal-sm">
-          <div class="modal-header">
-            <span class="modal-title" id="confirm-title">确认</span>
-            <button class="modal-x" id="confirm-close">&times;</button>
-          </div>
-          <div class="modal-body">
-            <div class="confirm-msg">
-              <svg class="confirm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
-              </svg>
-              <p id="confirm-message"></p>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-default" id="confirm-cancel">取消</button>
-            <button class="btn btn-danger" id="confirm-delete">删除</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- 手机远程 Modal -->
     <div class="modal-mask" id="remote-overlay">
       <div class="modal-wrap">
@@ -462,8 +599,6 @@
         </div>
       </div>
     </div>
-
-    <div class="message-container" id="toast-container"></div>
 
     <!-- 内置终端：底部抽屉，多标签集中管理所有会话 -->
     <div class="terminal-dock" id="terminal-dock">
@@ -849,46 +984,6 @@
     <div class="snippet-menu" id="snippet-menu"></div>
     <div class="memory-menu" id="terminal-memory-menu" role="menu" aria-label="项目记忆"></div>
 
-    <!-- Prompt 片段库：管理 Modal -->
-    <div class="modal-mask" id="snippet-modal-overlay">
-      <div class="modal-wrap">
-        <div class="modal modal-lg">
-          <div class="modal-header">
-            <span class="modal-title">Prompt 片段库</span>
-            <button class="modal-x" id="snippet-modal-close">&times;</button>
-          </div>
-          <div class="modal-body">
-            <div class="snippet-editor">
-              <input class="form-input" type="text" id="snippet-title" placeholder="标题（如：更新记忆）" maxlength="60" />
-              <textarea class="form-input" id="snippet-content" rows="4" placeholder="片段内容，点击时注入到当前终端（不自动回车，可先检查再发送）"></textarea>
-              <div class="snippet-sched-row">
-                <span class="snippet-sched-label">🕐 定时发送</span>
-                <select class="form-select" id="snippet-sched-mode">
-                  <option value="">不定时</option>
-                  <option value="interval">间隔重复</option>
-                  <option value="daily">每天定时</option>
-                </select>
-                <span class="snippet-sched-field" id="snippet-sched-interval" style="display:none;">
-                  每 <input class="form-input" type="number" id="snippet-sched-min" min="1" max="1440" value="30" /> 分钟
-                </span>
-                <span class="snippet-sched-field" id="snippet-sched-daily" style="display:none;">
-                  每天 <input class="form-input" type="time" id="snippet-sched-time" value="09:00" />
-                </span>
-                <span class="snippet-sched-hint" id="snippet-sched-hint">到点自动注入当前终端并回车</span>
-              </div>
-              <div class="snippet-editor-actions">
-                <span class="snippet-edit-hint" id="snippet-edit-hint"></span>
-                <button class="btn btn-default btn-sm" id="snippet-clear-btn">清空</button>
-                <button class="btn btn-primary btn-sm" id="snippet-save-btn">保存片段</button>
-              </div>
-            </div>
-            <div class="snippet-list" id="snippet-list"></div>
-            <div class="server-empty" id="snippet-empty">暂无片段，在上方填写后「保存片段」</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- 文件树右键菜单 -->
     <div class="tree-ctx-menu" id="tree-context-menu">
       <div class="ctx-item" data-action="open">
@@ -920,6 +1015,73 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M3.375 3h17.25c.621 0 1.125.504 1.125 1.125v15.75c0 .621-.504 1.125-1.125 1.125H3.375c-.621 0-1.125-.504-1.125-1.125V4.125C2.25 3.504 2.754 3 3.375 3z"/></svg>
       <span class="terminal-fab-badge" id="terminal-fab-badge" style="display:none;">0</span>
     </button>
+    </div>
+
+    <!-- Prompt 片段库：两种工作台共用，不能放在会被 hidden + inert 的 development-overlays 内 -->
+    <div class="modal-mask" id="snippet-modal-overlay" data-app-global-overlay>
+      <div class="modal-wrap">
+        <div class="modal modal-lg">
+          <div class="modal-header">
+            <span class="modal-title">Prompt 片段库</span>
+            <button class="modal-x" id="snippet-modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="snippet-editor">
+              <input class="form-input" type="text" id="snippet-title" placeholder="标题（如：更新记忆）" maxlength="60" />
+              <textarea class="form-input" id="snippet-content" rows="4" placeholder="片段内容，选择后会放入当前工作台的输入框，可先检查再发送"></textarea>
+              <div class="snippet-sched-row">
+                <span class="snippet-sched-label">🕐 定时发送</span>
+                <select class="form-select" id="snippet-sched-mode">
+                  <option value="">不定时</option>
+                  <option value="interval">间隔重复</option>
+                  <option value="daily">每天定时</option>
+                </select>
+                <span class="snippet-sched-field" id="snippet-sched-interval" style="display:none;">
+                  每 <input class="form-input" type="number" id="snippet-sched-min" min="1" max="1440" value="30" /> 分钟
+                </span>
+                <span class="snippet-sched-field" id="snippet-sched-daily" style="display:none;">
+                  每天 <input class="form-input" type="time" id="snippet-sched-time" value="09:00" />
+                </span>
+                <span class="snippet-sched-hint" id="snippet-sched-hint">到点自动注入当前终端并回车</span>
+              </div>
+              <div class="snippet-editor-actions">
+                <span class="snippet-edit-hint" id="snippet-edit-hint"></span>
+                <button class="btn btn-default btn-sm" id="snippet-clear-btn">清空</button>
+                <button class="btn btn-primary btn-sm" id="snippet-save-btn">保存片段</button>
+              </div>
+            </div>
+            <div class="snippet-list" id="snippet-list"></div>
+            <div class="server-empty" id="snippet-empty">暂无片段，在上方填写后「保存片段」</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全局确认：对话/开发两种模式都会使用，不能放在会被 hidden + inert 的 development-overlays 内 -->
+    <div class="modal-mask" id="confirm-overlay" data-app-global-overlay>
+      <div class="modal-wrap">
+        <div class="modal modal-sm">
+          <div class="modal-header">
+            <span class="modal-title" id="confirm-title">确认</span>
+            <button class="modal-x" id="confirm-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="confirm-msg">
+              <svg class="confirm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+              </svg>
+              <p id="confirm-message"></p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="confirm-cancel">取消</button>
+            <button class="btn btn-danger" id="confirm-delete">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="message-container" id="toast-container"></div>
 
     <script src="vendor/xterm.js"></script>
     <script src="vendor/addon-fit.js"></script>

@@ -55,6 +55,7 @@ export function installWorkspaceMode({
   openExternal = async () => {},
   notify = () => {},
   onModeChange = () => {},
+  initialAppVisible = true,
   WebviewClass = CompanionWebview,
   gameCatalog = createDefaultGameCatalog(),
   gameCenterFactory = createGameCenter,
@@ -103,6 +104,9 @@ export function installWorkspaceMode({
   let overlayOpen = false;
   let resizing = false;
   let destroyed = false;
+  let appVisible = Boolean(initialAppVisible);
+  let appVisibilityRevision = 0;
+  let appVisibilityPending = null;
   let nativeWindowFocused = true;
   let syncFrame = 0;
   let pendingBounds = null;
@@ -211,6 +215,7 @@ export function installWorkspaceMode({
 
   function shouldShowWebview() {
     return !destroyed
+      && appVisible
       && mode === WORKSPACE_MODES.RELAX
       && dockOpen
       && !overlayOpen
@@ -258,12 +263,12 @@ export function installWorkspaceMode({
   }
 
   function flushLatestBounds() {
-    if (boundsSyncRunning || !pendingBounds || destroyed) return;
+    if (boundsSyncRunning || !pendingBounds || destroyed || !appVisible) return;
     const bounds = pendingBounds;
     pendingBounds = null;
     boundsSyncRunning = true;
     void queueWebTask(async () => {
-      if (!webview.created || mode !== WORKSPACE_MODES.RELAX || !dockOpen) return;
+      if (!webview.created || !appVisible || mode !== WORKSPACE_MODES.RELAX || !dockOpen) return;
       try {
         await webview.setPosition({ x: bounds.x, y: bounds.y });
         await webview.setSize({ width: bounds.width, height: bounds.height });
@@ -279,10 +284,10 @@ export function installWorkspaceMode({
   }
 
   function scheduleBoundsSync() {
-    if (syncFrame || destroyed || resizing) return;
+    if (syncFrame || destroyed || !appVisible || resizing) return;
     syncFrame = windowRef.requestAnimationFrame(() => {
       syncFrame = 0;
-      if (!webview.created || mode !== WORKSPACE_MODES.RELAX || !dockOpen) return;
+      if (!webview.created || !appVisible || mode !== WORKSPACE_MODES.RELAX || !dockOpen) return;
       // Keep only the latest geometry while native IPC is still in flight. This
       // prevents resize drags from building a stale setPosition/setSize backlog.
       pendingBounds = slotBounds();
@@ -297,6 +302,7 @@ export function installWorkspaceMode({
       return closeWebview();
     }
     if (mode !== WORKSPACE_MODES.RELAX
+      || !appVisible
       || !dockOpen
       || overlayOpen
       || floatingUiReasons.size > 0
@@ -310,6 +316,7 @@ export function installWorkspaceMode({
       // The task may have waited behind native IPC. Re-check every state that
       // can open DOM above the child WebView before creating or moving it.
       if (revision !== webRevision
+        || !appVisible
         || mode !== WORKSPACE_MODES.RELAX
         || !dockOpen
         || overlayOpen
@@ -340,6 +347,10 @@ export function installWorkspaceMode({
   }
 
   function ensureGame() {
+    if (!appVisible) {
+      gameCenter.pause();
+      return;
+    }
     gameCenter.select(settings.activeGameId);
     if (mode === WORKSPACE_MODES.ENTERTAINMENT
       && dockOpen
@@ -370,7 +381,12 @@ export function installWorkspaceMode({
     }
 
     floatingUiReasons.delete(key);
-    if (!restore || floatingUiReasons.size > 0 || destroyed || overlayOpen || !dockOpen) return true;
+    if (!restore
+      || floatingUiReasons.size > 0
+      || destroyed
+      || !appVisible
+      || overlayOpen
+      || !dockOpen) return true;
     if (mode === WORKSPACE_MODES.RELAX) {
       if (webview.created) scheduleBoundsSync();
       else void openActiveSite();
@@ -392,6 +408,7 @@ export function installWorkspaceMode({
   }
 
   async function openModeMenu() {
+    if (!appVisible) return;
     const revision = ++modeMenuRevision;
     modeMenuOpening = true;
     const hidden = await setFloatingUiOpen('workspace-mode-menu', true);
@@ -424,9 +441,9 @@ export function installWorkspaceMode({
     if (mode === WORKSPACE_MODES.NORMAL) {
       gameCenter.pause();
       void closeWebview();
-      onExpandedChange(false, previous);
+      if (appVisible) onExpandedChange(false, previous);
     } else {
-      onExpandedChange(true, previous);
+      if (appVisible) onExpandedChange(true, previous);
       dockOpen = dock.classList.contains('active');
       if (mode === WORKSPACE_MODES.RELAX) {
         gameCenter.pause();
@@ -444,6 +461,86 @@ export function installWorkspaceMode({
     });
   }
 
+  async function suspendAppPresentation(revision) {
+    cancelSplitterInteraction();
+    closeModeMenu({ restore: false });
+    closeSiteModal({ restoreFocus: false });
+    gameCenter.pause();
+    if (syncFrame) {
+      windowRef.cancelAnimationFrame(syncFrame);
+      syncFrame = 0;
+    }
+    pendingBounds = null;
+
+    try {
+      // Queue the final hide even when the handle does not exist yet. A create
+      // that was already in flight must settle before application navigation
+      // is allowed to reveal another surface above this native child WebView.
+      await queueWebTask(async () => {
+        if (webview.created) await webview.hide();
+      });
+    } catch (error) {
+      if (revision === appVisibilityRevision && !destroyed && !appVisible) {
+        appVisible = true;
+        webRevision += 1;
+        setWebStatus(`网页区域暂时无法隐藏：${errorMessage(error)}`, 'error');
+        if (mode === WORKSPACE_MODES.RELAX && webview.created) scheduleBoundsSync();
+        else if (mode === WORKSPACE_MODES.ENTERTAINMENT) ensureGame();
+      }
+      return false;
+    }
+    return !destroyed && revision === appVisibilityRevision && !appVisible;
+  }
+
+  async function resumeAppPresentation(revision) {
+    if (destroyed || revision !== appVisibilityRevision || !appVisible) return false;
+    onExpandedChange(mode !== WORKSPACE_MODES.NORMAL, mode);
+    dockOpen = dock.classList.contains('active');
+
+    if (mode === WORKSPACE_MODES.RELAX) {
+      await openActiveSite();
+    } else {
+      // A quick resume can overtake the Promise returned by suspend. Wait for
+      // its final native hide before resuming a game or completing the switch.
+      await webQueue.catch(() => {});
+      if (mode === WORKSPACE_MODES.ENTERTAINMENT) ensureGame();
+      else gameCenter.pause();
+    }
+    if (destroyed || revision !== appVisibilityRevision || !appVisible) return false;
+
+    windowRef.requestAnimationFrame(() => {
+      if (destroyed || revision !== appVisibilityRevision || !appVisible) return;
+      onLayoutChange();
+      scheduleBoundsSync();
+    });
+    return true;
+  }
+
+  /**
+   * Gate the native companion presentation while the application shows a
+   * different top-level surface. This never changes or persists the selected
+   * normal/relax/entertainment mode.
+   */
+  function setAppVisible(visible) {
+    const nextVisible = Boolean(visible);
+    if (destroyed) return Promise.resolve(false);
+    if (appVisibilityPending?.target === nextVisible) return appVisibilityPending.promise;
+    if (nextVisible === appVisible && !appVisibilityPending) return Promise.resolve(true);
+
+    const revision = ++appVisibilityRevision;
+    appVisible = nextVisible;
+    webRevision += 1;
+    const promise = nextVisible
+      ? resumeAppPresentation(revision)
+      : suspendAppPresentation(revision);
+    const pending = { target: nextVisible, promise };
+    appVisibilityPending = pending;
+    void promise.finally(() => {
+      if (appVisibilityPending === pending) appVisibilityPending = null;
+    });
+    return promise;
+  }
+
   function setWidth(value, { save = false } = {}) {
     settings.companionWidth = clampCompanionWidth(value);
     dock.style.setProperty('--companion-width', `${settings.companionWidth}%`);
@@ -457,6 +554,7 @@ export function installWorkspaceMode({
   }
 
   async function openSiteModal(trigger = documentRef.activeElement) {
+    if (!appVisible) return;
     const revision = ++siteModalRevision;
     siteModalTrigger = trigger && typeof trigger.focus === 'function' ? trigger : null;
     closeModeMenu({ restore: false });
@@ -594,10 +692,10 @@ export function installWorkspaceMode({
       return !destroyed && revision === overlayRevision && overlayOpen;
     }
 
-    if (mode === WORKSPACE_MODES.RELAX && dockOpen) {
+    if (appVisible && mode === WORKSPACE_MODES.RELAX && dockOpen) {
       if (webview.created) scheduleBoundsSync();
       else void openActiveSite();
-    } else if (mode === WORKSPACE_MODES.ENTERTAINMENT && dockOpen) {
+    } else if (appVisible && mode === WORKSPACE_MODES.ENTERTAINMENT && dockOpen) {
       ensureGame();
     }
     return !destroyed && revision === overlayRevision && !overlayOpen;
@@ -689,6 +787,7 @@ export function installWorkspaceMode({
 
       if (currentRevision !== revision) return;
       if (destroyed
+        || !appVisible
         || !dockOpen
         || overlayOpen
         || floatingUiReasons.size > 0
@@ -749,16 +848,16 @@ export function installWorkspaceMode({
     if (documentRef.hidden) {
       gameCenter.pause();
       void hideWebviewAfterLifecycleChange();
-    } else if (mode === WORKSPACE_MODES.RELAX && dockOpen) {
+    } else if (appVisible && mode === WORKSPACE_MODES.RELAX && dockOpen) {
       if (webview.created) scheduleBoundsSync();
       else void openActiveSite();
-    } else if (mode === WORKSPACE_MODES.ENTERTAINMENT && dockOpen) {
+    } else if (appVisible && mode === WORKSPACE_MODES.ENTERTAINMENT && dockOpen) {
       ensureGame();
     }
   });
   listen(windowRef, 'focus', () => {
     nativeWindowFocused = true;
-    if (overlayOpen || floatingUiReasons.size > 0 || !dockOpen) return;
+    if (!appVisible || overlayOpen || floatingUiReasons.size > 0 || !dockOpen) return;
     if (mode === WORKSPACE_MODES.ENTERTAINMENT) ensureGame();
     else if (mode === WORKSPACE_MODES.RELAX) {
       if (webview.created) scheduleBoundsSync();
@@ -773,7 +872,11 @@ export function installWorkspaceMode({
       void hideWebviewAfterLifecycleChange();
       return;
     }
-    if (overlayOpen || floatingUiReasons.size > 0 || !dockOpen || documentRef.hidden) return;
+    if (!appVisible
+      || overlayOpen
+      || floatingUiReasons.size > 0
+      || !dockOpen
+      || documentRef.hidden) return;
     if (mode === WORKSPACE_MODES.RELAX) {
       if (webview.created) scheduleBoundsSync();
       else void openActiveSite();
@@ -816,9 +919,11 @@ export function installWorkspaceMode({
 
   const controller = {
     get mode() { return mode; },
+    get appVisible() { return appVisible; },
     get settings() { return { ...settings, sites: settings.sites.map(site => ({ ...site })) }; },
     applyMode,
     scheduleBoundsSync,
+    setAppVisible,
     setFloatingUiOpen,
     setDockOpen(open) {
       dockOpen = Boolean(open);
@@ -839,6 +944,9 @@ export function installWorkspaceMode({
     },
     destroy() {
       destroyed = true;
+      appVisible = false;
+      appVisibilityRevision += 1;
+      webRevision += 1;
       cancelSplitterInteraction();
       closeSiteModal({ restoreFocus: false });
       if (syncFrame) windowRef.cancelAnimationFrame(syncFrame);

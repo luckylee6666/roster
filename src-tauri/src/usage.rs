@@ -589,52 +589,10 @@ fn parse_codex_usage(result: &Value) -> Result<CodexUsage, String> {
     })
 }
 
-fn which_in_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        #[cfg(windows)]
-        {
-            let exe = dir.join(format!("{name}.exe"));
-            if exe.is_file() {
-                return Some(exe);
-            }
-        }
-    }
-    None
-}
-
-fn resolve_codex_bin() -> Result<PathBuf, String> {
-    const FIXED: &[&str] = &[
-        "/opt/homebrew/bin/codex",
-        "/usr/local/bin/codex",
-        "/usr/bin/codex",
-    ];
-    for path in FIXED {
-        if Path::new(path).is_file() {
-            return Ok(PathBuf::from(path));
-        }
-    }
-    if let Some(home) = dirs::home_dir() {
-        for rel in [".local/bin/codex", ".cargo/bin/codex"] {
-            let path = home.join(rel);
-            if path.is_file() {
-                return Ok(path);
-            }
-        }
-        #[cfg(windows)]
-        {
-            let exe = home.join("AppData/Local/codex/codex.exe");
-            if exe.is_file() {
-                return Ok(exe);
-            }
-        }
-    }
-    which_in_path("codex")
-        .ok_or_else(|| "未找到 Codex CLI（请确认已安装 `codex`，并用 ChatGPT 登录过）".to_string())
+pub(crate) fn resolve_codex_bin() -> Result<PathBuf, String> {
+    crate::cli_detect::resolve_registered_cli_bin("codex").map_err(|_| {
+        "未找到安全可执行的 Codex CLI（请确认已安装 `codex`，并用 ChatGPT 登录过）".to_string()
+    })
 }
 
 fn kill_child(child: &mut std::process::Child) {
