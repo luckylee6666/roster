@@ -166,6 +166,7 @@ const IDS = [
   'conversation-search-next',
   'conversation-search-close',
   'conversation-mention-menu',
+  'conversation-usage',
   'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
@@ -230,6 +231,9 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
       if (command === 'pick_attachment_images') return pickedImages;
+      if (command === 'oauth_usage') {
+        return { ok: true, fiveHour: { utilization: 32 }, sevenDay: { utilization: 7 } };
+      }
       if (command === 'conversation_project_files') {
         return projectFiles.filter(file => file.path.toLowerCase().includes(String(payload.query || '').toLowerCase()));
       }
@@ -849,4 +853,27 @@ test('@ 会列出项目文件，选中后把相对路径插进输入框', async 
   fire(composer, 'input');
   await flush();
   assert.equal(menu.hidden, true, '没有 @ 时不弹');
+});
+
+test('侧栏显示当前助手的限流用量，换到没有用量的助手就收起', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+  const usage = fx.el('conversation-usage');
+  const select = fx.el('conversation-provider-select');
+
+  select.value = 'claude';
+  fire(select, 'change');
+  await flush();
+  assert.equal(usage.hidden, false);
+  assert.match(usage.textContent, /5 小时 32% · 7 天 7%/);
+
+  select.value = 'grok';
+  fire(select, 'change');
+  await flush();
+  assert.equal(usage.hidden, true, 'Grok 没有限流接口，这行就不显示');
+  assert.equal(
+    fx.invokes.filter(entry => entry.command === 'oauth_usage').length,
+    1,
+    '只在需要时查一次，不轮询',
+  );
 });

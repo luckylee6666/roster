@@ -4,6 +4,7 @@ import {
   USAGE_AGENTS,
   usageCommandForAgent,
   windowsFromUsagePayload,
+  conversationUsageSummary,
 } from '../src/usage-panel-utils.js';
 
 test('用量面板只保留 Claude 与 Codex', () => {
@@ -29,4 +30,23 @@ test('Codex 载荷直接使用后端窗口列表', () => {
   };
   assert.deepEqual(windowsFromUsagePayload('codex', payload), payload.windows);
   assert.deepEqual(windowsFromUsagePayload('codex', {}), []);
+});
+
+test('对话侧栏的用量只留窗口和百分比，查不到就给空串', () => {
+  assert.equal(
+    conversationUsageSummary('claude', {
+      ok: true,
+      fiveHour: { utilization: 32.4 },
+      sevenDay: { utilization: 6.6 },
+    }),
+    '5 小时 32% · 7 天 7%',
+  );
+  assert.equal(
+    conversationUsageSummary('codex', { ok: true, windows: [{ label: '5 小时窗口', utilization: 120 }] }),
+    '5 小时 100%',
+    '越界的百分比夹到 100',
+  );
+  assert.equal(conversationUsageSummary('claude', { ok: false }), '');
+  assert.equal(conversationUsageSummary('claude', null), '');
+  assert.equal(conversationUsageSummary('claude', { ok: true, fiveHour: {}, sevenDay: {} }), '');
 });

@@ -5669,6 +5669,19 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-project-item .conversation-project-copy { flex: 1; }
 
+.conversation-usage {
+  margin: 0 0 6px;
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--chat-faint);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-usage[hidden] { display: none; }
+
 .conversation-theme-switch {
   display: flex;
   align-items: center;

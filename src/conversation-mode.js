@@ -13,6 +13,7 @@ import {
   startConversationTurn,
 } from './conversation-state.js';
 import { createConversationRunController } from './conversation-run-controller.js';
+import { conversationUsageSummary, usageCommandForAgent, USAGE_AGENTS } from './usage-panel-utils.js';
 import {
   conversationSlashHelpText,
   inspectConversationSlash,
@@ -409,6 +410,7 @@ export function installConversationMode({
     empty: document.getElementById('conversation-empty'),
     starters: document.getElementById('conversation-starter-list'),
     scrollBottom: document.getElementById('conversation-scroll-bottom'),
+    usage: document.getElementById('conversation-usage'),
     searchBar: document.getElementById('conversation-search-bar'),
     searchInput: document.getElementById('conversation-search-input'),
     searchCount: document.getElementById('conversation-search-count'),
@@ -481,6 +483,9 @@ export function installConversationMode({
   let mentionIndex = 0;
   let mentionRevision = 0;
   let mentionDismissed = false;
+  let usageText = '';
+  let usageFetchedAt = 0;
+  let usageRevision = 0;
   let deletingHistory = null;
   let resumeLatestOnHistory = false;
   // Each project keeps its own transcript, draft and run, so a turn started in
@@ -1415,6 +1420,37 @@ export function installConversationMode({
     syncComposer();
   }
 
+  const USAGE_MIN_INTERVAL_MS = 3 * 60 * 1000;
+
+  function renderUsage() {
+    if (!dom.usage) return;
+    dom.usage.hidden = !usageText;
+    if (usageText) dom.usage.textContent = usageText;
+  }
+
+  // 只查当前助手自己的限流，且最快三分钟一次；查不到就安静地不显示。
+  async function refreshUsage({ force = false } = {}) {
+    const agent = currentProvider().id;
+    if (!USAGE_AGENTS.includes(agent)) {
+      usageText = '';
+      renderUsage();
+      return;
+    }
+    if (!force && Date.now() - usageFetchedAt < USAGE_MIN_INTERVAL_MS) return;
+    const revision = ++usageRevision;
+    usageFetchedAt = Date.now();
+    try {
+      const payload = await invoke(usageCommandForAgent(agent));
+      if (destroyed || revision !== usageRevision) return;
+      const summary = conversationUsageSummary(agent, payload);
+      usageText = summary ? `${currentProvider().label} · ${summary}` : '';
+    } catch (_) {
+      if (revision !== usageRevision) return;
+      usageText = '';
+    }
+    renderUsage();
+  }
+
   function messageRowAt(index) {
     const message = state.messages[index];
     if (!message) return null;
@@ -1764,6 +1800,7 @@ export function installConversationMode({
     renderSlashMenu();
     renderMentionMenu();
     renderHandoffNote();
+    renderUsage();
     renderControls();
     syncElapsedTimer();
   }
@@ -2031,6 +2068,7 @@ export function installConversationMode({
     void refreshHistory();
     void refreshProjectContext();
     void refreshSlashCommands();
+    void refreshUsage();
     dom.composer?.focus();
     return true;
   }
@@ -2054,6 +2092,7 @@ export function installConversationMode({
 
   function selectProvider(providerId) {
     if (isRunning() || !providerReady(providerId)) return;
+    usageText = '';
     const next = selectConversationProvider(state, providerId);
     if (next === state) return;
     state = next;
@@ -2062,6 +2101,7 @@ export function installConversationMode({
     renderState();
     void refreshHistory();
     void refreshSlashCommands();
+    void refreshUsage({ force: true });
     dom.composer?.focus();
   }
 
@@ -2451,6 +2491,7 @@ export function installConversationMode({
       renderProjects();
     }
     if (deleteAfterRun.delete(entry.projectId)) newChat();
+    void refreshUsage({ force: true });
     announceFinishedRun(entry, finalState);
   }
 
@@ -2755,6 +2796,7 @@ export function installConversationMode({
       persistSelection();
       renderState();
       void refreshSlashCommands();
+      void refreshUsage({ force: true });
     },
     setSnippets(nextSnippets) {
       snippets = Array.isArray(nextSnippets) ? nextSnippets : [];
