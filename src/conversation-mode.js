@@ -96,6 +96,23 @@ export function conversationStarters(context) {
   return suggestions.slice(0, 3);
 }
 
+/** 把当前对话拼成一份能直接读的 Markdown，不带任何内部字段。 */
+export function conversationMarkdown({ projectName = '', messages = [], now = Date.now() } = {}) {
+  const head = [
+    `# ${String(projectName || '对话记录').trim() || '对话记录'}`,
+    '',
+    `导出时间：${new Date(now).toLocaleString('zh-CN')}`,
+    '',
+  ];
+  const body = (Array.isArray(messages) ? messages : []).flatMap(message => {
+    const text = String(message?.text || '').trim();
+    if (!text) return [];
+    const who = message.role === 'user' ? '你' : String(message.tool || '助手');
+    return [`## ${who}`, '', text, ''];
+  });
+  return [...head, ...body].join('\n');
+}
+
 const CHANGED_FILE_LABELS = {
   M: '修改',
   A: '新增',
@@ -353,6 +370,7 @@ export function installConversationMode({
     historyList: document.getElementById('conversation-history-list'),
     historyState: document.getElementById('conversation-history-state'),
     newChat: document.getElementById('conversation-new-chat'),
+    exportChat: document.getElementById('conversation-export'),
     projectName: document.getElementById('conversation-project-name'),
     projectPath: document.getElementById('conversation-project-path'),
     providerSelect: document.getElementById('conversation-provider-select'),
@@ -420,6 +438,7 @@ export function installConversationMode({
   let renderTimer = null;
   let elapsedTimer = null;
   let inlineAlert = null;
+  let inlineResume = null;
   let deletingHistory = null;
   let resumeLatestOnHistory = false;
   // Each project keeps its own transcript, draft and run, so a turn started in
@@ -1193,7 +1212,26 @@ export function installConversationMode({
       inlineAlert.setAttribute('role', 'status');
     }
     inlineAlert.className = `conversation-inline-alert${state.error ? ' is-error' : ''}`;
-    if (inlineAlert.textContent !== text) inlineAlert.textContent = text;
+    if (inlineAlert.dataset.text !== text) {
+      inlineAlert.dataset.text = text;
+      inlineAlert.replaceChildren(element(document, 'span', 'conversation-inline-alert-text', text));
+    }
+    // 停止不会让已产出的内容作废，所以给一条明确的接着聊的路。
+    const resumable = state.status === 'cancelled'
+      && state.messages.some(message => message.role === 'assistant' && message.text);
+    if (resumable) {
+      if (!inlineResume) {
+        inlineResume = element(document, 'button', 'conversation-inline-resume', '接着刚才继续');
+        inlineResume.type = 'button';
+        inlineResume.title = '把「接着刚才没说完的继续」放进输入框，由你确认后发送';
+        inlineResume.addEventListener('click', () => {
+          reuseConversationText('接着刚才没说完的部分继续，不用重复已经说过的内容');
+        });
+      }
+      if (inlineResume.parentElement !== inlineAlert) inlineAlert.appendChild(inlineResume);
+    } else if (inlineResume?.parentElement === inlineAlert) {
+      inlineAlert.removeChild(inlineResume);
+    }
     return inlineAlert;
   }
 
@@ -1486,6 +1524,11 @@ export function installConversationMode({
       const showNewChat = Boolean(selectedProject && conversationHasOpenSession(state));
       dom.newChat.hidden = !showNewChat;
       dom.newChat.disabled = busy || !showNewChat;
+    }
+    if (dom.exportChat) {
+      const exportable = state.messages.some(message => String(message.text || '').trim());
+      dom.exportChat.hidden = !exportable;
+      dom.exportChat.disabled = busy || !exportable;
     }
     if (dom.providerSelect) dom.providerSelect.disabled = busy || installedCliIds === null || runnableProviders().length === 0;
     if (dom.openFolder) dom.openFolder.disabled = !selectedProject;
@@ -2287,6 +2330,23 @@ export function installConversationMode({
 
   dom.projectSearch?.addEventListener('input', renderProjects);
   dom.newChat?.addEventListener('click', newChat);
+  dom.exportChat?.addEventListener('click', async () => {
+    if (dom.exportChat.disabled) return;
+    const content = conversationMarkdown({
+      projectName: selectedProject?.name || '',
+      messages: state.messages,
+    });
+    try {
+      const saved = await invoke('export_conversation_markdown', {
+        suggestedName: `${selectedProject?.name || '对话记录'}.md`,
+        content,
+      });
+      notify?.(`已导出到 ${saved}`, 'success');
+    } catch (error) {
+      const reason = error?.message || String(error);
+      if (!/未选择保存位置/.test(reason)) notify?.(`导出失败：${reason}`, 'error');
+    }
+  });
   dom.providerSelect?.addEventListener('change', () => selectProvider(dom.providerSelect.value));
   dom.snippetSelect?.addEventListener('change', () => {
     const snippet = snippets.find(item => String(item.id || '') === dom.snippetSelect.value);

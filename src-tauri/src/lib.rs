@@ -680,6 +680,52 @@ fn open_folder(path: String) -> Result<(), String> {
     opener::open(&path).map_err(|e| e.to_string())
 }
 
+/// 导出当前对话：正文由前端拼好，落盘位置由用户在原生对话框里选。
+#[tauri::command]
+async fn export_conversation_markdown(
+    suggested_name: String,
+    content: String,
+) -> Result<String, String> {
+    const MAX_EXPORT_BYTES: usize = 4 * 1024 * 1024;
+    if content.trim().is_empty() {
+        return Err("这段对话还没有可导出的内容".into());
+    }
+    if content.len() > MAX_EXPORT_BYTES {
+        return Err("对话内容超过 4MB，暂时无法导出".into());
+    }
+    let name = suggested_name
+        .chars()
+        .filter(|ch| {
+            !ch.is_control() && !matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        .take(80)
+        .collect::<String>();
+    let name = if name.trim().is_empty() {
+        "对话记录.md".to_string()
+    } else if name.ends_with(".md") {
+        name
+    } else {
+        format!("{name}.md")
+    };
+    let target = tokio::task::spawn_blocking(move || {
+        rfd::FileDialog::new()
+            .set_title("导出对话")
+            .set_file_name(&name)
+            .add_filter("Markdown", &["md"])
+            .save_file()
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "未选择保存位置".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        fs::write(&target, content.as_bytes())
+            .map(|_| target.to_string_lossy().to_string())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn pick_attachment_images() -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(|| {
@@ -3226,6 +3272,7 @@ pub fn run() {
             read_conversation_project_media,
             read_conversation_attachment_image,
             pick_attachment_images,
+            export_conversation_markdown,
             delete_project_session,
             delete_conversation_project_session,
             ensure_orchestra,

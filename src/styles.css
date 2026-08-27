@@ -5708,6 +5708,28 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-compose-wrap { position: relative; }
 
+.conversation-inline-alert-text { flex: 1; min-width: 0; }
+
+.conversation-inline-resume {
+  flex: none;
+  margin-left: 10px;
+  padding: 2px 9px;
+  appearance: none;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 7px;
+  background: var(--chat-panel);
+  color: var(--chat-control-ink);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.conversation-inline-resume:hover {
+  border-color: var(--chat-accent-line);
+  color: var(--chat-accent);
+}
+
 .conversation-attach-image {
   display: inline-flex;
   align-items: center;
@@ -6514,6 +6536,8 @@ html[data-app-view="developer"] #conversation-surface {
 }
 
 .conversation-inline-alert {
+  display: flex;
+  align-items: center;
   margin: -12px 44px 22px;
   padding: 9px 12px;
   border-left: 3px solid var(--chat-warn-line);

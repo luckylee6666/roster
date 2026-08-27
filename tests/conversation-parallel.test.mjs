@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   changedFileLabel,
+  conversationMarkdown,
   conversationStarters,
   diffProjectChanges,
   installConversationMode,
@@ -155,6 +156,7 @@ const IDS = [
   'conversation-changes-count',
   'conversation-scroll-bottom',
   'conversation-attach-image',
+  'conversation-export',
   'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
@@ -691,4 +693,56 @@ test('拖放只在对话工作台响应，开发模式下不接管', async t => 
   fx.fireTauri('tauri://drag-drop', { paths: ['/tmp/one.png'] });
   await flush();
   assert.equal(fx.el('conversation-attachments').childNodes.length, 0);
+});
+
+test('导出的 Markdown 只有人看得懂的部分', () => {
+  const text = conversationMarkdown({
+    projectName: '杂项',
+    now: Date.UTC(2026, 7, 27),
+    messages: [
+      { role: 'user', text: '第一个问题', tool: 'grok' },
+      { role: 'assistant', text: '第一段回答', tool: 'Grok', pending: false },
+      { role: 'assistant', text: '   ', tool: 'Grok' },
+    ],
+  });
+  assert.match(text, /^# 杂项/);
+  assert.match(text, /## 你\n\n第一个问题/);
+  assert.match(text, /## Grok\n\n第一段回答/);
+  assert.doesNotMatch(text, /pending|runId|dataUrl/, '不带内部字段');
+  assert.equal((text.match(/## /g) || []).length, 2, '空消息不进导出');
+});
+
+test('停止之后给出接着继续的入口，点了只填输入框不自动发送', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('问题');
+  const run = fx.startedRuns()[0];
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'assistant_delta', data: { text: '说了一半' } });
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'cancelled', data: {} });
+  await flush();
+
+  const stream = fx.el('conversation-messages');
+  const alert = stream.childNodes[stream.childNodes.length - 1];
+  const resume = alert.childNodes.find(node => node.textContent === '接着刚才继续');
+  assert.ok(resume, '停止后要有接着继续的按钮');
+  fire(resume, 'click');
+  assert.match(fx.el('conversation-composer').value, /接着刚才没说完/);
+  assert.equal(fx.startedRuns().length, 1, '只填输入框，不自动发送');
+});
+
+test('导出按钮只在有内容时出现，并把 Markdown 交给后端保存', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  assert.equal(fx.el('conversation-export').hidden, true, '空对话不显示导出');
+  await fx.send('问题');
+  const run = fx.startedRuns()[0];
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  assert.equal(fx.el('conversation-export').hidden, false);
+  fire(fx.el('conversation-export'), 'click');
+  await flush();
+  const call = fx.invokes.find(entry => entry.command === 'export_conversation_markdown');
+  assert.ok(call, '要调用后端导出');
+  assert.match(call.payload.suggestedName, /项目 A\.md$/);
+  assert.match(call.payload.content, /## 你\n\n问题/);
 });
