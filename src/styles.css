@@ -5706,6 +5706,36 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-theme-switch[data-theme-mode="dark"] svg { color: var(--chat-accent); }
 
+.conversation-compose-wrap { position: relative; }
+
+.conversation-scroll-bottom {
+  position: absolute;
+  top: -42px;
+  right: 26px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  appearance: none;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 50%;
+  background: var(--chat-panel);
+  color: var(--chat-control-ink);
+  box-shadow: 0 4px 14px var(--chat-shadow);
+  cursor: pointer;
+}
+
+.conversation-scroll-bottom[hidden] { display: none; }
+
+.conversation-scroll-bottom:hover {
+  border-color: var(--chat-control-line-hover);
+  color: var(--chat-ink);
+}
+
+.conversation-scroll-bottom svg { width: 15px; height: 15px; }
+
 .conversation-changes-list {
   display: flex;
   flex-direction: column;
@@ -6052,8 +6082,8 @@ html[data-app-view="developer"] #conversation-surface {
 }
 
 .conversation-provider-select-wrap select {
-  width: 154px;
-  max-width: 22vw;
+  width: 186px;
+  max-width: 26vw;
   height: 28px;
   appearance: none;
   padding: 0 26px 0 8px;

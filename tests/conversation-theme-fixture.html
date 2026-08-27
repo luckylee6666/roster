@@ -116,6 +116,14 @@ console.log(plan.join(' · '));</code></pre>
           </div>
         </div>
         <div class="conversation-compose-wrap">
+          <button class="conversation-scroll-bottom" type="button" aria-label="回到最新消息">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+          </button>
+          <div class="conversation-starter-list">
+            <button type="button">梳理项目现状</button>
+            <button type="button">看看这些改动</button>
+            <button type="button">写份项目说明</button>
+          </div>
           <div class="conversation-handoff-note">
             <span class="conversation-handoff-text">发送后由 Claude 接手 Grok 的这段对话：只带最近 24 条正文，Grok 的会话保持不动。</span>
             <button class="conversation-handoff-undo" type="button">改回 Grok</button>

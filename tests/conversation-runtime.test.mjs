@@ -105,7 +105,7 @@ test('空状态收在输入区上方，助手选择靠近发送，空闲时隐�
   assert.match(css, /--chat-accent:\s*#4f46e5/);
   assert.match(css, /\.conversation-project-section \{/);
   assert.match(css, /\.conversation-starter-list\[hidden\]/);
-  assert.match(conversation, /dom\.starters\) dom\.starters\.hidden/);
+  assert.match(conversation, /dom\.starters\.hidden = state\.messages\.length > 0/);
   assert.match(conversation, /dom\.planSection\) dom\.planSection\.hidden/);
   assert.match(conversation, /dom\.activitySection\) dom\.activitySection\.hidden/);
   const sidebar = html.slice(html.indexOf('conversation-sidebar'), html.indexOf('conversation-main'));

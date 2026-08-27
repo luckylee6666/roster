@@ -80,11 +80,10 @@
         </div>
 
         <div class="conversation-compose-wrap">
-          <div class="conversation-starter-list" id="conversation-starter-list">
-            <button type="button" data-conversation-starter="帮我看看这个项目目前做到哪里了，并给出下一步建议">梳理项目现状</button>
-            <button type="button" data-conversation-starter="检查这个项目最近的改动，找出可能的问题并说明影响">检查最近改动</button>
-            <button type="button" data-conversation-starter="阅读这个项目，帮我把接下来要做的事情整理成清晰计划">整理下一步计划</button>
-          </div>
+          <button class="conversation-scroll-bottom" id="conversation-scroll-bottom" type="button" hidden aria-label="回到最新消息" title="回到最新消息">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+          </button>
+          <div class="conversation-starter-list" id="conversation-starter-list"></div>
           <div class="conversation-slash-menu" id="conversation-slash-menu" hidden role="listbox" aria-label="斜杠命令"></div>
           <div class="conversation-handoff-note" id="conversation-handoff-note" hidden role="status"></div>
           <div class="conversation-composer-box">

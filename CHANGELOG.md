@@ -7,12 +7,20 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- A back-to-latest button appears over the transcript once new replies scroll out of view.
+- The empty-state suggestions now follow the project: uncommitted changes, a missing project description, or recent commits each offer their own opener instead of three fixed lines.
+- Keyboard shortcuts in the conversation workspace: Cmd/Ctrl+K focuses project search, Cmd/Ctrl+Shift+N starts a new conversation in the current project. Neither fires while Developer mode is on screen.
+- The assistant picker is wider and carries the full model and effort in its tooltip, so long model names are no longer cut off.
 - The rail's plan section is no longer Codex-only: Claude, Grok, agy, and Qwen surface their todo tool as processing steps, with the step text and a coarse status crossing the boundary and nothing of the raw tool input.
 - After a turn that was allowed to modify the project, the rail lists what actually changed on disk — file plus New / Modified / Deleted / Committed-or-reverted — diffed from Git before and after the turn rather than from what the CLI claimed. Git caps the listing at 20 files, and a truncated snapshot is labelled as partial.
 
 ### 中文
 
 **新增**
+- 新回复滚出视野时，消息区上方出现「回到最新」按钮。
+- 空状态的快捷句跟着项目现场走：有未提交改动、缺项目说明、有最近提交各自给对应的开场句，不再永远是固定三句。
+- 对话工作台快捷键：⌘/Ctrl + K 聚焦项目搜索，⌘/Ctrl + Shift + N 在当前项目开新对话；停在开发模式时都不触发。
+- 助手选择器加宽，并在悬停提示里给出完整模型与推理强度，长模型名不再被截断。
 - 右栏的「处理步骤」不再只有 Codex 有数据：Claude、Grok、agy 与 Qwen 的待办工具会转成处理步骤，只透出步骤文字和粗粒度状态，不带任何原始工具参数。
 - 勾选「允许修改项目」的一轮结束后，右栏列出磁盘上真正变化的文件，并标注新增 / 修改 / 删除 / 已提交或还原。清单来自本轮前后的 Git 对比，而不是 CLI 自己的说法；Git 最多返回 20 个文件，快照被截断时会明确标为部分。
 

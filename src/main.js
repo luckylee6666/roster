@@ -350,16 +350,6 @@ function installApplicationSurfaces() {
     },
     notify: msg,
   });
-
-  document.querySelectorAll('[data-conversation-starter]').forEach(button => {
-    button.addEventListener('click', () => {
-      const composer = $('conversation-composer');
-      if (!composer || composer.disabled || conversationController?.isRunning()) return;
-      composer.value = button.dataset.conversationStarter || '';
-      composer.dispatchEvent(new Event('input', { bubbles: true }));
-      composer.focus();
-    });
-  });
 }
 
 let nativeEscBound = false;

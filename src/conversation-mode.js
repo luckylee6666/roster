@@ -65,6 +65,36 @@ export function inspectConversationPrompt(value) {
   };
 }
 
+const BASE_CONVERSATION_STARTERS = [
+  { label: '梳理项目现状', prompt: '帮我看看这个项目目前做到哪里了，并给出下一步建议' },
+  { label: '整理下一步计划', prompt: '阅读这个项目，帮我把接下来要做的事情整理成清晰计划' },
+];
+
+/** 空状态的快捷句跟着项目现场走，别永远是同样三句。 */
+export function conversationStarters(context) {
+  const suggestions = [BASE_CONVERSATION_STARTERS[0]];
+  if (context?.isRepo && context.dirty) {
+    suggestions.push({
+      label: '看看这些改动',
+      prompt: '看看当前未提交的改动都改了什么，指出可能的问题和影响',
+    });
+  }
+  if (context?.exists && !context.claudeMd) {
+    suggestions.push({
+      label: '写份项目说明',
+      prompt: '阅读这个项目，帮我写一份给新人看的简明项目说明',
+    });
+  }
+  if (context?.isRepo && Array.isArray(context.commits) && context.commits.length) {
+    suggestions.push({
+      label: '说说最近提交',
+      prompt: '总结这个项目最近几次提交分别做了什么',
+    });
+  }
+  suggestions.push(BASE_CONVERSATION_STARTERS[1]);
+  return suggestions.slice(0, 3);
+}
+
 const CHANGED_FILE_LABELS = {
   M: '修改',
   A: '新增',
@@ -330,6 +360,7 @@ export function installConversationMode({
     stream: document.getElementById('conversation-messages'),
     empty: document.getElementById('conversation-empty'),
     starters: document.getElementById('conversation-starter-list'),
+    scrollBottom: document.getElementById('conversation-scroll-bottom'),
     composer: document.getElementById('conversation-composer'),
     attachments: document.getElementById('conversation-attachments'),
     imagePreview: document.getElementById('conversation-image-preview'),
@@ -928,6 +959,9 @@ export function installConversationMode({
       dom.providerSelect.appendChild(option);
     }
     dom.providerSelect.value = current.id;
+    dom.providerSelect.title = [current.label, providerModels[current.id], providerEfforts[current.id]]
+      .filter(Boolean)
+      .join(' · ');
     dom.providerSelect.disabled = isRunning() || options.length === 0;
   }
 
@@ -1178,7 +1212,6 @@ export function installConversationMode({
       || scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 120;
     const empty = state.messages.length === 0 && !state.notice && !state.error;
     dom.empty.hidden = !empty;
-    if (dom.starters) dom.starters.hidden = state.messages.length > 0;
     const live = new Set();
     const nodes = state.messages.map(message => {
       live.add(`${state.projectId || ''}\u0000${String(message.id || '')}`);
@@ -1191,8 +1224,53 @@ export function installConversationMode({
     if (shouldFollow) {
       requestAnimationFrame(() => {
         if (scrollParent) scrollParent.scrollTop = scrollParent.scrollHeight;
+        updateScrollAffordance();
+      });
+    } else {
+      updateScrollAffordance();
+    }
+  }
+
+  function renderStarters() {
+    if (!dom.starters) return;
+    const wanted = conversationStarters(projectContext);
+    const signature = wanted.map(item => item.label).join('\u0000');
+    if (dom.starters.dataset.signature !== signature) {
+      dom.starters.dataset.signature = signature;
+      dom.starters.replaceChildren();
+      wanted.forEach(item => {
+        const button = element(document, 'button', '', item.label);
+        button.type = 'button';
+        button.title = item.prompt;
+        button.addEventListener('click', () => {
+          if (button.disabled || !dom.composer || dom.composer.disabled || isRunning()) return;
+          dom.composer.value = item.prompt;
+          dom.composer.focus();
+          syncComposer();
+        });
+        dom.starters.appendChild(button);
       });
     }
+    dom.starters.hidden = state.messages.length > 0;
+  }
+
+  // 滚上去看历史时，新回复会滚出视野；给一个明确的回去入口。
+  function updateScrollAffordance() {
+    const scroller = dom.stream?.parentElement;
+    if (!dom.scrollBottom || !scroller) return;
+    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    dom.scrollBottom.hidden = !(distance > 160 && state.messages.length > 0);
+  }
+
+  function scrollToLatest() {
+    const scroller = dom.stream?.parentElement;
+    if (!scroller) return;
+    if (typeof scroller.scrollTo === 'function') {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+    } else {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+    updateScrollAffordance();
   }
 
   function renderPlan() {
@@ -1407,7 +1485,7 @@ export function installConversationMode({
     if (dom.providerSelect) dom.providerSelect.disabled = busy || installedCliIds === null || runnableProviders().length === 0;
     if (dom.openFolder) dom.openFolder.disabled = !selectedProject;
     if (dom.refreshProject) dom.refreshProject.disabled = !selectedProject || contextLoading;
-    dom.starters?.querySelectorAll('button').forEach(button => { button.disabled = unavailable || busy || deleting; });
+    dom.starters?.childNodes?.forEach?.(button => { button.disabled = unavailable || busy || deleting; });
     if (dom.composerHint) {
       dom.composerHint.textContent = !selectedProjectExists()
         ? '先选择一个项目'
@@ -1447,6 +1525,7 @@ export function installConversationMode({
     renderActivities();
     renderProjectContext();
     renderChangeReport();
+    renderStarters();
     renderSnippets();
     renderSlashMenu();
     renderHandoffNote();
@@ -2129,6 +2208,37 @@ export function installConversationMode({
     }
   }
 
+  const messageScroller = dom.stream?.parentElement;
+  let scrollTick = false;
+  messageScroller?.addEventListener?.('scroll', () => {
+    if (scrollTick) return;
+    scrollTick = true;
+    requestAnimationFrame(() => {
+      scrollTick = false;
+      updateScrollAffordance();
+    });
+  });
+  dom.scrollBottom?.addEventListener('click', () => scrollToLatest());
+
+  // 只在对话工作台生效，且避开系统菜单已占用的组合键。
+  const onWorkspaceKeydown = event => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+    if (document.documentElement?.dataset?.appView === 'developer') return;
+    if (document.querySelector?.('.modal-mask.active')) return;
+    const key = String(event.key || '').toLowerCase();
+    if (key === 'k' && !event.shiftKey) {
+      event.preventDefault();
+      dom.projectSearch?.focus?.();
+      dom.projectSearch?.select?.();
+      return;
+    }
+    if (key === 'n' && event.shiftKey) {
+      event.preventDefault();
+      if (selectedProject && !isRunning()) newChat();
+    }
+  };
+  document.addEventListener?.('keydown', onWorkspaceKeydown);
+
   dom.projectSearch?.addEventListener('input', renderProjects);
   dom.newChat?.addEventListener('click', newChat);
   dom.providerSelect?.addEventListener('change', () => selectProvider(dom.providerSelect.value));
@@ -2292,6 +2402,7 @@ export function installConversationMode({
       transcriptRevision += 1;
       contextRevision += 1;
       slashRevision += 1;
+      document.removeEventListener?.('keydown', onWorkspaceKeydown);
       if (renderTimer !== null) clearTimeout(renderTimer);
       if (elapsedTimer !== null) clearInterval(elapsedTimer);
       elapsedTimer = null;

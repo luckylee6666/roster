@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   changedFileLabel,
+  conversationStarters,
   diffProjectChanges,
   installConversationMode,
   MAX_PARALLEL_CONVERSATION_RUNS,
@@ -152,6 +153,8 @@ const IDS = [
   'conversation-handoff-note',
   'conversation-changes-list',
   'conversation-changes-count',
+  'conversation-scroll-bottom',
+  'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
   'conversation-plan-list',
@@ -180,7 +183,11 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
   const document = {
     hidden: false,
     hasFocus: () => focused,
-    ...(appView ? { documentElement: { dataset: { appView } } } : {}),
+    documentElement: { dataset: { appView: appView || 'conversation' } },
+    addEventListener: (name, fn) => { (docListeners[name] = docListeners[name] || []).push(fn); },
+    removeEventListener: (name, fn) => {
+      docListeners[name] = (docListeners[name] || []).filter(entry => entry !== fn);
+    },
     getElementById: id => byId.get(id) || null,
     querySelector: () => null,
     querySelectorAll: () => [],
@@ -188,6 +195,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
     createElementNS: (_ns, tag) => new FakeEl(tag),
   };
   let emit = () => {};
+  const docListeners = {};
   const controller = installConversationMode({
     document,
     storage: {
@@ -226,6 +234,13 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
     el: id => byId.get(id),
     emit: payload => emit(payload),
     setChanges: files => { changedFiles = files; },
+    key: ({ appView: view, ...init }) => {
+      const root = document.documentElement.dataset;
+      const previous = root.appView;
+      if (view) root.appView = view;
+      (docListeners.keydown || []).forEach(fn => fn({ preventDefault() {}, ...init }));
+      root.appView = previous;
+    },
     startedRuns: () => invokes
       .filter(entry => entry.command === 'conversation_chat_start')
       .map(entry => entry.payload.request),
@@ -574,4 +589,66 @@ test('只有允许修改项目的那一轮才拍基线并出改动清单', async
   assert.ok(rows.length >= 1, '写入轮结束后要列出本轮改动');
   assert.equal(rows[0].childNodes[1].textContent, 'src/new.js');
   assert.match(fx.el('conversation-changes-count').textContent, /个文件/);
+});
+
+test('快捷句跟着项目现场变，永远保留梳理现状这条', () => {
+  const plain = conversationStarters(null).map(item => item.label);
+  assert.deepEqual(plain, ['梳理项目现状', '整理下一步计划']);
+
+  const dirtyRepo = conversationStarters({
+    exists: true,
+    isRepo: true,
+    dirty: true,
+    claudeMd: '有说明',
+    commits: [{ subject: '上一次提交' }],
+  }).map(item => item.label);
+  assert.equal(dirtyRepo[0], '梳理项目现状');
+  assert.ok(dirtyRepo.includes('看看这些改动'));
+  assert.equal(dirtyRepo.length, 3, '最多三条');
+
+  const undocumented = conversationStarters({ exists: true, isRepo: false, claudeMd: '' })
+    .map(item => item.label);
+  assert.ok(undocumented.includes('写份项目说明'));
+});
+
+test('滚上去看历史会出现回到最新，点一下滚回底部', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('问题');
+  const scroller = fx.el('conversation-messages').parentElement;
+  const button = fx.el('conversation-scroll-bottom');
+  assert.equal(button.hidden, true, '贴着底部时不显示');
+
+  scroller.scrollHeight = 2000;
+  scroller.clientHeight = 600;
+  scroller.scrollTop = 100;
+  fire(scroller, 'scroll');
+  await flush();
+  assert.equal(button.hidden, false, '滚上去后要出现');
+
+  fire(button, 'click');
+  assert.equal(scroller.scrollTop, scroller.scrollHeight);
+  assert.equal(button.hidden, true, '滚回底部后收起');
+});
+
+test('⌘K 聚焦项目搜索，⌘⇧N 在当前项目开新对话', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  let focused = 0;
+  fx.el('conversation-project-search').focus = () => { focused += 1; };
+  fx.key({ key: 'k', metaKey: true });
+  assert.equal(focused, 1);
+
+  await fx.send('第一句');
+  const run = fx.startedRuns()[0];
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  assert.ok(fx.el('conversation-messages').childNodes.length > 0);
+  fx.key({ key: 'n', metaKey: true, shiftKey: true });
+  await flush();
+  assert.equal(fx.el('conversation-messages').childNodes.length, 0, '开了新对话，消息清空');
+
+  const before = focused;
+  fx.key({ key: 'k', metaKey: true, appView: 'developer' });
+  assert.equal(focused, before, '开发模式下不抢这两个快捷键');
 });
