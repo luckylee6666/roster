@@ -248,8 +248,41 @@ struct ParsedLine {
     assistant_delta: Option<String>,
     fallback_answer: Option<String>,
     activities: Vec<Value>,
+    plan: Option<Vec<Value>>,
     notice: Option<String>,
     error: Option<String>,
+}
+
+/// Codex is not the only CLI that plans out loud: the Anthropic-style stream
+/// carries the same information in its todo tool call. Only the step text and a
+/// coarse status cross the boundary — never the raw tool input.
+fn plan_items_from_todo_tool(name: &str, input: &Value) -> Option<Vec<Value>> {
+    if !name.eq_ignore_ascii_case("todowrite") && !name.eq_ignore_ascii_case("todo_write") {
+        return None;
+    }
+    let todos = input.get("todos").and_then(Value::as_array)?;
+    let items = todos
+        .iter()
+        .take(32)
+        .filter_map(|todo| {
+            let text = todo
+                .get("content")
+                .or_else(|| todo.get("activeForm"))
+                .or_else(|| todo.get("task"))
+                .and_then(Value::as_str)?;
+            let text = bounded_utf8(text, 500);
+            if text.is_empty() {
+                return None;
+            }
+            let status = match todo.get("status").and_then(Value::as_str) {
+                Some("completed") | Some("done") => "completed",
+                Some("in_progress") | Some("inProgress") | Some("active") => "inProgress",
+                _ => "pending",
+            };
+            Some(json!({ "step": text, "status": status }))
+        })
+        .collect::<Vec<_>>();
+    Some(items)
 }
 
 fn tool_activity(id: &str, name: &str, status: &str) -> Value {
@@ -297,6 +330,13 @@ fn parse_anthropic_line(value: &Value) -> ParsedLine {
                 }
                 let id = block.get("id").and_then(Value::as_str).unwrap_or("tool");
                 let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                let input = block.get("input").unwrap_or(&Value::Null);
+                if let Some(items) = plan_items_from_todo_tool(name, input) {
+                    // The todo call becomes the plan, not a file-write activity:
+                    // `tool_activity` would otherwise read "TodoWrite" as a write.
+                    parsed.plan = Some(items);
+                    continue;
+                }
                 parsed
                     .activities
                     .push(tool_activity(id, name, "inProgress"));
@@ -1291,6 +1331,20 @@ fn run_headless(stdout: std::process::ChildStdout, context: HeadlessContext) {
         }
         if let Some(text) = parsed.fallback_answer.filter(|text| !text.is_empty()) {
             fallback_answer = text;
+        }
+        if let Some(items) = parsed.plan {
+            normalized_events = normalized_events.saturating_add(1);
+            if normalized_events > MAX_NORMALIZED_EVENTS {
+                reported_error = "CLI 返回的标准化事件过多，已停止处理".to_string();
+                break;
+            }
+            emit(
+                &app,
+                &run_id,
+                &provider_id,
+                "plan",
+                json!({ "items": items }),
+            );
         }
         for activity in parsed.activities {
             activity_events = activity_events.saturating_add(1);
@@ -2345,6 +2399,63 @@ mod tests {
             Some("更新项目文件")
         );
         assert!(claude_activity.get("input").is_none());
+
+        let claude_plan = parse_anthropic_line(&json!({
+            "type": "assistant",
+            "message": { "content": [{
+                "type": "tool_use",
+                "id": "tool-todo",
+                "name": "TodoWrite",
+                "input": { "todos": [
+                    { "content": "读代码", "status": "completed", "activeForm": "读代码中" },
+                    { "content": "改实现", "status": "in_progress" },
+                    { "content": "跑测试", "status": "pending" },
+                    { "content": "", "status": "pending" }
+                ] }
+            }] }
+        }));
+        let plan = claude_plan.plan.expect("待办工具应转成处理步骤");
+        assert_eq!(plan.len(), 3, "空步骤要丢掉");
+        assert_eq!(plan[0].get("step").and_then(Value::as_str), Some("读代码"));
+        assert_eq!(
+            plan[0].get("status").and_then(Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(
+            plan[1].get("status").and_then(Value::as_str),
+            Some("inProgress")
+        );
+        assert_eq!(
+            plan[2].get("status").and_then(Value::as_str),
+            Some("pending")
+        );
+        assert!(
+            claude_plan.activities.is_empty(),
+            "待办工具只出处理步骤，不再被当成写文件的动态"
+        );
+        assert!(
+            plan.iter().all(|item| item.get("todos").is_none()),
+            "不得把原始工具参数带回前端"
+        );
+
+        let qwen_plan = parse_qwen_line(&json!({
+            "type": "assistant",
+            "message": { "content": [{
+                "type": "tool_use",
+                "id": "tool-todo",
+                "name": "todo_write",
+                "input": { "todos": [{ "content": "整理计划", "status": "active" }] }
+            }] }
+        }));
+        assert_eq!(
+            qwen_plan
+                .plan
+                .as_ref()
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("status"))
+                .and_then(Value::as_str),
+            Some("inProgress")
+        );
 
         let claude_result = parse_anthropic_line(&json!({
             "type": "user",

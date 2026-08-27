@@ -7,11 +7,13 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- The rail's plan section is no longer Codex-only: Claude, Grok, agy, and Qwen surface their todo tool as processing steps, with the step text and a coarse status crossing the boundary and nothing of the raw tool input.
 - After a turn that was allowed to modify the project, the rail lists what actually changed on disk — file plus New / Modified / Deleted / Committed-or-reverted — diffed from Git before and after the turn rather than from what the CLI claimed. Git caps the listing at 20 files, and a truncated snapshot is labelled as partial.
 
 ### 中文
 
 **新增**
+- 右栏的「处理步骤」不再只有 Codex 有数据：Claude、Grok、agy 与 Qwen 的待办工具会转成处理步骤，只透出步骤文字和粗粒度状态，不带任何原始工具参数。
 - 勾选「允许修改项目」的一轮结束后，右栏列出磁盘上真正变化的文件，并标注新增 / 修改 / 删除 / 已提交或还原。清单来自本轮前后的 Git 对比，而不是 CLI 自己的说法；Git 最多返回 20 个文件，快照被截断时会明确标为部分。
 
 ## v1.3.0
