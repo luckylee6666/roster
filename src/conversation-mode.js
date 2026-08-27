@@ -33,6 +33,8 @@ import {
 
 export const CONVERSATION_PROMPT_MAX_BYTES = 64 * 1024;
 const STOPPING_WATCHDOG_MS = 10_000;
+// Mirrors codex_chat.rs MAX_ACTIVE_RUNS: the backend refuses a fifth turn.
+export const MAX_PARALLEL_CONVERSATION_RUNS = 4;
 
 const utf8Encoder = typeof globalThis.TextEncoder === 'function'
   ? new globalThis.TextEncoder()
@@ -330,14 +332,23 @@ export function installConversationMode({
   let unlisten = null;
   let listenerReady = false;
   let listenerError = '';
-  let runProject = null;
   let renderTimer = null;
-  let stoppingWatchdog = null;
-  let deletingHistoryKey = '';
-  let deleteAfterRunKey = '';
+  let elapsedTimer = null;
+  let inlineAlert = null;
+  let deletingHistory = null;
   let resumeLatestOnHistory = false;
+  // Each project keeps its own transcript, draft and run, so a turn started in
+  // one project keeps streaming while the user reads or types in another.
+  const conversationStates = new Map();
+  const conversationDrafts = new Map();
+  const activeRuns = new Map();
+  const settledRuns = new Map();
+  const stoppingWatchdogs = new Map();
+  const deleteAfterRun = new Map();
+  const lastRunSummary = new Map();
   const collapsedProjectGroups = new Set();
   const projectMediaCache = new Map();
+  const messageNodes = new Map();
   const runController = createConversationRunController({ invoke });
 
   function cachedProjectMedia(projectId, source) {
@@ -386,24 +397,58 @@ export function installConversationMode({
     }
   }
 
-  const isRunning = () => ['starting', 'running', 'stopping'].includes(state.status);
-  const isDeletingHistory = () => Boolean(deletingHistoryKey);
+  const conversationRunning = value => ['starting', 'running', 'stopping'].includes(value?.status);
+  const isActiveProject = projectId => Boolean(projectId) && selectedProject?.id === projectId;
+  const isRunning = () => conversationRunning(state);
+  const isDeletingHistory = () => Boolean(deletingHistory && isActiveProject(deletingHistory.projectId));
   const selectedProjectExists = () => Boolean(selectedProject
     && projects.some(project => project.id === selectedProject.id));
+  const projectIsRunning = projectId => [...activeRuns.values()]
+    .some(entry => entry.projectId === projectId);
 
-  function clearStoppingWatchdog() {
-    if (stoppingWatchdog !== null) clearTimeout(stoppingWatchdog);
-    stoppingWatchdog = null;
+  function stateForProject(projectId) {
+    if (isActiveProject(projectId)) return state;
+    return conversationStates.get(projectId) || null;
   }
 
-  function armStoppingWatchdog(runId) {
-    clearStoppingWatchdog();
-    stoppingWatchdog = setTimeout(() => {
-      stoppingWatchdog = null;
-      if (destroyed || state.runId !== runId || state.status !== 'stopping') return;
-      state = { ...state, status: 'running', notice: '停止请求尚未确认；你可以再次停止，或继续等待结果' };
-      renderState();
-    }, STOPPING_WATCHDOG_MS);
+  // Writing through this keeps the visible project in `state` and every other
+  // project in its own slot, so background turns never touch the open view.
+  function commitState(projectId, next) {
+    if (isActiveProject(projectId)) {
+      state = next;
+      return true;
+    }
+    conversationStates.set(projectId, next);
+    return false;
+  }
+
+  function clearStoppingWatchdog(runId) {
+    if (!runId) {
+      stoppingWatchdogs.forEach(timer => clearTimeout(timer));
+      stoppingWatchdogs.clear();
+      return;
+    }
+    const timer = stoppingWatchdogs.get(runId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    stoppingWatchdogs.delete(runId);
+  }
+
+  function armStoppingWatchdog(runId, projectId) {
+    clearStoppingWatchdog(runId);
+    stoppingWatchdogs.set(runId, setTimeout(() => {
+      stoppingWatchdogs.delete(runId);
+      if (destroyed) return;
+      const current = stateForProject(projectId);
+      if (!current || current.runId !== runId || current.status !== 'stopping') return;
+      const active = commitState(projectId, {
+        ...current,
+        status: 'running',
+        notice: '停止请求尚未确认；你可以再次停止，或继续等待结果',
+      });
+      if (active) renderState();
+      else renderProjects();
+    }, STOPPING_WATCHDOG_MS));
   }
   const installedSet = () => new Set(Array.isArray(installedCliIds) ? installedCliIds : []);
   const providerReady = providerId => {
@@ -701,6 +746,13 @@ export function installConversationMode({
       element(document, 'small', '', subtitle || projectPathLabel(project)),
     );
     button.append(copy);
+    if (projectIsRunning(project.id)) {
+      button.classList.add('is-running');
+      const dot = element(document, 'span', 'conversation-project-run-dot');
+      dot.setAttribute('title', '正在处理');
+      dot.setAttribute('aria-label', '正在处理');
+      button.append(dot);
+    }
     button.addEventListener('click', () => selectProject(project.id));
     return button;
   }
@@ -831,6 +883,48 @@ export function installConversationMode({
     return `${provider.label} 已连接`;
   }
 
+  // How long this turn has been running is the only progress signal a headless
+  // CLI gives us, so it ticks once a second without rebuilding the header.
+  function renderRunStatus() {
+    if (!dom.status) return;
+    const provider = currentProvider();
+    const labels = {
+      idle: '等待你的消息',
+      starting: `正在连接 ${provider.label}`,
+      running: `${provider.label} 正在处理`,
+      stopping: '正在停止',
+      completed: '已完成',
+      failed: '处理失败',
+      cancelled: '已停止',
+    };
+    const running = activeRuns.get(state.runId);
+    const summary = lastRunSummary.get(selectedProject?.id || '');
+    const base = labels[state.status] || labels.idle;
+    const suffix = running && conversationRunning(state)
+      ? ` · ${elapsedLabel(running.startedAt)}`
+      : summary && ['completed', 'failed', 'cancelled'].includes(state.status)
+        ? ` · 用时 ${summary.elapsed}`
+        : '';
+    dom.status.textContent = `${base}${suffix}`;
+    dom.status.dataset.status = state.status;
+  }
+
+  function syncElapsedTimer() {
+    const ticking = conversationRunning(state) && activeRuns.has(state.runId);
+    if (ticking && elapsedTimer === null) {
+      elapsedTimer = setInterval(() => {
+        if (destroyed || !conversationRunning(state) || !activeRuns.has(state.runId)) {
+          syncElapsedTimer();
+          return;
+        }
+        renderRunStatus();
+      }, 1000);
+    } else if (!ticking && elapsedTimer !== null) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+
   function renderHeader() {
     const provider = currentProvider();
     const ready = providerReady(provider.id);
@@ -846,22 +940,85 @@ export function installConversationMode({
       const labelNode = dom.providerState.querySelector('.visually-hidden');
       if (labelNode) labelNode.textContent = label;
     }
-    if (dom.status) {
-      const labels = {
-        idle: '等待你的消息',
-        starting: `正在连接 ${provider.label}`,
-        running: `${provider.label} 正在处理`,
-        stopping: '正在停止',
-        completed: '已完成',
-        failed: '处理失败',
-        cancelled: '已停止',
-      };
-      dom.status.textContent = labels[state.status] || labels.idle;
-      dom.status.dataset.status = state.status;
-    }
+    renderRunStatus();
     if (dom.safetyNote) {
       dom.safetyNote.textContent = `默认使用 ${provider.label} 的只读/计划策略。打开“允许修改项目”后才切换到写入模式；第三方 CLI 的本机配置仍由其自身控制。`;
     }
+  }
+
+  // Reuse the DOM node of every message whose own content did not change.
+  // Streaming only rewrites the trailing assistant message, so rebuilding the
+  // whole transcript each frame re-parsed every Markdown body and recreated
+  // every <img>/<video> — long sessions stuttered and local media flickered.
+  function messageNodeFor(message) {
+    const key = `${state.projectId || ''}\u0000${String(message.id || '')}`;
+    const provider = conversationProvider(message.tool || state.providerId);
+    let entry = messageNodes.get(key);
+    if (!entry) {
+      const row = element(document, 'article', `conversation-message is-${message.role}`);
+      const body = element(document, 'div', 'conversation-message-body');
+      const label = element(document, 'div', 'conversation-message-label');
+      const content = element(document, 'div', 'conversation-message-content');
+      body.append(label, content);
+      row.append(body);
+      entry = { row, label, content, labelText: '', tool: '', text: null, pending: null, attachments: null };
+      messageNodes.set(key, entry);
+    }
+    if (message.role === 'assistant' && entry.tool !== provider.id) {
+      entry.tool = provider.id;
+      entry.row.dataset.tool = provider.id;
+    }
+    const labelText = message.role === 'user' ? '你' : provider.label;
+    if (entry.labelText !== labelText) {
+      entry.labelText = labelText;
+      entry.label.textContent = labelText;
+    }
+    const text = String(message.text || '');
+    const attachments = message.attachments || null;
+    const thinking = Boolean(message.pending) && !text;
+    if (entry.text !== text || entry.pending !== thinking || entry.attachments !== attachments) {
+      entry.text = text;
+      entry.pending = thinking;
+      entry.attachments = attachments;
+      entry.content.replaceChildren();
+      if (message.role === 'assistant') renderMarkdown(document, entry.content, text, hydrateLocalMedia);
+      else entry.content.textContent = text;
+      renderConversationAttachments(document, entry.content, attachments);
+      if (thinking) {
+        const dots = element(document, 'span', 'conversation-thinking');
+        dots.setAttribute('aria-label', `${provider.label} 正在思考`);
+        dots.append(element(document, 'i'), element(document, 'i'), element(document, 'i'));
+        entry.content.appendChild(dots);
+      }
+    }
+    return entry.row;
+  }
+
+  function inlineAlertNode() {
+    const text = state.error || state.notice;
+    if (!text) {
+      inlineAlert = null;
+      return null;
+    }
+    if (!inlineAlert) {
+      inlineAlert = element(document, 'div', 'conversation-inline-alert');
+      inlineAlert.setAttribute('role', 'status');
+    }
+    inlineAlert.className = `conversation-inline-alert${state.error ? ' is-error' : ''}`;
+    if (inlineAlert.textContent !== text) inlineAlert.textContent = text;
+    return inlineAlert;
+  }
+
+  // Moving a node out of the document pauses <video> and restarts CSS
+  // animations, so only touch positions that actually differ.
+  function reconcileStream(parent, nodes) {
+    const existing = parent.childNodes;
+    for (let index = 0; index < nodes.length; index += 1) {
+      const desired = nodes[index];
+      if (existing[index] === desired) continue;
+      parent.insertBefore(desired, existing[index] || null);
+    }
+    while (existing.length > nodes.length) parent.removeChild(parent.lastChild);
   }
 
   function renderMessages() {
@@ -872,42 +1029,15 @@ export function installConversationMode({
     const empty = state.messages.length === 0 && !state.notice && !state.error;
     dom.empty.hidden = !empty;
     if (dom.starters) dom.starters.hidden = state.messages.length > 0;
-    dom.stream.replaceChildren();
-    state.messages.forEach(message => {
-      const provider = conversationProvider(message.tool || state.providerId);
-      const row = element(document, 'article', `conversation-message is-${message.role}`);
-      if (message.role === 'assistant') row.dataset.tool = provider.id;
-      const body = element(document, 'div', 'conversation-message-body');
-      const label = element(
-        document,
-        'div',
-        'conversation-message-label',
-        message.role === 'user' ? '你' : provider.label,
-      );
-      const content = element(document, 'div', 'conversation-message-content');
-      if (message.role === 'assistant') renderMarkdown(document, content, message.text, hydrateLocalMedia);
-      else content.textContent = message.text;
-      renderConversationAttachments(document, content, message.attachments);
-      body.append(label, content);
-      if (message.pending && !message.text) {
-        const thinking = element(document, 'span', 'conversation-thinking');
-        thinking.setAttribute('aria-label', `${provider.label} 正在思考`);
-        thinking.append(element(document, 'i'), element(document, 'i'), element(document, 'i'));
-        content.appendChild(thinking);
-      }
-      row.append(body);
-      dom.stream.appendChild(row);
+    const live = new Set();
+    const nodes = state.messages.map(message => {
+      live.add(`${state.projectId || ''}\u0000${String(message.id || '')}`);
+      return messageNodeFor(message);
     });
-    if (state.notice || state.error) {
-      const alert = element(
-        document,
-        'div',
-        `conversation-inline-alert${state.error ? ' is-error' : ''}`,
-        state.error || state.notice,
-      );
-      alert.setAttribute('role', 'status');
-      dom.stream.appendChild(alert);
-    }
+    messageNodes.forEach((_, key) => { if (!live.has(key)) messageNodes.delete(key); });
+    const alert = inlineAlertNode();
+    if (alert) nodes.push(alert);
+    reconcileStream(dom.stream, nodes);
     if (shouldFollow) {
       requestAnimationFrame(() => {
         if (scrollParent) scrollParent.scrollTop = scrollParent.scrollHeight;
@@ -1116,6 +1246,7 @@ export function installConversationMode({
     renderSnippets();
     renderSlashMenu();
     renderControls();
+    syncElapsedTimer();
   }
 
   function scheduleRender() {
@@ -1253,7 +1384,7 @@ export function installConversationMode({
 
   async function deleteHistory(session, row) {
     if (!selectedProject || isDeletingHistory() || row?.dataset.status === 'deleting') return;
-    deletingHistoryKey = session.key;
+    deletingHistory = { projectId: selectedProject.id, key: session.key };
     renderControls();
     const approved = await confirmConversationDeletion(
       confirm,
@@ -1262,7 +1393,7 @@ export function installConversationMode({
       '确认功能不可用，未删除历史对话',
     );
     if (!approved || !selectedProject || row?.dataset.status === 'deleting') {
-      deletingHistoryKey = '';
+      deletingHistory = null;
       renderControls();
       return;
     }
@@ -1277,7 +1408,7 @@ export function installConversationMode({
       });
       invalidateHistory?.(project.localPath);
       const selectedKey = activeHistoryKey();
-      if (selectedKey === session.key && isRunning()) deleteAfterRunKey = session.key;
+      if (selectedKey === session.key && isRunning()) deleteAfterRun.set(project.id, session.key);
       else if (selectedKey === session.key) newChat();
       else await refreshHistory();
       notify?.('历史对话已删除', 'success');
@@ -1286,7 +1417,7 @@ export function installConversationMode({
       row.querySelectorAll('button').forEach(button => { button.disabled = false; });
       notify?.(`删除历史对话失败：${error?.message || error}`, 'error');
     } finally {
-      deletingHistoryKey = '';
+      deletingHistory = null;
       renderControls();
     }
   }
@@ -1323,31 +1454,60 @@ export function installConversationMode({
     }
   }
 
-  function selectProject(projectId) {
-    if (isRunning()) {
-      notify?.('请先等待当前处理完成，或点击停止', 'info');
-      return false;
+  function stashActiveConversation() {
+    const projectId = selectedProject?.id || '';
+    if (!projectId) return;
+    conversationStates.set(projectId, state);
+    conversationDrafts.set(projectId, {
+      text: String(dom.composer?.value || ''),
+      attachments: pendingAttachments,
+      allowWrite: Boolean(dom.writeAccess?.checked),
+    });
+  }
+
+  // Only a project the user has already typed in owns a draft; the others keep
+  // whatever is in the composer, exactly as a single-project switch used to.
+  function restoreDraft(projectId) {
+    if (!conversationDrafts.has(projectId)) {
+      if (dom.writeAccess) dom.writeAccess.checked = false;
+      return;
     }
-    const next = selectConversationProject(projects, projectId);
-    if (next?.id === selectedProject?.id) {
-      dom.composer?.focus();
-      return true;
-    }
+    const draft = conversationDrafts.get(projectId) || {};
+    if (dom.composer) dom.composer.value = String(draft.text || '');
+    pendingAttachments = Array.isArray(draft.attachments) ? draft.attachments : [];
+    if (dom.writeAccess) dom.writeAccess.checked = Boolean(draft.allowWrite);
+    renderPendingAttachments();
+  }
+
+  function activateProject(next) {
+    stashActiveConversation();
     selectedProject = next;
-    if (dom.writeAccess) dom.writeAccess.checked = false;
     transcriptRevision += 1;
     contextRevision += 1;
     projectContext = null;
     projectContextError = '';
     contextLoading = false;
-    state = createConversationState({
+    const restored = next ? conversationStates.get(next.id) : null;
+    state = restored || createConversationState({
       projectId: next?.id || '',
       providerId: providerForNewChat(),
     });
-    resumeLatestOnHistory = Boolean(next);
+    if (next) conversationStates.set(next.id, state);
+    restoreDraft(next?.id || '');
+    resumeLatestOnHistory = Boolean(next) && !conversationHasOpenSession(state);
+  }
+
+  function selectProject(projectId) {
+    const next = selectConversationProject(projects, projectId);
+    if (next?.id === selectedProject?.id) {
+      dom.composer?.focus();
+      return true;
+    }
+    activateProject(next);
     persistSelection();
     renderProjects();
     renderState();
+    syncComposer();
     void refreshHistory();
     void refreshProjectContext();
     void refreshSlashCommands();
@@ -1363,6 +1523,7 @@ export function installConversationMode({
       projectId: selectedProject.id,
       providerId: providerForNewChat(),
     });
+    conversationStates.set(selectedProject.id, state);
     if (dom.writeAccess) dom.writeAccess.checked = false;
     persistSelection();
     renderState();
@@ -1436,7 +1597,7 @@ export function installConversationMode({
   }
 
   function openCreateProject() {
-    if (!dom.createOverlay || isRunning()) return;
+    if (!dom.createOverlay) return;
     createFolderValue = '';
     if (dom.createFolderPath) dom.createFolderPath.textContent = '未选择';
     if (dom.createName) dom.createName.value = '';
@@ -1522,12 +1683,16 @@ export function installConversationMode({
       notify?.(promptTooLongMessage(promptState.byteLength), 'error');
       return;
     }
+    if (activeRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
+      notify?.(`最多同时处理 ${MAX_PARALLEL_CONVERSATION_RUNS} 个项目，请先等其中一个完成`, 'info');
+      return;
+    }
     resumeLatestOnHistory = false;
     transcriptRevision += 1;
     const runId = newRunId();
     const runContext = conversationRunContext(state);
     const allowWrite = !!dom.writeAccess?.checked;
-    runProject = { ...project };
+    activeRuns.set(runId, { runId, projectId: project.id, project: { ...project }, startedAt: Date.now() });
     const sentAttachments = pendingAttachments;
     state = startConversationTurn(state, {
       runId,
@@ -1570,74 +1735,156 @@ export function installConversationMode({
         kind: 'error',
         data: { message: error?.message || String(error) },
       });
-      runProject = null;
+      activeRuns.delete(runId);
       runController.clear(runId);
       if (dom.writeAccess) dom.writeAccess.checked = false;
       renderState();
+      renderProjects();
     }
   }
 
-  async function cancelAcceptedRun(runId) {
+  async function cancelAcceptedRun(runId, projectId) {
     try {
       await runController.cancel(runId);
     } catch (error) {
-      if (state.runId !== runId || !isRunning()) return;
-      clearStoppingWatchdog();
-      state = { ...state, status: 'running', notice: `停止请求失败：${error?.message || error}。仍在处理中，可重试。` };
-      renderState();
+      const current = stateForProject(projectId);
+      if (!current || current.runId !== runId || !conversationRunning(current)) return;
+      clearStoppingWatchdog(runId);
+      const active = commitState(projectId, {
+        ...current,
+        status: 'running',
+        notice: `停止请求失败：${error?.message || error}。仍在处理中，可重试。`,
+      });
+      if (active) renderState();
+      else renderProjects();
     }
   }
 
   async function stop() {
     if (!state.runId || !['starting', 'running'].includes(state.status)) return;
     const runId = state.runId;
+    const projectId = state.projectId || selectedProject?.id || '';
     const awaitingStart = state.status === 'starting';
     state = { ...state, status: 'stopping' };
-    armStoppingWatchdog(runId);
+    armStoppingWatchdog(runId, projectId);
     renderState();
     if (awaitingStart) await runController.cancel(runId, { backendReady: false });
-    else await cancelAcceptedRun(runId);
+    else await cancelAcceptedRun(runId, projectId);
+  }
+
+  function elapsedLabel(startedAt) {
+    const seconds = Math.max(0, Math.round((Date.now() - Number(startedAt || 0)) / 1000));
+    if (seconds < 60) return `${seconds} 秒`;
+    const minutes = Math.floor(seconds / 60);
+    const rest = seconds % 60;
+    return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
+  }
+
+  const windowFocused = () => {
+    if (document?.hidden) return false;
+    return typeof document?.hasFocus === 'function' ? document.hasFocus() : true;
+  };
+
+  // The transcript update is only a reply the user can see while the
+  // conversation workspace itself is on screen.
+  const conversationVisible = () => {
+    const view = document?.documentElement?.dataset?.appView;
+    return view === undefined || view === 'conversation';
+  };
+
+  // A turn can finish while the user reads another project or another app, so
+  // the result has to reach them without stealing the view they are using.
+  function announceFinishedRun(entry, finalState) {
+    const provider = conversationProvider(finalState.runProviderId || finalState.providerId);
+    const projectName = entry.project?.name || '项目';
+    const elapsed = lastRunSummary.get(entry.projectId)?.elapsed || elapsedLabel(entry.startedAt);
+    const outcome = finalState.status === 'completed'
+      ? '已完成'
+      : finalState.status === 'cancelled' ? '已停止' : '处理失败';
+    const active = isActiveProject(entry.projectId);
+    if (!active) {
+      notify?.(
+        `${projectName} · ${provider.label}${outcome}（用时 ${elapsed}）`,
+        finalState.status === 'failed' ? 'error' : 'info',
+      );
+    }
+    if (finalState.status === 'cancelled') return;
+    if (active && windowFocused() && conversationVisible()) return;
+    invoke('notify', {
+      title: `${projectName} · ${provider.label}${outcome}`,
+      body: finalState.status === 'failed'
+        ? finalState.error || '这一轮没有正常结束，回到 Roster 查看原因'
+        : `用时 ${elapsed}，回到 Roster 查看回复`,
+    }).catch(() => {});
+  }
+
+  function rememberSettledRun(entry) {
+    settledRuns.set(entry.runId, entry);
+    while (settledRuns.size > 8) settledRuns.delete(settledRuns.keys().next().value);
+  }
+
+  function finishRun(entry, finalState) {
+    lastRunSummary.set(entry.projectId, {
+      status: finalState.status,
+      elapsed: elapsedLabel(entry.startedAt),
+    });
+    clearStoppingWatchdog(entry.runId);
+    runController.clear(entry.runId);
+    activeRuns.delete(entry.runId);
+    rememberSettledRun(entry);
+    if (entry.project?.localPath) invalidateHistory?.(entry.project.localPath);
+    const latest = projects.find(project => project.id === entry.projectId) || null;
+    if (!isActiveProject(entry.projectId)) {
+      const draft = conversationDrafts.get(entry.projectId);
+      if (draft) conversationDrafts.set(entry.projectId, { ...draft, allowWrite: false });
+      if (deleteAfterRun.delete(entry.projectId)) {
+        conversationStates.set(entry.projectId, createConversationState({
+          projectId: entry.projectId,
+          providerId: finalState.providerId,
+        }));
+      }
+      renderProjects();
+      announceFinishedRun(entry, finalState);
+      return;
+    }
+    if (dom.writeAccess) dom.writeAccess.checked = false;
+    renderRunStatus();
+    if (latest) {
+      selectedProject = latest;
+      persistSelection();
+      renderProjects();
+      setTimeout(() => {
+        void refreshHistory();
+        void refreshProjectContext();
+      }, 450);
+    } else {
+      notify?.('当前项目已被删除；本轮对话保留在屏幕上，无法再刷新项目数据', 'info');
+      renderState();
+      renderProjects();
+    }
+    if (deleteAfterRun.delete(entry.projectId)) newChat();
+    announceFinishedRun(entry, finalState);
   }
 
   function handleEvent(envelope) {
-    if (!envelope || envelope.runId !== state.runId) return;
-    const wasRunning = isRunning();
-    const previousState = state;
-    state = applyConversationChatEvent(state, envelope);
-    const stillRunning = isRunning();
-    const renderMode = conversationEventRenderMode(previousState, state, envelope);
-    if (renderMode === 'deferred' && stillRunning) {
-      scheduleRender();
-    } else if (renderMode === 'immediate') {
-      renderState();
+    if (!envelope?.runId) return;
+    // A settled run still accepts its own late cancellation, which the reducer
+    // lets win over a completion that raced it.
+    const entry = activeRuns.get(envelope.runId)
+      || (envelope.kind === 'cancelled' ? settledRuns.get(envelope.runId) : null);
+    if (!entry) return;
+    const previousState = stateForProject(entry.projectId);
+    if (!previousState || previousState.runId !== envelope.runId) return;
+    const wasRunning = conversationRunning(previousState);
+    const nextState = applyConversationChatEvent(previousState, envelope);
+    const stillRunning = conversationRunning(nextState);
+    const active = commitState(entry.projectId, nextState);
+    if (active) {
+      const renderMode = conversationEventRenderMode(previousState, nextState, envelope);
+      if (renderMode === 'deferred' && stillRunning) scheduleRender();
+      else if (renderMode === 'immediate') renderState();
     }
-    if (wasRunning && !stillRunning) {
-      clearStoppingWatchdog();
-      const finishedProject = runProject || selectedProject;
-      runProject = null;
-      runController.clear(envelope.runId);
-      if (dom.writeAccess) dom.writeAccess.checked = false;
-      if (finishedProject?.localPath) invalidateHistory?.(finishedProject.localPath);
-      const latest = finishedProject
-        ? projects.find(project => project.id === finishedProject.id)
-        : null;
-      if (latest) {
-        selectedProject = latest;
-        persistSelection();
-        renderProjects();
-        setTimeout(() => {
-          void refreshHistory();
-          void refreshProjectContext();
-        }, 450);
-      } else {
-        notify?.('当前项目已被删除；本轮对话保留在屏幕上，无法再刷新项目数据', 'info');
-        renderState();
-      }
-      if (deleteAfterRunKey) {
-        deleteAfterRunKey = '';
-        newChat();
-      }
-    }
+    if (wasRunning && !stillRunning) finishRun(entry, nextState);
   }
 
   async function openProjectFolder() {
@@ -1767,6 +2014,15 @@ export function installConversationMode({
   return {
     setProjects(nextProjects) {
       projects = Array.isArray(nextProjects) ? nextProjects : [];
+      const known = new Set(projects.map(project => project.id));
+      [...conversationStates.keys()].forEach(projectId => {
+        if (known.has(projectId)
+          || projectIsRunning(projectId)
+          || projectId === selectedProject?.id) return;
+        conversationStates.delete(projectId);
+        conversationDrafts.delete(projectId);
+        lastRunSummary.delete(projectId);
+      });
       if (isRunning()) {
         const current = projects.find(project => project.id === selectedProject?.id);
         if (current) selectedProject = current;
@@ -1777,18 +2033,8 @@ export function installConversationMode({
       const preferred = selectedProject?.id || readAppShellPreference(storage).projectId;
       const next = selectConversationProject(projects, preferred);
       const changed = next?.id !== selectedProject?.id;
-      selectedProject = next;
-      if (changed) {
-        state = createConversationState({
-          projectId: next?.id || '',
-          providerId: providerForNewChat(),
-        });
-        projectContext = null;
-        projectContextError = '';
-        contextLoading = false;
-        resumeLatestOnHistory = Boolean(next);
-        if (dom.writeAccess) dom.writeAccess.checked = false;
-      }
+      if (changed) activateProject(next);
+      else selectedProject = next;
       persistSelection();
       renderProjects();
       renderState();
@@ -1825,6 +2071,8 @@ export function installConversationMode({
       contextRevision += 1;
       slashRevision += 1;
       if (renderTimer !== null) clearTimeout(renderTimer);
+      if (elapsedTimer !== null) clearInterval(elapsedTimer);
+      elapsedTimer = null;
       clearStoppingWatchdog();
       unlisten?.();
     },

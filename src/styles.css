@@ -5586,6 +5586,28 @@ html[data-app-view="developer"] #conversation-surface {
   color: #174ea6;
 }
 
+.conversation-project-item .conversation-project-copy { flex: 1; }
+
+.conversation-project-run-dot {
+  flex: none;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--chat-accent);
+  animation: conversation-run-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes conversation-run-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.42; transform: scale(0.78); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-project-run-dot { animation: none; }
+}
+
 .conversation-project-copy strong,
 .conversation-history-item strong {
   overflow: hidden;

@@ -249,12 +249,12 @@ test('运行中可预输入，停止看门狗和删除门禁不会让界面永�
     read('src/styles.css'),
   ]);
   assert.match(conversation, /const STOPPING_WATCHDOG_MS = 10_000/);
-  assert.match(conversation, /function armStoppingWatchdog\(runId\)/);
-  assert.match(conversation, /status: 'running', notice: '停止请求尚未确认/);
+  assert.match(conversation, /function armStoppingWatchdog\(runId, projectId\)/);
+  assert.match(conversation, /notice: '停止请求尚未确认/);
   assert.match(conversation, /dom\.composer\.disabled = unavailable;/);
   assert.match(conversation, /isDeletingHistory\(\)/);
   assert.match(conversation, /const selectedProjectExists = \(\) => Boolean\(selectedProject/);
-  assert.match(conversation, /project => project\.id === finishedProject\.id/);
+  assert.match(conversation, /projects\.find\(project => project\.id === entry\.projectId\)/);
   assert.match(conversation, /当前项目已被删除；本轮对话保留在屏幕上/);
   assert.match(css, /\.conversation-rail \{[\s\S]*?overflow: auto;/);
   assert.match(css, /data-state="loading"\] i/);
