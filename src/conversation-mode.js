@@ -65,6 +65,53 @@ export function inspectConversationPrompt(value) {
   };
 }
 
+const CHANGED_FILE_LABELS = {
+  M: '修改',
+  A: '新增',
+  D: '删除',
+  R: '重命名',
+  C: '复制',
+  U: '冲突',
+  '??': '新文件',
+  gone: '已提交或还原',
+};
+
+export function changedFileLabel(status) {
+  const key = String(status || '').trim().toUpperCase();
+  if (key === 'GONE') return CHANGED_FILE_LABELS.gone;
+  return CHANGED_FILE_LABELS[key] || CHANGED_FILE_LABELS[key.slice(0, 1)] || '改动';
+}
+
+export function normalizeProjectChanges(context) {
+  if (!context || !context.isRepo) return null;
+  const files = Array.isArray(context.files) ? context.files : [];
+  return {
+    files: files
+      .filter(file => file && typeof file.path === 'string' && file.path)
+      .map(file => ({ status: String(file.status || 'M'), path: file.path })),
+    more: Math.max(0, Number(context.filesMore) || 0),
+  };
+}
+
+/**
+ * What this turn changed on disk, not what the CLI said it did. Git's status is
+ * capped at 20 entries, so a truncated snapshot can only be reported as partial.
+ */
+export function diffProjectChanges(before, after) {
+  if (!before || !after) return { files: [], more: 0, partial: false };
+  const beforeStatus = new Map(before.files.map(file => [file.path, file.status]));
+  const afterPaths = new Set(after.files.map(file => file.path));
+  const touched = after.files.filter(file => beforeStatus.get(file.path) !== file.status);
+  const settled = before.files
+    .filter(file => !afterPaths.has(file.path))
+    .map(file => ({ status: 'gone', path: file.path }));
+  return {
+    files: [...touched, ...settled].slice(0, 20),
+    more: after.more,
+    partial: before.more > 0 || after.more > 0,
+  };
+}
+
 const DEFERRED_CONVERSATION_EVENT_KINDS = new Set([
   'assistant_delta',
   'activity',
@@ -305,6 +352,9 @@ export function installConversationMode({
     send: document.getElementById('conversation-send'),
     stop: document.getElementById('conversation-stop'),
     composerHint: document.getElementById('conversation-composer-hint'),
+    changesSection: document.querySelector('.conversation-changes-section'),
+    changesList: document.getElementById('conversation-changes-list'),
+    changesCount: document.getElementById('conversation-changes-count'),
     activityList: document.getElementById('conversation-activity-list'),
     planList: document.getElementById('conversation-plan-list'),
     planSection: document.querySelector('.conversation-plan-section'),
@@ -346,6 +396,7 @@ export function installConversationMode({
   const stoppingWatchdogs = new Map();
   const deleteAfterRun = new Map();
   const lastRunSummary = new Map();
+  const changeReports = new Map();
   const collapsedProjectGroups = new Set();
   const seenProjectGroups = new Set();
   const projectMediaCache = new Map();
@@ -1189,6 +1240,38 @@ export function installConversationMode({
     });
   }
 
+  function renderChangeReport() {
+    if (!dom.changesList) return;
+    const report = changeReports.get(selectedProject?.id || '');
+    const show = Boolean(report && (report.files.length || report.partial));
+    if (dom.changesSection) dom.changesSection.hidden = !show;
+    if (!show) return;
+    if (dom.changesCount) {
+      dom.changesCount.textContent = report.partial
+        ? `${report.files.length}+ 个文件`
+        : `${report.files.length} 个文件`;
+    }
+    dom.changesList.replaceChildren();
+    report.files.forEach(file => {
+      const row = element(document, 'div', 'conversation-change-item');
+      row.dataset.status = String(file.status || '').toLowerCase();
+      row.append(
+        element(document, 'span', 'conversation-change-tag', changedFileLabel(file.status)),
+        element(document, 'span', 'conversation-change-path', file.path),
+      );
+      row.title = `${changedFileLabel(file.status)} · ${file.path}`;
+      dom.changesList.appendChild(row);
+    });
+    if (report.partial) {
+      dom.changesList.appendChild(element(
+        document,
+        'p',
+        'conversation-rail-empty',
+        '改动文件较多，这里只列出 Git 返回的前 20 个',
+      ));
+    }
+  }
+
   function renderProjectContext() {
     if (!dom.projectContext) return;
     dom.projectContext.replaceChildren();
@@ -1363,6 +1446,7 @@ export function installConversationMode({
     renderPlan();
     renderActivities();
     renderProjectContext();
+    renderChangeReport();
     renderSnippets();
     renderSlashMenu();
     renderHandoffNote();
@@ -1638,6 +1722,7 @@ export function installConversationMode({
 
   function newChat() {
     if (!selectedProject || isRunning()) return;
+    changeReports.delete(selectedProject.id);
     resumeLatestOnHistory = false;
     transcriptRevision += 1;
     state = createConversationState({
@@ -1813,7 +1898,15 @@ export function installConversationMode({
     const runId = newRunId();
     const runContext = conversationRunContext(state);
     const allowWrite = !!dom.writeAccess?.checked;
-    activeRuns.set(runId, { runId, projectId: project.id, project: { ...project }, startedAt: Date.now() });
+    const runEntry = { runId, projectId: project.id, project: { ...project }, startedAt: Date.now() };
+    if (allowWrite) {
+      // 本轮到底改了什么以磁盘为准，所以先拍一张 Git 现状作基线。
+      runEntry.baseline = invoke('project_context', { path: project.localPath })
+        .then(result => normalizeProjectChanges(result?.context || result))
+        .catch(() => null);
+      changeReports.delete(project.id);
+    }
+    activeRuns.set(runId, runEntry);
     const sentAttachments = pendingAttachments;
     state = startConversationTurn(state, {
       runId,
@@ -1939,6 +2032,23 @@ export function installConversationMode({
     }).catch(() => {});
   }
 
+  async function buildChangeReport(entry) {
+    let after = null;
+    try {
+      const before = await entry.baseline;
+      if (!before) return;
+      const result = await invoke('project_context', { path: entry.project.localPath });
+      after = normalizeProjectChanges(result?.context || result);
+      if (destroyed || !after) return;
+      const report = diffProjectChanges(before, after);
+      if (!report.files.length && !report.partial) changeReports.delete(entry.projectId);
+      else changeReports.set(entry.projectId, report);
+    } catch (_) {
+      return;
+    }
+    if (isActiveProject(entry.projectId)) renderChangeReport();
+  }
+
   function rememberSettledRun(entry) {
     settledRuns.set(entry.runId, entry);
     while (settledRuns.size > 8) settledRuns.delete(settledRuns.keys().next().value);
@@ -1954,6 +2064,7 @@ export function installConversationMode({
     activeRuns.delete(entry.runId);
     rememberSettledRun(entry);
     if (entry.project?.localPath) invalidateHistory?.(entry.project.localPath);
+    if (entry.baseline) void buildChangeReport(entry);
     const latest = projects.find(project => project.id === entry.projectId) || null;
     if (!isActiveProject(entry.projectId)) {
       const draft = conversationDrafts.get(entry.projectId);
@@ -2132,6 +2243,7 @@ export function installConversationMode({
         conversationStates.delete(projectId);
         conversationDrafts.delete(projectId);
         lastRunSummary.delete(projectId);
+        changeReports.delete(projectId);
       });
       if (isRunning()) {
         const current = projects.find(project => project.id === selectedProject?.id);

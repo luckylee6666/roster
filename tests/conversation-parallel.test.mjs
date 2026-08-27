@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { installConversationMode, MAX_PARALLEL_CONVERSATION_RUNS } from '../src/conversation-mode.js';
+import {
+  changedFileLabel,
+  diffProjectChanges,
+  installConversationMode,
+  MAX_PARALLEL_CONVERSATION_RUNS,
+  normalizeProjectChanges,
+} from '../src/conversation-mode.js';
 
 globalThis.window = globalThis.window || {};
 globalThis.requestAnimationFrame = fn => { fn(); return 0; };
@@ -144,6 +150,8 @@ const IDS = [
   'conversation-stop',
   'conversation-composer-hint',
   'conversation-handoff-note',
+  'conversation-changes-list',
+  'conversation-changes-count',
   'conversation-project-context',
   'conversation-activity-list',
   'conversation-plan-list',
@@ -166,6 +174,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
 
   const invokes = [];
   const toasts = [];
+  let changedFiles = [{ status: 'M', path: 'src/a.js' }];
   const chatEvents = [];
   const values = new Map();
   const document = {
@@ -187,7 +196,9 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
     },
     invoke: async (command, payload) => {
       invokes.push({ command, payload });
-      if (command === 'project_context') return { context: { exists: true, isRepo: false } };
+      if (command === 'project_context') {
+        return { context: { exists: true, isRepo: true, filesMore: 0, files: changedFiles.map(file => ({ ...file })) } };
+      }
       if (command === 'conversation_chat_start') return null;
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
@@ -214,6 +225,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
     chatEvents,
     el: id => byId.get(id),
     emit: payload => emit(payload),
+    setChanges: files => { changedFiles = files; },
     startedRuns: () => invokes
       .filter(entry => entry.command === 'conversation_chat_start')
       .map(entry => entry.payload.request),
@@ -501,4 +513,65 @@ test('换助手时输入框上方说明会接手什么，并能一键改回', as
   fire(undo, 'click');
   await flush();
   assert.equal(note.hidden, true, '改回来源助手后说明消失');
+});
+
+test('只统计磁盘上真的变了的文件，截断的快照标成部分', () => {
+  const before = normalizeProjectChanges({
+    isRepo: true,
+    filesMore: 0,
+    files: [{ status: 'M', path: 'src/a.js' }, { status: 'M', path: 'src/old.js' }],
+  });
+  const after = normalizeProjectChanges({
+    isRepo: true,
+    filesMore: 0,
+    files: [
+      { status: 'M', path: 'src/a.js' },
+      { status: 'A', path: 'src/new.js' },
+      { status: 'D', path: 'src/gone.js' },
+    ],
+  });
+  const report = diffProjectChanges(before, after);
+  assert.deepEqual(report.files, [
+    { status: 'A', path: 'src/new.js' },
+    { status: 'D', path: 'src/gone.js' },
+    { status: 'gone', path: 'src/old.js' },
+  ], '本来就改着的文件不算这一轮的');
+  assert.equal(report.partial, false);
+
+  assert.equal(normalizeProjectChanges({ isRepo: false }), null, '非 Git 项目不做改动统计');
+  const truncated = diffProjectChanges(before, { ...after, more: 7 });
+  assert.equal(truncated.partial, true);
+  assert.equal(changedFileLabel('??'), '新文件');
+  assert.equal(changedFileLabel('gone'), '已提交或还原');
+  assert.equal(changedFileLabel('RM'), '重命名');
+  assert.equal(changedFileLabel(''), '改动');
+});
+
+test('只有允许修改项目的那一轮才拍基线并出改动清单', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const contextCalls = () => fx.invokes.filter(entry => entry.command === 'project_context').length;
+
+  const readOnlyBefore = contextCalls();
+  await fx.send('只读的一轮');
+  assert.equal(contextCalls(), readOnlyBefore, '只读轮不额外拍基线');
+  const readOnlyRun = fx.startedRuns()[0];
+  assert.equal(readOnlyRun.allowWrite, false);
+  fx.emit({ runId: readOnlyRun.runId, providerId: readOnlyRun.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  assert.equal(fx.el('conversation-changes-list').childNodes.length, 0);
+
+  fx.el('conversation-write-access').checked = true;
+  const writeBefore = contextCalls();
+  await fx.send('去改一下文件');
+  assert.equal(contextCalls(), writeBefore + 1, '写入轮发送时先拍基线');
+  fx.setChanges([{ status: 'M', path: 'src/a.js' }, { status: 'A', path: 'src/new.js' }]);
+  const writeRun = fx.startedRuns()[1];
+  assert.equal(writeRun.allowWrite, true);
+  fx.emit({ runId: writeRun.runId, providerId: writeRun.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  const rows = fx.el('conversation-changes-list').childNodes;
+  assert.ok(rows.length >= 1, '写入轮结束后要列出本轮改动');
+  assert.equal(rows[0].childNodes[1].textContent, 'src/new.js');
+  assert.match(fx.el('conversation-changes-count').textContent, /个文件/);
 });
