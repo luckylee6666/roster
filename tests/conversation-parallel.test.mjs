@@ -199,6 +199,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
   const toasts = [];
   let changedFiles = [{ status: 'M', path: 'src/a.js' }];
   let pickedImages = [];
+  const sessionTitles = {};
   let projectFiles = [
     { path: 'README.md', name: 'README.md', depth: 0 },
     { path: 'src/main.js', name: 'main.js', depth: 1 },
@@ -239,6 +240,12 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
       if (command === 'pick_attachment_images') return pickedImages;
+      if (command === 'list_conversation_session_titles') return { ...sessionTitles };
+      if (command === 'set_conversation_session_title') {
+        if (payload.title) sessionTitles[`${payload.tool}:${payload.id}`] = payload.title;
+        else delete sessionTitles[`${payload.tool}:${payload.id}`];
+        return { ...sessionTitles };
+      }
       if (command === 'oauth_usage') {
         return { ok: true, fiveHour: { utilization: 32 }, sevenDay: { utilization: 7 } };
       }
@@ -276,6 +283,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
     emit: payload => emit(payload),
     setChanges: files => { changedFiles = files; },
     setPickedImages: paths => { pickedImages = paths; },
+    sessionTitles,
     manageOpens,
     fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
     key: ({ appView: view, ...init }) => {
@@ -1025,4 +1033,33 @@ test('一个项目都没有时给三步引导，有项目后换成普通空状�
   assert.equal(fx.el('conversation-empty').dataset.mode, 'ready');
   assert.match(fx.el('conversation-empty').childNodes[0].textContent, /今天想推进什么/);
   assert.equal(fx.el('conversation-starter-list').hidden, false);
+});
+
+test('历史会话可以改名，改回原名等于清掉别名', async t => {
+  const history = {
+    groups: [{ tool: 'claude', label: 'Claude', sessions: [{ id: 'c1', title: '原始标题', atMs: 300 }] }],
+  };
+  const fx = fixture({ projects: [project('a', '项目 A')], history, t });
+  await flush();
+  const rowOf = () => fx.el('conversation-history-list').childNodes[0];
+  const titleOf = () => rowOf().childNodes[0].childNodes[1].childNodes[0].textContent;
+  assert.equal(titleOf(), '原始标题');
+
+  fire(rowOf().childNodes[1], 'click');
+  const input = rowOf().childNodes[0];
+  assert.equal(input.tagName, 'INPUT');
+  assert.equal(input.value, '原始标题');
+  input.value = '重要的那次排查';
+  fire(input, 'keydown', { key: 'Enter', preventDefault() {} });
+  await flush();
+  assert.equal(titleOf(), '重要的那次排查');
+  assert.equal(fx.sessionTitles['claude:c1'], '重要的那次排查');
+
+  fire(rowOf().childNodes[1], 'click');
+  const again = rowOf().childNodes[0];
+  again.value = '原始标题';
+  fire(again, 'keydown', { key: 'Enter', preventDefault() {} });
+  await flush();
+  assert.equal(titleOf(), '原始标题');
+  assert.equal('claude:c1' in fx.sessionTitles, false, '改回原名就不再占一条别名');
 });

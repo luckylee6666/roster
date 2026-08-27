@@ -513,6 +513,8 @@ export function installConversationMode({
   let mentionRevision = 0;
   let mentionDismissed = false;
   let historyToolFilter = '';
+  let sessionTitles = {};
+  let renamingKey = '';
   let usageText = '';
   let usageFetchedAt = 0;
   let usageRevision = 0;
@@ -2019,20 +2021,56 @@ export function installConversationMode({
       const badge = element(document, 'span', 'conversation-history-tool', session.label);
       badge.dataset.tool = session.tool;
       const copy = element(document, 'span', 'conversation-history-copy');
+      const alias = String(sessionTitles[session.key] || '').trim();
       copy.append(
-        element(document, 'strong', '', session.title),
+        element(document, 'strong', '', alias || session.title),
         element(document, 'span', '', session.tool === 'agy'
           ? `${relativeTime(session.atMs)} · 仅含用户记录`
           : relativeTime(session.atMs)),
       );
       button.append(badge, copy);
       button.addEventListener('click', () => void openHistory(session));
+      if (renamingKey === session.key) {
+        const input = element(document, 'input', 'conversation-history-rename');
+        input.type = 'text';
+        input.value = alias || session.title;
+        input.maxLength = 80;
+        input.setAttribute('aria-label', '重命名这条会话');
+        input.addEventListener('keydown', event => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            void renameHistory(session, input.value);
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            renamingKey = '';
+            renderHistory(history, project);
+          }
+        });
+        input.addEventListener('blur', () => {
+          if (renamingKey !== session.key) return;
+          renamingKey = '';
+          renderHistory(history, project);
+        });
+        row.append(input);
+        dom.historyList.appendChild(row);
+        input.focus?.();
+        input.select?.();
+        return;
+      }
+      const rename = element(document, 'button', 'conversation-history-rename-action', '改名');
+      rename.type = 'button';
+      rename.title = alias ? `重命名（现在是「${alias}」）` : '给这条会话起个名字';
+      rename.setAttribute('aria-label', `重命名 ${alias || session.title}`);
+      rename.addEventListener('click', () => {
+        renamingKey = session.key;
+        renderHistory(history, project);
+      });
       const remove = element(document, 'button', 'conversation-history-delete', '×');
       remove.type = 'button';
       remove.title = `删除 ${session.label} 历史对话`;
       remove.setAttribute('aria-label', `删除 ${session.title}`);
       remove.addEventListener('click', () => void deleteHistory(session, row));
-      row.append(button, remove);
+      row.append(button, rename, remove);
       dom.historyList.appendChild(row);
     });
   }
@@ -2105,6 +2143,28 @@ export function installConversationMode({
       notify?.(`打开对话失败：${error?.message || error}`, 'error');
       if (dom.historyState) dom.historyState.textContent = '无法打开这条历史对话';
     }
+  }
+
+  async function renameHistory(session, title) {
+    renamingKey = '';
+    const next = String(title || '').trim();
+    const current = String(sessionTitles[session.key] || '').trim();
+    // 改回 CLI 自己的标题就是清掉别名。
+    const value = next === session.title ? '' : next;
+    if (value === current) {
+      await refreshHistory();
+      return;
+    }
+    try {
+      sessionTitles = await invoke('set_conversation_session_title', {
+        tool: session.tool,
+        id: session.id,
+        title: value,
+      }) || {};
+    } catch (error) {
+      notify?.(`重命名失败：${error?.message || error}`, 'error');
+    }
+    await refreshHistory();
   }
 
   async function deleteHistory(session, row) {
@@ -2886,6 +2946,14 @@ export function installConversationMode({
 
   // Tauri 的原生拖放会吞掉 DOM drop 事件，所以走 tauri:// 这组事件；
   // 开发模式的终端拖放监听在对话视图下命中不到目标，两边不会打架。
+  void invoke('list_conversation_session_titles')
+    .then(titles => {
+      if (destroyed) return;
+      sessionTitles = titles && typeof titles === 'object' ? titles : {};
+      void refreshHistory();
+    })
+    .catch(() => {});
+
   if (typeof listen === 'function') {
     const markDropTarget = on => {
       dom.composerBox?.classList?.[on ? 'add' : 'remove']('is-drop-target');

@@ -27,6 +27,7 @@ mod project_files;
 mod project_memory;
 mod project_sessions;
 mod proxy_settings;
+mod session_titles;
 mod usage;
 
 /// 手机端远程服务监听端口（局域网）。
@@ -1992,6 +1993,25 @@ async fn preview_conversation_transcript(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn list_conversation_session_titles() -> Result<session_titles::SessionTitles, String> {
+    tauri::async_runtime::spawn_blocking(session_titles::load)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// 只写 Roster 自己的一层别名，不碰任何 CLI 的历史文件。
+#[tauri::command]
+async fn set_conversation_session_title(
+    tool: String,
+    id: String,
+    title: String,
+) -> Result<session_titles::SessionTitles, String> {
+    tauri::async_runtime::spawn_blocking(move || session_titles::set(&tool, &id, &title))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// `@` 引用用的项目文件清单：路径只由后端从已保存项目解析，前端只给项目 ID。
 #[tauri::command]
 async fn conversation_project_files(
@@ -3293,6 +3313,8 @@ pub fn run() {
             preview_conversation_transcript,
             read_conversation_project_media,
             conversation_project_files,
+            list_conversation_session_titles,
+            set_conversation_session_title,
             read_conversation_attachment_image,
             pick_attachment_images,
             export_conversation_markdown,

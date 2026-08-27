@@ -5617,7 +5617,7 @@ html[data-app-view="developer"] #conversation-surface {
 .conversation-history-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 26px;
+  grid-template-columns: minmax(0, 1fr) auto 26px;
   align-items: center;
   gap: 2px;
   border-radius: 8px;
@@ -5875,6 +5875,41 @@ html[data-app-view="developer"] #conversation-surface {
 }
 
 .conversation-onboarding li { margin: 2px 0; }
+
+.conversation-history-rename-action {
+  padding: 0 5px;
+  appearance: none;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--chat-faint);
+  font: inherit;
+  font-size: 10px;
+  line-height: 18px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.conversation-history-row:hover .conversation-history-rename-action,
+.conversation-history-rename-action:focus-visible {
+  opacity: 1;
+}
+
+.conversation-history-rename-action:hover { color: var(--chat-accent); }
+
+.conversation-history-rename {
+  grid-column: 1 / -1;
+  width: 100%;
+  padding: 5px 8px;
+  appearance: none;
+  border: 1px solid var(--chat-accent-line);
+  border-radius: 8px;
+  outline: 0;
+  background: var(--chat-panel);
+  color: var(--chat-ink);
+  font: inherit;
+  font-size: 12px;
+}
 
 .conversation-history-filter {
   display: flex;

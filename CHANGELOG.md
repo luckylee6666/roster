@@ -7,6 +7,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- Sessions in Recent conversations can be renamed. The alias is Roster's own layer — no CLI history file is touched — and renaming a session back to its original title drops the alias instead of storing a duplicate. The store is bounded at 500 entries and 80 characters per title, with invalid keys dropped on load.
 - Recent conversations can be filtered by assistant when more than one has been used in the project; the chips carry counts and the filter hides itself when only one assistant is present.
 - A first run with no projects gets three steps instead of a prompt it cannot act on, including the read-only default and where writing is granted.
 - Very long replies start collapsed with a fade and an expand control that says roughly how long they are; expanding is remembered per message and streaming replies are never collapsed mid-flight.
@@ -28,6 +29,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **新增**
+- 「最近对话」里的会话可以改名。别名是 Roster 自己的一层，不改任何 CLI 的历史文件；改回原标题等于清掉别名，不会存一条重复的。存储限 500 条、单条 80 字，加载时丢掉非法键。
 - 项目里用过不止一个助手时，「最近对话」可以按助手筛选，筛选条带条数；只有一家时自动隐藏。
 - 第一次打开、一个项目都没有时，空状态换成三步说明（含默认只读和在哪一步才放开写入），而不是一句用不上的提问。
 - 特别长的回答默认收起，底部渐隐并给出「展开全部（约 N 千字）」；展开状态按消息记住，流式过程中不会中途折叠。
