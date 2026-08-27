@@ -681,6 +681,33 @@ fn open_folder(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn pick_attachment_images() -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        let files = rfd::FileDialog::new()
+            .set_title("选择要发送的图片")
+            .add_filter("图片", &["png", "jpg", "jpeg", "gif", "webp"])
+            .pick_files()
+            .unwrap_or_default();
+        files
+            .into_iter()
+            .take(8)
+            .map(|path| path.to_string_lossy().to_string())
+            .collect()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn read_conversation_attachment_image(
+    path: String,
+) -> Result<conversation_media::ConversationMedia, String> {
+    tokio::task::spawn_blocking(move || conversation_media::read_attachment_image(&path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn open_folder_dialog() -> Result<String, String> {
     let folder = rfd::FileDialog::new()
         .set_title("选择项目文件夹")
@@ -3197,6 +3224,8 @@ pub fn run() {
             preview_session_handoff,
             preview_conversation_transcript,
             read_conversation_project_media,
+            read_conversation_attachment_image,
+            pick_attachment_images,
             delete_project_session,
             delete_conversation_project_session,
             ensure_orchestra,

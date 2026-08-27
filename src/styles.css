@@ -5708,6 +5708,21 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-compose-wrap { position: relative; }
 
+.conversation-attach-image {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  padding: 0;
+}
+
+.conversation-attach-image svg { width: 15px; height: 15px; }
+
+.conversation-composer-box.is-drop-target {
+  border-color: var(--chat-accent);
+  box-shadow: 0 0 0 3px var(--chat-accent-glow);
+}
+
 .conversation-scroll-bottom {
   position: absolute;
   top: -42px;

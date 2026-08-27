@@ -7,6 +7,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- Images can now be attached by dragging them onto the composer or picking them with a button, not only by pasting. Dropped and picked files are read and validated in the backend by magic bytes, regular-file check, and an 8 MB limit; extensions are never trusted, and the four-image limit per message still applies. Drag and drop is ignored while Developer mode is on screen.
 - A back-to-latest button appears over the transcript once new replies scroll out of view.
 - The empty-state suggestions now follow the project: uncommitted changes, a missing project description, or recent commits each offer their own opener instead of three fixed lines.
 - Keyboard shortcuts in the conversation workspace: Cmd/Ctrl+K focuses project search, Cmd/Ctrl+Shift+N starts a new conversation in the current project. Neither fires while Developer mode is on screen.
@@ -17,6 +18,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **新增**
+- 图片除了粘贴，现在还能直接拖进输入框，或用按钮从文件里选。拖入和选中的文件由后端按魔数、普通文件和 8MB 上限校验，不认扩展名；一条消息最多四张的限制不变。停在开发模式时不接管拖放。
 - 新回复滚出视野时，消息区上方出现「回到最新」按钮。
 - 空状态的快捷句跟着项目现场走：有未提交改动、缺项目说明、有最近提交各自给对应的开场句，不再永远是固定三句。
 - 对话工作台快捷键：⌘/Ctrl + K 聚焦项目搜索，⌘/Ctrl + Shift + N 在当前项目开新对话；停在开发模式时都不触发。

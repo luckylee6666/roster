@@ -299,6 +299,45 @@ fn resolve_project_media(project_path: &str, source: &str) -> Result<(PathBuf, P
     Ok((project, target))
 }
 
+/// 用户自己拖进来或选中的图片：路径来自本人操作，所以允许符号链接，
+/// 但仍然按普通文件、8MB 上限和魔数逐项校验，不认扩展名。
+pub fn read_attachment_image(path: &str) -> Result<ConversationMedia, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > MAX_MEDIA_SOURCE_CHARS {
+        return Err("图片路径无效".into());
+    }
+    if trimmed.chars().any(|ch| ch.is_control()) {
+        return Err("图片路径无效".into());
+    }
+    let file = fs::File::open(Path::new(trimmed)).map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("这不是一个普通文件".into());
+    }
+    if metadata.len() as usize > MAX_INLINE_IMAGE_BYTES {
+        return Err("单张图片不能超过 8MB".into());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
+    file.take(MAX_INLINE_IMAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_INLINE_IMAGE_BYTES {
+        return Err("单张图片不能超过 8MB".into());
+    }
+    let mime = match image_mime(&bytes) {
+        Some(mime @ ("image/png" | "image/jpeg" | "image/gif" | "image/webp")) => mime,
+        _ => return Err("只支持 PNG、JPEG、GIF、WebP 图片".into()),
+    };
+    Ok(ConversationMedia {
+        kind: "image".into(),
+        mime_type: mime.into(),
+        data_url: format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ),
+    })
+}
+
 pub fn read_project_media(project_path: &str, source: &str) -> Result<ConversationMedia, String> {
     let (project, target) = resolve_project_media(project_path, source)?;
     #[cfg(any(unix, windows))]
@@ -479,6 +518,35 @@ mod tests {
         )
         .unwrap();
         assert!(read_project_media(project.path().to_str().unwrap(), "not-an-image.png").is_err());
+    }
+
+    #[test]
+    fn attachment_image_checks_type_size_and_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&[0u8; 32]);
+        std::fs::write(&png, &bytes).unwrap();
+        let media = read_attachment_image(png.to_str().unwrap()).unwrap();
+        assert_eq!(media.kind, "image");
+        assert_eq!(media.mime_type, "image/png");
+        assert!(media.data_url.starts_with("data:image/png;base64,"));
+
+        // 扩展名骗不过魔数
+        let fake = dir.path().join("fake.png");
+        std::fs::write(&fake, b"not an image at all").unwrap();
+        assert!(read_attachment_image(fake.to_str().unwrap()).is_err());
+
+        // 目录、空路径和控制字符一律拒绝
+        assert!(read_attachment_image(dir.path().to_str().unwrap()).is_err());
+        assert!(read_attachment_image("   ").is_err());
+        assert!(read_attachment_image("/tmp/a\u{0}b.png").is_err());
+
+        let oversized = dir.path().join("big.png");
+        let mut huge = b"\x89PNG\r\n\x1a\n".to_vec();
+        huge.resize(MAX_INLINE_IMAGE_BYTES + 2, 0);
+        std::fs::write(&oversized, &huge).unwrap();
+        assert!(read_attachment_image(oversized.to_str().unwrap()).is_err());
     }
 
     #[test]

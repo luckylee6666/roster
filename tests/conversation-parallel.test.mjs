@@ -154,6 +154,7 @@ const IDS = [
   'conversation-changes-list',
   'conversation-changes-count',
   'conversation-scroll-bottom',
+  'conversation-attach-image',
   'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
@@ -178,6 +179,8 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
   const invokes = [];
   const toasts = [];
   let changedFiles = [{ status: 'M', path: 'src/a.js' }];
+  let pickedImages = [];
+  const tauriListeners = {};
   const chatEvents = [];
   const values = new Map();
   const document = {
@@ -210,10 +213,16 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
       if (command === 'conversation_chat_start') return null;
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
+      if (command === 'pick_attachment_images') return pickedImages;
+      if (command === 'read_conversation_attachment_image') {
+        if (!/\.(png|jpe?g|gif|webp)$/i.test(payload.path)) throw new Error('只支持 PNG、JPEG、GIF、WebP 图片');
+        return { kind: 'image', mimeType: 'image/png', dataUrl: `data:image/png;base64,AAAA${payload.path.length}` };
+      }
       return null;
     },
-    listen: async (_name, handler) => {
-      emit = payload => handler({ payload });
+    listen: async (name, handler) => {
+      (tauriListeners[name] = tauriListeners[name] || []).push(handler);
+      if (name === 'conversation-chat-event') emit = payload => handler({ payload });
       return () => {};
     },
     notify: (message, level) => toasts.push({ message, level }),
@@ -234,6 +243,8 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
     el: id => byId.get(id),
     emit: payload => emit(payload),
     setChanges: files => { changedFiles = files; },
+    setPickedImages: paths => { pickedImages = paths; },
+    fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
     key: ({ appView: view, ...init }) => {
       const root = document.documentElement.dataset;
       const previous = root.appView;
@@ -651,4 +662,33 @@ test('⌘K 聚焦项目搜索，⌘⇧N 在当前项目开新对话', async t =>
   const before = focused;
   fx.key({ key: 'k', metaKey: true, appView: 'developer' });
   assert.equal(focused, before, '开发模式下不抢这两个快捷键');
+});
+
+test('可以选文件或拖进来加图片，非图片和超量都挡住', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const thumbs = () => fx.el('conversation-attachments').childNodes.length;
+
+  fx.setPickedImages(['/tmp/one.png', '/tmp/two.jpeg']);
+  fire(fx.el('conversation-attach-image'), 'click');
+  await flush();
+  assert.equal(thumbs(), 2, '选中的两张都进了待发送区');
+
+  fx.fireTauri('tauri://drag-drop', { paths: ['/tmp/notes.txt'] });
+  await flush();
+  assert.equal(thumbs(), 2, '非图片不进来');
+  assert.ok(fx.toasts.some(toast => /只支持 PNG/.test(toast.message)));
+
+  fx.fireTauri('tauri://drag-drop', { paths: ['/tmp/c.png', '/tmp/d.png', '/tmp/e.png'] });
+  await flush();
+  assert.equal(thumbs(), 4, '一条消息最多四张');
+  assert.ok(fx.toasts.some(toast => /最多附带 4 张图片/.test(toast.message)));
+});
+
+test('拖放只在对话工作台响应，开发模式下不接管', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], appView: 'developer', t });
+  await flush();
+  fx.fireTauri('tauri://drag-drop', { paths: ['/tmp/one.png'] });
+  await flush();
+  assert.equal(fx.el('conversation-attachments').childNodes.length, 0);
 });

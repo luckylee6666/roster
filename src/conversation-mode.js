@@ -22,6 +22,7 @@ import {
   validateConversationModel,
 } from './conversation-slash.js';
 import {
+  CONVERSATION_ATTACHMENT_LIMITS,
   conversationHistoryKey,
   conversationProvider,
   conversationProviderOptions,
@@ -363,6 +364,8 @@ export function installConversationMode({
     scrollBottom: document.getElementById('conversation-scroll-bottom'),
     composer: document.getElementById('conversation-composer'),
     attachments: document.getElementById('conversation-attachments'),
+    attachImage: document.getElementById('conversation-attach-image'),
+    composerBox: document.querySelector('.conversation-composer-box'),
     imagePreview: document.getElementById('conversation-image-preview'),
     addProject: document.getElementById('conversation-add-project'),
     createOverlay: document.getElementById('conversation-create-overlay'),
@@ -411,6 +414,7 @@ export function installConversationMode({
   let contextRevision = 0;
   let destroyed = false;
   let unlisten = null;
+  const dragUnlisteners = [];
   let listenerReady = false;
   let listenerError = '';
   let renderTimer = null;
@@ -1477,6 +1481,7 @@ export function installConversationMode({
     if (dom.writeAccess) dom.writeAccess.disabled = unavailable || busy;
     if (dom.snippetSelect) dom.snippetSelect.disabled = busy || deleting || !selectedProject || snippets.length === 0;
     if (dom.manageSnippets) dom.manageSnippets.disabled = busy || !onManageSnippets;
+    if (dom.attachImage) dom.attachImage.disabled = unavailable || busy || deleting;
     if (dom.newChat) {
       const showNewChat = Boolean(selectedProject && conversationHasOpenSession(state));
       dom.newChat.hidden = !showNewChat;
@@ -1853,6 +1858,47 @@ export function installConversationMode({
       thumb.append(image, remove);
       target.append(thumb);
     });
+  }
+
+  const IMAGE_PATH_PATTERN = /\.(?:png|jpe?g|gif|webp)$/i;
+
+  const attachmentDropAllowed = () => Boolean(
+    document.documentElement?.dataset?.appView !== 'developer'
+    && selectedProject
+    && !isRunning()
+    && !dom.composer?.disabled,
+  );
+
+  // 拖进来和选进来的都是本机路径，读取与校验都放在后端；这里只管数量上限。
+  async function addAttachmentPaths(paths) {
+    const candidates = (Array.isArray(paths) ? paths : [])
+      .filter(path => typeof path === 'string' && IMAGE_PATH_PATTERN.test(path.trim()))
+      .slice(0, CONVERSATION_ATTACHMENT_LIMITS.maxCount);
+    if (!candidates.length) {
+      if (Array.isArray(paths) && paths.length) notify?.('只支持 PNG、JPEG、GIF、WebP 图片', 'error');
+      return;
+    }
+    for (const path of candidates) {
+      if (pendingAttachments.length >= CONVERSATION_ATTACHMENT_LIMITS.maxCount) {
+        notify?.(`一条消息最多附带 ${CONVERSATION_ATTACHMENT_LIMITS.maxCount} 张图片`, 'error');
+        break;
+      }
+      try {
+        const media = await invoke('read_conversation_attachment_image', { path });
+        if (destroyed) return;
+        const dataUrl = String(media?.dataUrl || '');
+        if (!dataUrl.startsWith('data:image/')) continue;
+        pendingAttachments = [...pendingAttachments, {
+          id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          mime: String(media.mimeType || '').trim().toLowerCase(),
+          dataUrl,
+        }];
+        renderPendingAttachments();
+      } catch (error) {
+        notify?.(`添加图片失败：${error?.message || error}`, 'error');
+      }
+    }
+    renderControls();
   }
 
   function addPastedImages(files) {
@@ -2253,6 +2299,14 @@ export function installConversationMode({
     syncComposer();
   });
   dom.manageSnippets?.addEventListener('click', () => onManageSnippets?.());
+  dom.attachImage?.addEventListener('click', async () => {
+    if (dom.attachImage.disabled) return;
+    try {
+      await addAttachmentPaths(await invoke('pick_attachment_images'));
+    } catch (error) {
+      notify?.(`选择图片失败：${error?.message || error}`, 'error');
+    }
+  });
   dom.composer?.addEventListener('input', () => {
     slashDismissed = false;
     syncComposer();
@@ -2323,6 +2377,29 @@ export function installConversationMode({
       });
     }
   });
+
+  // Tauri 的原生拖放会吞掉 DOM drop 事件，所以走 tauri:// 这组事件；
+  // 开发模式的终端拖放监听在对话视图下命中不到目标，两边不会打架。
+  if (typeof listen === 'function') {
+    const markDropTarget = on => {
+      dom.composerBox?.classList?.[on ? 'add' : 'remove']('is-drop-target');
+    };
+    ['tauri://drag-enter', 'tauri://drag-over'].forEach(name => {
+      void listen(name, () => markDropTarget(attachmentDropAllowed()))
+        .then(stop => { if (destroyed) stop?.(); else dragUnlisteners.push(stop); })
+        .catch(() => {});
+    });
+    void listen('tauri://drag-leave', () => markDropTarget(false))
+      .then(stop => { if (destroyed) stop?.(); else dragUnlisteners.push(stop); })
+      .catch(() => {});
+    void listen('tauri://drag-drop', event => {
+      markDropTarget(false);
+      if (!attachmentDropAllowed()) return;
+      void addAttachmentPaths(event?.payload?.paths);
+    })
+      .then(stop => { if (destroyed) stop?.(); else dragUnlisteners.push(stop); })
+      .catch(() => {});
+  }
 
   if (typeof listen === 'function') {
     void listen('conversation-chat-event', event => handleEvent(event?.payload)).then(stopListening => {
@@ -2403,6 +2480,7 @@ export function installConversationMode({
       contextRevision += 1;
       slashRevision += 1;
       document.removeEventListener?.('keydown', onWorkspaceKeydown);
+      dragUnlisteners.splice(0).forEach(stop => stop?.());
       if (renderTimer !== null) clearTimeout(renderTimer);
       if (elapsedTimer !== null) clearInterval(elapsedTimer);
       elapsedTimer = null;
