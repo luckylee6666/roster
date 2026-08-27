@@ -25,6 +25,9 @@ All notable changes to this project are documented here. 本项目的更新记�
 - The assistant picker is wider and carries the full model and effort in its tooltip, so long model names are no longer cut off.
 - The rail's plan section is no longer Codex-only: Claude, Grok, agy, and Qwen surface their todo tool as processing steps, with the step text and a coarse status crossing the boundary and nothing of the raw tool input.
 - After a turn that was allowed to modify the project, the rail lists what actually changed on disk — file plus New / Modified / Deleted / Committed-or-reverted — diffed from Git before and after the turn rather than from what the CLI claimed. Git caps the listing at 20 files, and a truncated snapshot is labelled as partial.
+**Tests**
+- Frontend suite: 393 tests. Rust suite: 146 tests, adding the parallel-project run registry, incremental transcript rendering, message and code copy, dark-mode tokens, drag-and-drop and picked image validation, in-conversation search, project-file mentions with a bounded symlink-safe walk, the post-write change report, todo-driven plan events, retry after failure, history filtering and renaming, and first-run guidance.
+
 
 ### 中文
 
@@ -47,6 +50,9 @@ All notable changes to this project are documented here. 本项目的更新记�
 - 助手选择器加宽，并在悬停提示里给出完整模型与推理强度，长模型名不再被截断。
 - 右栏的「处理步骤」不再只有 Codex 有数据：Claude、Grok、agy 与 Qwen 的待办工具会转成处理步骤，只透出步骤文字和粗粒度状态，不带任何原始工具参数。
 - 勾选「允许修改项目」的一轮结束后，右栏列出磁盘上真正变化的文件，并标注新增 / 修改 / 删除 / 已提交或还原。清单来自本轮前后的 Git 对比，而不是 CLI 自己的说法；Git 最多返回 20 个文件，快照被截断时会明确标为部分。
+
+**测试**
+- 前端 393 项、Rust 146 项；新增多项目并行运行登记、消息节点复用、消息与代码复制、深色令牌、拖入与选中图片校验、对话内搜索、`@` 项目文件的有界安全扫描、写入轮改动清单、待办转处理步骤、失败重试、历史筛选与改名，以及首次使用引导。
 
 ## v1.3.0
 
