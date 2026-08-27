@@ -466,6 +466,13 @@ export function installConversationMode({
     snippetSelect: document.getElementById('conversation-snippet-select'),
     handoffNote: document.getElementById('conversation-handoff-note'),
     modeSelect: document.getElementById('conversation-mode-select'),
+    handoff: document.getElementById('conversation-handoff'),
+    assistantOverlay: document.getElementById('conversation-assistant-overlay'),
+    assistantTitle: document.getElementById('conversation-assistant-title'),
+    assistantHint: document.getElementById('conversation-assistant-hint'),
+    assistantList: document.getElementById('conversation-assistant-list'),
+    assistantClose: document.getElementById('conversation-assistant-close'),
+    assistantCancel: document.getElementById('conversation-assistant-cancel'),
     safetyNote: document.getElementById('conversation-safety-note'),
     send: document.getElementById('conversation-send'),
     stop: document.getElementById('conversation-stop'),
@@ -1150,10 +1157,14 @@ export function installConversationMode({
       dom.providerSelect.appendChild(option);
     }
     dom.providerSelect.value = current.id;
-    dom.providerSelect.title = [current.label, providerModels[current.id], providerEfforts[current.id]]
-      .filter(Boolean)
-      .join(' · ');
-    dom.providerSelect.disabled = isRunning() || options.length === 0;
+    const started = conversationHasOpenSession(state);
+    dom.providerSelect.title = started
+      ? `这条对话由 ${current.label} 负责，开始后不再更换；要换人请用「交接」`
+      : [current.label, providerModels[current.id], providerEfforts[current.id]]
+        .filter(Boolean)
+        .join(' · ');
+    // 会话属于某一家 CLI，开启之后就不能中途改嫁。
+    dom.providerSelect.disabled = started || isRunning() || options.length === 0;
   }
 
   function providerConnectionLabel() {
@@ -1965,6 +1976,11 @@ export function installConversationMode({
     }
     if (dom.composer) dom.composer.disabled = unavailable;
     if (dom.modeSelect) dom.modeSelect.disabled = unavailable || busy || !currentModeEntries().length;
+    if (dom.handoff) {
+      const started = conversationHasOpenSession(state);
+      dom.handoff.hidden = !started;
+      dom.handoff.disabled = busy || deleting || runnableProviders().length < 2;
+    }
     if (dom.snippetSelect) {
       dom.snippetSelect.disabled = busy || deleting || !selectedProject
         || (snippets.length === 0 && !onManageSnippets);
@@ -1980,7 +1996,13 @@ export function installConversationMode({
       dom.exportChat.hidden = !exportable;
       dom.exportChat.disabled = busy || !exportable;
     }
-    if (dom.providerSelect) dom.providerSelect.disabled = busy || installedCliIds === null || runnableProviders().length === 0;
+    if (dom.providerSelect) {
+      // 与 renderProviderPicker 保持同一口径：对话开启后助手就锁定了。
+      dom.providerSelect.disabled = busy
+        || conversationHasOpenSession(state)
+        || installedCliIds === null
+        || runnableProviders().length === 0;
+    }
     if (dom.openFolder) dom.openFolder.disabled = !selectedProject;
     if (dom.refreshProject) dom.refreshProject.disabled = !selectedProject || contextLoading;
     dom.starters?.childNodes?.forEach?.(button => { button.disabled = unavailable || busy || deleting; });
@@ -2285,7 +2307,7 @@ export function installConversationMode({
       invalidateHistory?.(project.localPath);
       const selectedKey = activeHistoryKey();
       if (selectedKey === session.key && isRunning()) deleteAfterRun.set(project.id, session.key);
-      else if (selectedKey === session.key) newChat();
+      else if (selectedKey === session.key) resetChat();
       else await refreshHistory();
       notify?.('历史对话已删除', 'success');
     } catch (error) {
@@ -2389,7 +2411,77 @@ export function installConversationMode({
     return true;
   }
 
+  // 一条对话属于哪家 CLI，是它的会话 ID、沙箱绑定和历史文件共同决定的。
+  // 所以助手只在对话尚未开启时可选；开启之后要换人只能走交接（另开一条）。
+  function openAssistantPicker({ title, hint, exclude = '', onPick }) {
+    const overlay = dom.assistantOverlay;
+    if (!overlay || !dom.assistantList) return;
+    const options = runnableProviders().filter(provider => provider.id !== exclude);
+    if (!options.length) {
+      notify?.('本机没有其他可用的助手', 'info');
+      return;
+    }
+    if (dom.assistantTitle) dom.assistantTitle.textContent = title;
+    if (dom.assistantHint) dom.assistantHint.textContent = hint;
+    dom.assistantList.replaceChildren();
+    options.forEach(provider => {
+      const row = element(document, 'button', 'conversation-assistant-item');
+      row.type = 'button';
+      row.dataset.tool = provider.id;
+      const badge = element(document, 'span', 'conversation-history-tool', provider.label);
+      badge.dataset.tool = provider.id;
+      const copy = element(document, 'span', 'conversation-assistant-copy');
+      copy.append(
+        element(document, 'strong', '', provider.label),
+        element(document, 'small', '', [providerModels[provider.id], providerEfforts[provider.id]]
+          .filter(Boolean)
+          .join(' · ') || '本机已安装'),
+      );
+      row.append(badge, copy);
+      row.addEventListener('click', () => {
+        closeAssistantPicker();
+        onPick(provider.id);
+      });
+      dom.assistantList.appendChild(row);
+    });
+    overlay.classList.add('active');
+    dom.assistantList.querySelector?.('button')?.focus?.();
+  }
+
+  function closeAssistantPicker() {
+    dom.assistantOverlay?.classList.remove('active');
+  }
+
+  function startChatWith(providerId) {
+    if (!selectedProject || isRunning()) return;
+    changeReports.delete(selectedProject.id);
+    resumeLatestOnHistory = false;
+    transcriptRevision += 1;
+    state = createConversationState({
+      projectId: selectedProject.id,
+      providerId: providerId || providerForNewChat(),
+    });
+    conversationStates.set(selectedProject.id, state);
+    persistSelection();
+    renderState();
+    void refreshHistory();
+    void refreshSlashCommands();
+    void refreshModeOptions();
+    dom.composer?.focus();
+  }
+
   function newChat() {
+    if (!selectedProject || isRunning()) return;
+    openAssistantPicker({
+      title: '新对话用哪个助手？',
+      hint: '一条对话固定由一个助手负责；开始之后要换人得走交接，会另开一条。',
+      onPick: startChatWith,
+    });
+    return;
+  }
+
+  /** 程序内部触发的重置：沿用当前助手，不打断用户弹窗。 */
+  function resetChat() {
     if (!selectedProject || isRunning()) return;
     changeReports.delete(selectedProject.id);
     resumeLatestOnHistory = false;
@@ -2801,7 +2893,7 @@ export function installConversationMode({
       renderState();
       renderProjects();
     }
-    if (deleteAfterRun.delete(entry.projectId)) newChat();
+    if (deleteAfterRun.delete(entry.projectId)) resetChat();
     void refreshUsage({ force: true });
     announceFinishedRun(entry, finalState);
   }
@@ -2910,6 +3002,21 @@ export function installConversationMode({
     }
   });
   dom.providerSelect?.addEventListener('change', () => selectProvider(dom.providerSelect.value));
+  dom.handoff?.addEventListener('click', () => {
+    if (dom.handoff.disabled) return;
+    const source = currentProvider();
+    openAssistantPicker({
+      title: '让谁接手这段对话？',
+      hint: `会在目标助手那边新开一条对话，带上最近 24 条正文；${source.label} 的会话保持不动。`,
+      exclude: source.id,
+      onPick: selectProvider,
+    });
+  });
+  dom.assistantClose?.addEventListener('click', closeAssistantPicker);
+  dom.assistantCancel?.addEventListener('click', closeAssistantPicker);
+  dom.assistantOverlay?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeAssistantPicker();
+  });
   dom.modeSelect?.addEventListener('change', () => {
     if (dom.modeSelect.disabled) return;
     const picked = String(dom.modeSelect.value || '').trim();

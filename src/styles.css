@@ -6944,6 +6944,65 @@ html[data-app-view="developer"] #conversation-surface {
   white-space: nowrap;
 }
 
+.conversation-assistant-hint {
+  margin: 0 0 10px;
+  color: var(--chat-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.conversation-assistant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.conversation-assistant-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  appearance: none;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 9px;
+  background: var(--chat-panel);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-assistant-item:hover,
+.conversation-assistant-item:focus-visible {
+  border-color: var(--chat-accent-line);
+  background: var(--chat-accent-soft);
+}
+
+.conversation-assistant-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.conversation-assistant-copy strong {
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.conversation-assistant-copy small {
+  overflow: hidden;
+  color: var(--chat-faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-provider-select-wrap select:disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
 .conversation-mode-picker {
   display: flex;
   flex: none;

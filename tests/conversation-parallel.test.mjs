@@ -154,6 +154,11 @@ const IDS = [
   'conversation-composer',
   'conversation-attachments',
   'conversation-mode-select',
+  'conversation-handoff',
+  'conversation-assistant-overlay',
+  'conversation-assistant-list',
+  'conversation-assistant-title',
+  'conversation-assistant-hint',
   'conversation-send',
   'conversation-stop',
   'conversation-composer-hint',
@@ -708,7 +713,11 @@ test('⌘K 聚焦项目搜索，⌘⇧N 在当前项目开新对话', async t =>
   assert.ok(fx.el('conversation-messages').childNodes.length > 0);
   fx.key({ key: 'n', metaKey: true, shiftKey: true });
   await flush();
-  assert.equal(fx.el('conversation-messages').childNodes.length, 0, '开了新对话，消息清空');
+  const picker = fx.el('conversation-assistant-list');
+  assert.ok(picker.childNodes.length > 0, '先问用哪个助手');
+  fire(picker.childNodes[0], 'click');
+  await flush();
+  assert.equal(fx.el('conversation-messages').childNodes.length, 0, '选完助手才开新对话');
 
   const before = focused;
   fx.key({ key: 'k', metaKey: true, appView: 'developer' });
@@ -1151,4 +1160,33 @@ test('换助手时旧的模式表立刻失效，不会把别家的档位发出�
   fire(fx.el('conversation-send'), 'click');
   await flush();
   assert.equal(fx.startedRuns().pop().mode, '', '发出去的绝不能是别家的模式 ID');
+});
+
+test('对话一开始就锁定助手，要换人只能走交接', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+  const providerSelect = fx.el('conversation-provider-select');
+  const handoff = fx.el('conversation-handoff');
+  assert.equal(providerSelect.disabled, false, '还没开始时可以挑助手');
+  assert.equal(handoff.hidden, true, '没开始就没有交接可言');
+
+  await fx.send('第一句');
+  const run = fx.startedRuns()[0];
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'thread', data: { threadId: 'sess-1' } });
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+
+  assert.equal(providerSelect.disabled, true, '开启之后助手锁定');
+  assert.match(providerSelect.title, /开始后不再更换/);
+  assert.equal(handoff.hidden, false, '这时才给交接入口');
+
+  fire(handoff, 'click');
+  const list = fx.el('conversation-assistant-list');
+  const offered = list.childNodes.map(node => node.dataset.tool);
+  assert.ok(!offered.includes(run.providerId), '交接目标里不该有自己');
+  assert.match(fx.el('conversation-assistant-hint').textContent, /新开一条对话/);
+
+  fire(list.childNodes[0], 'click');
+  await flush();
+  assert.equal(fx.el('conversation-handoff-note').hidden, false, '选完目标要出交接说明');
 });

@@ -59,6 +59,10 @@ function fixture({ history, composerValue = '' } = {}) {
     'conversation-composer',
     'conversation-new-chat',
     'conversation-mode-select',
+    'conversation-assistant-overlay',
+    'conversation-assistant-list',
+    'conversation-assistant-title',
+    'conversation-assistant-hint',
   ].forEach(ensure);
   ensure('conversation-composer').value = composerValue;
 
@@ -89,10 +93,13 @@ function fixture({ history, composerValue = '' } = {}) {
         };
       }
       if (command === 'project_context') return { context: { branch: 'main' } };
+      if (command === 'conversation_mode_list') return [];
       throw new Error(command);
     },
     loadHistory: async () => history,
   });
+
+  controller.setInstalledCliIds(['claude', 'grok', 'codex']);
 
   return {
     controller,
@@ -100,6 +107,7 @@ function fixture({ history, composerValue = '' } = {}) {
     storage,
     composer: ensure('conversation-composer'),
     newChat: ensure('conversation-new-chat'),
+    assistantList: ensure('conversation-assistant-list'),
   };
 }
 
@@ -151,7 +159,12 @@ test('输入框已有草稿或点了新对话时，不会把自动续接盖上�
   fresh.controller.setProjects([project]);
   await flush();
   assert.equal(fresh.previews.length, 1);
+  // 新对话先问用哪个助手，选中之后才真的开一条空白对话。
   fresh.newChat.listeners.click();
+  await flush();
+  assert.ok(fresh.assistantList.children.length > 0, '应先弹出助手选择');
+  assert.equal(fresh.newChat.hidden, false, '还没选之前不算开了新对话');
+  fresh.assistantList.children[0].listeners.click();
   await flush();
   assert.equal(fresh.previews.length, 1);
   assert.equal(fresh.newChat.hidden, true);
