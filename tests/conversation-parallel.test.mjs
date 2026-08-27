@@ -167,6 +167,7 @@ const IDS = [
   'conversation-search-close',
   'conversation-mention-menu',
   'conversation-usage',
+  'conversation-snippet-select',
   'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
@@ -216,6 +217,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
   };
   let emit = () => {};
   const docListeners = {};
+  const manageOpens = [];
   const controller = installConversationMode({
     document,
     storage: {
@@ -251,6 +253,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
     notify: (message, level) => toasts.push({ message, level }),
     loadHistory: async () => ({ groups: [] }),
     invalidateHistory: () => {},
+    onManageSnippets: () => { manageOpens.push(Date.now()); },
   });
   controller.setProjects(projects);
   controller.setInstalledCliIds(installed);
@@ -267,6 +270,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
     emit: payload => emit(payload),
     setChanges: files => { changedFiles = files; },
     setPickedImages: paths => { pickedImages = paths; },
+    manageOpens,
     fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
     key: ({ appView: view, ...init }) => {
       const root = document.documentElement.dataset;
@@ -876,4 +880,51 @@ test('侧栏显示当前助手的限流用量，换到没有用量的助手就�
     1,
     '只在需要时查一次，不轮询',
   );
+});
+
+test('失败后能一键把原消息和图片放回输入框，失败的空气泡不显示', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.setPickedImages(['/tmp/one.png']);
+  fire(fx.el('conversation-attach-image'), 'click');
+  await flush();
+  await fx.send('这条会失败');
+  assert.equal(fx.el('conversation-attachments').childNodes.length, 0, '发出去后待发区清空');
+
+  const run = fx.startedRuns()[0];
+  fx.emit({
+    runId: run.runId,
+    providerId: run.providerId,
+    kind: 'error',
+    data: { message: 'Grok 退出：未登录' },
+  });
+  await flush();
+
+  const rows = fx.el('conversation-messages').childNodes;
+  const labels = rows.map(row => row.childNodes[0]?.childNodes?.[0]?.textContent);
+  assert.ok(!labels.includes('Grok'), '失败留下的空助手气泡不渲染');
+  const alert = rows[rows.length - 1];
+  const retry = alert.childNodes.find(node => node.textContent === '重试这条');
+  assert.ok(retry, '失败后要有重试入口');
+
+  fire(retry, 'click');
+  assert.equal(fx.el('conversation-composer').value, '这条会失败');
+  assert.equal(fx.el('conversation-attachments').childNodes.length, 1, '图片一起放回来');
+  assert.equal(fx.startedRuns().length, 1, '只填输入框，不自动重发');
+});
+
+test('片段下拉自带管理入口，选它只开弹窗不插内容', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.controller.setSnippets([{ id: 's1', title: '片段一', content: '内容一' }]);
+  const select = fx.el('conversation-snippet-select');
+  assert.deepEqual(
+    select.childNodes.map(node => node.textContent),
+    ['常用片段', '片段一', '管理片段…'],
+  );
+  select.value = '__manage__';
+  fire(select, 'change');
+  assert.equal(fx.el('conversation-composer').value, '', '管理项不插入正文');
+  assert.equal(select.value, '');
+  assert.equal(fx.manageOpens.length, 1, '打开的是片段管理弹窗');
 });

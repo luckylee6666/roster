@@ -67,6 +67,8 @@ export function inspectConversationPrompt(value) {
   };
 }
 
+const MANAGE_SNIPPETS_VALUE = '__manage__';
+
 const BASE_CONVERSATION_STARTERS = [
   { label: '梳理项目现状', prompt: '帮我看看这个项目目前做到哪里了，并给出下一步建议' },
   { label: '整理下一步计划', prompt: '阅读这个项目，帮我把接下来要做的事情整理成清晰计划' },
@@ -435,7 +437,6 @@ export function installConversationMode({
     slashMenu: document.getElementById('conversation-slash-menu'),
     mentionMenu: document.getElementById('conversation-mention-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
-    manageSnippets: document.getElementById('conversation-manage-snippets'),
     handoffNote: document.getElementById('conversation-handoff-note'),
     writeAccess: document.getElementById('conversation-write-access'),
     safetyNote: document.getElementById('conversation-safety-note'),
@@ -477,6 +478,7 @@ export function installConversationMode({
   let elapsedTimer = null;
   let inlineAlert = null;
   let inlineResume = null;
+  let inlineRetry = null;
   let searchOpen = false;
   let searchIndex = 0;
   let mentionFiles = [];
@@ -1248,6 +1250,24 @@ export function installConversationMode({
     return tools;
   }
 
+  function restoreFailedPrompt() {
+    const failed = [...state.messages].reverse().find(message => message.role === 'user');
+    if (!dom.composer || !failed) return;
+    dom.composer.value = String(failed.text || '');
+    const images = (Array.isArray(failed.attachments) ? failed.attachments : [])
+      .filter(item => item?.kind === 'image' && String(item.dataUrl || '').startsWith('data:image/'))
+      .slice(0, CONVERSATION_ATTACHMENT_LIMITS.maxCount)
+      .map((item, index) => ({
+        id: `retry-${Date.now()}-${index}`,
+        mime: String(item.mime || item.mimeType || '').toLowerCase(),
+        dataUrl: item.dataUrl,
+      }));
+    pendingAttachments = images;
+    renderPendingAttachments();
+    dom.composer.focus();
+    syncComposer();
+  }
+
   function inlineAlertNode() {
     const text = state.error || state.notice;
     if (!text) {
@@ -1266,6 +1286,20 @@ export function installConversationMode({
     // 停止不会让已产出的内容作废，所以给一条明确的接着聊的路。
     const resumable = state.status === 'cancelled'
       && state.messages.some(message => message.role === 'assistant' && message.text);
+    // 失败最常见的原因是没登录或参数不对，修好之后不该让人重打一遍消息。
+    const retryable = state.status === 'failed'
+      && state.messages.some(message => message.role === 'user' && String(message.text || '').trim());
+    if (retryable) {
+      if (!inlineRetry) {
+        inlineRetry = element(document, 'button', 'conversation-inline-resume', '重试这条');
+        inlineRetry.type = 'button';
+        inlineRetry.title = '把刚才那条消息和图片放回输入框，由你确认后重发';
+        inlineRetry.addEventListener('click', () => restoreFailedPrompt());
+      }
+      if (inlineRetry.parentElement !== inlineAlert) inlineAlert.appendChild(inlineRetry);
+    } else if (inlineRetry?.parentElement === inlineAlert) {
+      inlineAlert.removeChild(inlineRetry);
+    }
     if (resumable) {
       if (!inlineResume) {
         inlineResume = element(document, 'button', 'conversation-inline-resume', '接着刚才继续');
@@ -1301,8 +1335,15 @@ export function installConversationMode({
       || scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 120;
     const empty = state.messages.length === 0 && !state.notice && !state.error;
     dom.empty.hidden = !empty;
+    // 失败的一轮会留下一个没有正文的助手气泡，只显示一个名字，属于噪音。
+    const visible = state.messages.filter(message => (
+      message.role !== 'assistant'
+      || message.pending
+      || String(message.text || '').trim()
+      || message.attachments?.length
+    ));
     const live = new Set();
-    const nodes = state.messages.map(message => {
+    const nodes = visible.map(message => {
       live.add(`${state.projectId || ''}\u0000${String(message.id || '')}`);
       return messageNodeFor(message);
     });
@@ -1691,6 +1732,11 @@ export function installConversationMode({
       option.value = String(snippet.id || '');
       dom.snippetSelect.appendChild(option);
     });
+    if (onManageSnippets) {
+      const manage = element(document, 'option', '', '管理片段…');
+      manage.value = MANAGE_SNIPPETS_VALUE;
+      dom.snippetSelect.appendChild(manage);
+    }
     dom.snippetSelect.value = '';
   }
 
@@ -1738,8 +1784,10 @@ export function installConversationMode({
     }
     if (dom.composer) dom.composer.disabled = unavailable;
     if (dom.writeAccess) dom.writeAccess.disabled = unavailable || busy;
-    if (dom.snippetSelect) dom.snippetSelect.disabled = busy || deleting || !selectedProject || snippets.length === 0;
-    if (dom.manageSnippets) dom.manageSnippets.disabled = busy || !onManageSnippets;
+    if (dom.snippetSelect) {
+      dom.snippetSelect.disabled = busy || deleting || !selectedProject
+        || (snippets.length === 0 && !onManageSnippets);
+    }
     if (dom.attachImage) dom.attachImage.disabled = unavailable || busy || deleting;
     if (dom.newChat) {
       const showNewChat = Boolean(selectedProject && conversationHasOpenSession(state));
@@ -1777,8 +1825,6 @@ export function installConversationMode({
                     ? `${provider.label} 正在处理；可继续输入，完成后再发送`
                     : promptState.tooLong
                       ? promptTooLongMessage(promptState.byteLength)
-                      : [currentModel(), currentEffort()].filter(Boolean).length
-                      ? `Enter 发送，Shift + Enter 换行 · ${[currentModel(), currentEffort()].filter(Boolean).join(' · ')}`
                       : 'Enter 发送，Shift + Enter 换行';
     }
   }
@@ -2600,6 +2646,11 @@ export function installConversationMode({
   });
   dom.providerSelect?.addEventListener('change', () => selectProvider(dom.providerSelect.value));
   dom.snippetSelect?.addEventListener('change', () => {
+    if (dom.snippetSelect.value === MANAGE_SNIPPETS_VALUE) {
+      dom.snippetSelect.value = '';
+      onManageSnippets?.();
+      return;
+    }
     const snippet = snippets.find(item => String(item.id || '') === dom.snippetSelect.value);
     dom.snippetSelect.value = '';
     if (!snippet || !dom.composer || isRunning()) return;
@@ -2609,7 +2660,6 @@ export function installConversationMode({
     dom.composer.focus();
     syncComposer();
   });
-  dom.manageSnippets?.addEventListener('click', () => onManageSnippets?.());
   dom.attachImage?.addEventListener('click', async () => {
     if (dom.attachImage.disabled) return;
     try {
