@@ -658,7 +658,9 @@ export function installConversationMode({
   let providerModels = {};
   let providerEfforts = {};
   let providerModes = {};
-  let modeOptions = [];
+  // 模式表必须带上它属于哪个助手：换助手时异步请求还没回来，旧表绝不能
+  // 被当成新助手的表渲染，更不能让用户在这个空档里选中别家的档位。
+  let modeOptions = { providerId: '', entries: [] };
   let modeRevision = 0;
   try {
     const storedModels = JSON.parse(storage?.getItem(MODEL_STORAGE_KEY) || 'null');
@@ -755,27 +757,44 @@ export function installConversationMode({
     } catch (_) {}
   }
 
-  const currentMode = () => String(providerModes[currentProvider().id] || '').trim();
-
-  const currentModeWrites = () => Boolean(
-    modeOptions.find(entry => entry.id === currentMode())?.writes,
+  const currentModeEntries = () => (
+    modeOptions.providerId === currentProvider().id ? modeOptions.entries : []
   );
+
+  /** 存着的档位必须是当前助手真有的，否则当作没选过。 */
+  const currentMode = () => {
+    const stored = String(providerModes[currentProvider().id] || '').trim();
+    return currentModeEntries().some(entry => entry.id === stored) ? stored : '';
+  };
+
+  const currentModeEntry = () => {
+    const entries = currentModeEntries();
+    const stored = currentMode();
+    return entries.find(entry => entry.id === stored) || entries[0] || null;
+  };
+
+  const currentModeWrites = () => Boolean(currentModeEntry()?.writes);
 
   // 模式表由后端给，界面不自己维护一份，免得和真正的白名单漂移。
   async function refreshModeOptions() {
     const provider = currentProvider().id;
     const revision = ++modeRevision;
+    // 先清空并改挂到新助手名下，旧表立刻失效，不留可选的空档。
+    modeOptions = { providerId: provider, entries: [] };
+    renderModePicker();
+    renderControls();
     try {
       const options = await invoke('conversation_mode_list', { providerId: provider });
       if (destroyed || revision !== modeRevision) return;
-      modeOptions = Array.isArray(options) ? options : [];
+      modeOptions = { providerId: provider, entries: Array.isArray(options) ? options : [] };
     } catch (_) {
       if (revision !== modeRevision) return;
-      modeOptions = [];
+      modeOptions = { providerId: provider, entries: [] };
     }
-    // 存着的模式如果这家没有（换过 CLI、升级过版本），退回最保守的一档。
-    if (currentMode() && !modeOptions.some(entry => entry.id === currentMode())) {
-      delete providerModes[currentProvider().id];
+    // 存着的档位这家没有（换过 CLI、升级过版本）就丢掉，别留个用不了的值。
+    const stored = String(providerModes[provider] || '').trim();
+    if (stored && !modeOptions.entries.some(entry => entry.id === stored)) {
+      delete providerModes[provider];
       persistProviderModes();
     }
     renderModePicker();
@@ -786,8 +805,9 @@ export function installConversationMode({
     const select = dom.modeSelect;
     if (!select) return;
     const provider = currentProvider();
+    const entries = currentModeEntries();
     select.replaceChildren();
-    if (!modeOptions.length) {
+    if (!entries.length) {
       const option = element(document, 'option', '', '默认');
       option.value = '';
       select.appendChild(option);
@@ -795,15 +815,14 @@ export function installConversationMode({
       if (dom.modeHint) dom.modeHint.textContent = '';
       return;
     }
-    modeOptions.forEach(entry => {
+    entries.forEach(entry => {
       const option = element(document, 'option', '', entry.label);
       option.value = entry.id;
       option.title = `${entry.id} · ${entry.hint}`;
       select.appendChild(option);
     });
-    const active = currentMode() || modeOptions[0].id;
-    select.value = active;
-    const chosen = modeOptions.find(entry => entry.id === active) || modeOptions[0];
+    const chosen = currentModeEntry();
+    select.value = chosen.id;
     select.title = `${provider.label} · ${chosen.id}：${chosen.hint}`;
     select.dataset.writes = chosen.writes ? 'true' : 'false';
   }
@@ -1207,7 +1226,7 @@ export function installConversationMode({
     }
     renderRunStatus();
     if (dom.safetyNote) {
-      const active = modeOptions.find(entry => entry.id === (currentMode() || modeOptions[0]?.id));
+      const active = currentModeEntry();
       dom.safetyNote.textContent = active
         ? `当前用 ${provider.label} 自己的「${active.label}」模式（${active.id}）：${active.hint}。模式由该 CLI 自己执行，Roster 不额外提供系统级隔离。`
         : `${provider.label} 由其自身的默认策略执行，Roster 不额外提供系统级隔离。`;
@@ -1945,7 +1964,7 @@ export function installConversationMode({
       dom.stop.textContent = state.status === 'starting' ? '取消连接' : '停止';
     }
     if (dom.composer) dom.composer.disabled = unavailable;
-    if (dom.modeSelect) dom.modeSelect.disabled = unavailable || busy || !modeOptions.length;
+    if (dom.modeSelect) dom.modeSelect.disabled = unavailable || busy || !currentModeEntries().length;
     if (dom.snippetSelect) {
       dom.snippetSelect.disabled = busy || deleting || !selectedProject
         || (snippets.length === 0 && !onManageSnippets);
@@ -2894,7 +2913,7 @@ export function installConversationMode({
   dom.modeSelect?.addEventListener('change', () => {
     if (dom.modeSelect.disabled) return;
     const picked = String(dom.modeSelect.value || '').trim();
-    if (picked && modeOptions.some(entry => entry.id === picked)) {
+    if (picked && currentModeEntries().some(entry => entry.id === picked)) {
       providerModes[currentProvider().id] = picked;
     } else {
       delete providerModes[currentProvider().id];

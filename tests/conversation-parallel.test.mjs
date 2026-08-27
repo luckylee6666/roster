@@ -1113,3 +1113,42 @@ test('模式选择器只列当前助手有的档，选中后按 provider 记住'
     '换到 Grok 就只剩 Grok 有的档',
   );
 });
+
+test('换助手时旧的模式表立刻失效，不会把别家的档位发出去', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+  const select = fx.el('conversation-mode-select');
+  const providerSelect = fx.el('conversation-provider-select');
+
+  providerSelect.value = 'claude';
+  fire(providerSelect, 'change');
+  await flush();
+  select.value = 'acceptEdits';
+  fire(select, 'change');
+  await flush();
+  assert.equal(select.value, 'acceptEdits');
+
+  // 换到 Grok：异步请求还没回来时，旧表就必须已经不可选了
+  providerSelect.value = 'grok';
+  fire(providerSelect, 'change');
+  assert.deepEqual(
+    select.childNodes.map(node => node.textContent),
+    ['默认'],
+    '请求未回来时不得继续显示上一家的档位',
+  );
+  assert.equal(select.disabled, true);
+
+  await flush();
+  assert.deepEqual(select.childNodes.map(node => node.textContent), ['只读计划']);
+
+  // 就算有人把值塞成别家的档，也不该被接受
+  select.value = 'acceptEdits';
+  fire(select, 'change');
+  await flush();
+  assert.equal(select.value, 'plan', '别家的档位不予采纳');
+
+  fx.el('conversation-composer').value = '你好';
+  fire(fx.el('conversation-send'), 'click');
+  await flush();
+  assert.equal(fx.startedRuns().pop().mode, '', '发出去的绝不能是别家的模式 ID');
+});

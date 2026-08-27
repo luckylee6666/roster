@@ -1813,6 +1813,7 @@ pub fn start(
                 thread_id,
                 prompt,
                 allow_write,
+                mode: mode.id.to_string(),
                 model,
                 effort,
             },

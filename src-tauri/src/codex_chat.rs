@@ -181,6 +181,9 @@ pub struct CodexChatStartInput {
     pub prompt: String,
     #[serde(default)]
     pub allow_write: bool,
+    /// Codex 自己的档位 ID（read-only / approve-for-me）。
+    #[serde(default)]
+    pub mode: String,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -777,6 +780,7 @@ struct ProtocolContext {
     requested_thread_id: String,
     prompt: String,
     allow_write: bool,
+    mode: String,
     model: String,
 }
 
@@ -807,6 +811,7 @@ struct PreparedStart {
     thread_id: String,
     prompt: String,
     allow_write: bool,
+    mode: String,
     model: String,
     effort: String,
     cwd: PathBuf,
@@ -923,8 +928,28 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         requested_thread_id,
         prompt,
         allow_write,
+        mode,
         model,
     } = context;
+
+    // Codex 自己的档位：只读就是纯沙箱只读；「帮我批准」把审批交给它自己的
+    // 自动审核（协议里是 approvalsReviewer=auto_review），无头下不需要人应答。
+    let approve_for_me = allow_write && mode == "approve-for-me";
+    let approval_policy = if approve_for_me {
+        "on-request"
+    } else {
+        "never"
+    };
+    let approvals_reviewer = if approve_for_me {
+        "auto_review"
+    } else {
+        "user"
+    };
+    let sandbox_mode = if allow_write {
+        "workspace-write"
+    } else {
+        "read-only"
+    };
 
     let init = json!({
         "method": "initialize",
@@ -1065,8 +1090,9 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                         "id": 2,
                         "params": {
                             "cwd": cwd,
-                            "approvalPolicy": "never",
-                            "sandbox": if allow_write { "workspace-write" } else { "read-only" },
+                            "approvalPolicy": approval_policy,
+                            "approvalsReviewer": approvals_reviewer,
+                            "sandbox": sandbox_mode,
                             "personality": "friendly",
                             "serviceName": "roster"
                         }
@@ -1078,8 +1104,9 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                         "params": {
                             "threadId": requested_thread_id,
                             "cwd": cwd,
-                            "approvalPolicy": "never",
-                            "sandbox": if allow_write { "workspace-write" } else { "read-only" },
+                            "approvalPolicy": approval_policy,
+                            "approvalsReviewer": approvals_reviewer,
+                            "sandbox": sandbox_mode,
                             "personality": "friendly"
                         }
                     })
@@ -1146,7 +1173,8 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                         "threadId": thread_id,
                         "input": [{ "type": "text", "text": prompt }],
                         "cwd": cwd,
-                        "approvalPolicy": "never",
+                        "approvalPolicy": approval_policy,
+                        "approvalsReviewer": approvals_reviewer,
                         "sandboxPolicy": sandbox_policy,
                         "summary": "concise",
                         "personality": "friendly"
@@ -1329,6 +1357,7 @@ fn start_prepared(
         thread_id,
         prompt,
         allow_write,
+        mode,
         model,
         effort,
         cwd,
@@ -1433,6 +1462,7 @@ fn start_prepared(
         requested_thread_id: thread_id,
         prompt,
         allow_write,
+        mode,
         model,
     };
     std::thread::spawn(move || run_protocol(stdin, stdout, context));
@@ -1480,6 +1510,7 @@ pub fn start(
         thread_id,
         prompt,
         allow_write,
+        mode,
         model,
         effort,
     } = input;
@@ -1511,6 +1542,7 @@ pub fn start(
             thread_id,
             prompt,
             allow_write,
+            mode,
             model,
             effort,
             cwd,
@@ -1545,6 +1577,37 @@ pub fn cancel(state: &CodexChatState, run_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approve_for_me_routes_approvals_to_codex_auto_review() {
+        // 实测过 app-server 接受这三个值并回显；这里固化映射，别再退回
+        // 「一律 never」那种盲跑。
+        for (mode, allow_write, policy, reviewer) in [
+            ("approve-for-me", true, "on-request", "auto_review"),
+            ("read-only", false, "never", "user"),
+            ("", true, "never", "user"),
+        ] {
+            let approve_for_me = allow_write && mode == "approve-for-me";
+            assert_eq!(
+                if approve_for_me {
+                    "on-request"
+                } else {
+                    "never"
+                },
+                policy,
+                "{mode} 的审批策略不对"
+            );
+            assert_eq!(
+                if approve_for_me {
+                    "auto_review"
+                } else {
+                    "user"
+                },
+                reviewer,
+                "{mode} 的审核者不对"
+            );
+        }
+    }
 
     #[test]
     fn concurrent_reservation_starts_only_one_run_per_project() {
@@ -1720,6 +1783,7 @@ mod tests {
                 thread_id: thread_id.to_string(),
                 prompt: "检查项目状态".to_string(),
                 allow_write,
+                mode: String::new(),
                 model: String::new(),
                 effort: String::new(),
                 cwd: cwd.to_path_buf(),
@@ -2155,6 +2219,7 @@ mod tests {
                 thread_id: String::new(),
                 prompt: "检查".into(),
                 allow_write: false,
+                mode: String::new(),
                 model: String::new(),
                 effort: String::new(),
                 cwd: cwd.clone(),
@@ -2171,6 +2236,7 @@ mod tests {
                 thread_id: String::new(),
                 prompt: "检查".into(),
                 allow_write: false,
+                mode: String::new(),
                 model: String::new(),
                 effort: String::new(),
                 cwd,
@@ -2260,6 +2326,7 @@ mod tests {
                 thread_id: String::new(),
                 prompt: "检查项目状态".into(),
                 allow_write: false,
+                mode: String::new(),
                 model: String::new(),
                 effort: String::new(),
                 cwd,
@@ -2309,6 +2376,7 @@ mod tests {
                 thread_id: String::new(),
                 prompt: "检查项目状态".into(),
                 allow_write: false,
+                mode: String::new(),
                 model: String::new(),
                 effort: String::new(),
                 cwd,

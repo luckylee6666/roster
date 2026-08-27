@@ -52,12 +52,16 @@ const GROK_MODES: &[ConversationMode] = &[
     mode("auto", "自动", "由 Grok 自行判断该不该动手", true),
 ];
 
+// Codex 的档位用它自己的说法。「请求批准」(approvalPolicy on-request + reviewer
+// user) 要人应答，无头下没人可问，等审批界面做好再放出来；「完全访问权限」属于
+// 绕过档，不收。「帮我批准」把审批交给 Codex 自己的自动审核，无需人工，已用
+// app-server 协议实测通过。
 const CODEX_MODES: &[ConversationMode] = &[
     mode("read-only", "只读", "只能读项目，写入一律被沙箱挡下", false),
     mode(
-        "workspace-write",
-        "可改工作区",
-        "可以改项目目录里的文件",
+        "approve-for-me",
+        "帮我批准",
+        "可改工作区；风险操作交给 Codex 自动审核，不用你逐条点",
         true,
     ),
 ];
@@ -158,6 +162,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn codex_uses_its_own_named_levels_not_raw_sandbox_values() {
+        let ids = modes_for("codex")
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["read-only", "approve-for-me"]);
+        // 「请求批准」要人应答，无头下没人可问，做出审批界面之前不许放出来。
+        assert!(resolve("codex", "on-request").is_err());
+        assert!(resolve("codex", "danger-full-access").is_err());
+        // 裸沙箱值不是 Codex 面向用户的说法，也不该出现在选择器里。
+        assert!(resolve("codex", "workspace-write").is_err());
     }
 
     #[test]
