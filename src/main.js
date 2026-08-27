@@ -87,6 +87,7 @@ import {
   readAppShellPreference,
 } from './app-shell-utils.js';
 import { installConversationMode } from './conversation-mode.js';
+import { installThemeMode } from './theme-mode.js';
 import {
   createShellScriptCommand,
   isShellScriptEntry,
@@ -299,6 +300,11 @@ function offerTerminalSessionRestore() {
 
 function installApplicationSurfaces() {
   if (appViewController || conversationController) return;
+  installThemeMode({
+    document,
+    storage: localStorage,
+    button: document.getElementById('conversation-theme-switch'),
+  });
   conversationController = installConversationMode({
     document,
     storage: localStorage,
