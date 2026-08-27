@@ -81,10 +81,7 @@
             <button id="conversation-search-next" class="conversation-search-step" type="button" title="下一处（Enter）" aria-label="下一处">↓</button>
             <button id="conversation-search-close" class="conversation-search-step" type="button" title="关闭（Esc）" aria-label="关闭搜索">×</button>
           </div>
-          <div class="conversation-empty" id="conversation-empty">
-            <h2>今天想推进什么？</h2>
-            <p>用日常语言说明目标，Roster 会在当前项目里处理。</p>
-          </div>
+          <div class="conversation-empty" id="conversation-empty"></div>
           <div class="conversation-messages" id="conversation-messages"></div>
         </div>
 
@@ -165,6 +162,7 @@
               <span>新对话</span>
             </button>
           </div>
+          <div class="conversation-history-filter" id="conversation-history-filter" hidden role="group" aria-label="按助手筛选历史"></div>
           <p class="conversation-history-state" id="conversation-history-state" aria-live="polite"></p>
           <div class="conversation-history-list" id="conversation-history-list"></div>
         </section>

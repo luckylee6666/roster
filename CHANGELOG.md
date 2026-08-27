@@ -7,6 +7,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- Recent conversations can be filtered by assistant when more than one has been used in the project; the chips carry counts and the filter hides itself when only one assistant is present.
+- A first run with no projects gets three steps instead of a prompt it cannot act on, including the read-only default and where writing is granted.
 - Very long replies start collapsed with a fade and an expand control that says roughly how long they are; expanding is remembered per message and streaming replies are never collapsed mid-flight.
 - A failed turn now offers to retry it: the original message and its images go back into the composer, still waiting on your confirmation. The empty assistant bubble a failure used to leave behind is no longer rendered.
 - The composer footer is less crowded: snippet management moved into the snippet picker as its own entry, and the send hint no longer repeats the model name that the assistant picker already shows.
@@ -26,6 +28,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **新增**
+- 项目里用过不止一个助手时，「最近对话」可以按助手筛选，筛选条带条数；只有一家时自动隐藏。
+- 第一次打开、一个项目都没有时，空状态换成三步说明（含默认只读和在哪一步才放开写入），而不是一句用不上的提问。
 - 特别长的回答默认收起，底部渐隐并给出「展开全部（约 N 千字）」；展开状态按消息记住，流式过程中不会中途折叠。
 - 失败的一轮可以一键重试：原消息连同图片放回输入框，仍然由你确认后再发。失败留下的空助手气泡不再显示。
 - 输入框底部不再那么挤：片段管理并进片段下拉，发送提示也不再重复助手选择器上已经写着的模型名。

@@ -5865,6 +5865,54 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-scroll-bottom svg { width: 15px; height: 15px; }
 
+.conversation-onboarding {
+  margin: 4px 0 14px;
+  padding-left: 20px;
+  color: var(--chat-muted);
+  font-size: 13px;
+  line-height: 1.75;
+  text-align: left;
+}
+
+.conversation-onboarding li { margin: 2px 0; }
+
+.conversation-history-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.conversation-history-filter[hidden] { display: none; }
+
+.conversation-history-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  appearance: none;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 999px;
+  background: var(--chat-panel);
+  color: var(--chat-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.conversation-history-chip small { color: var(--chat-faint); }
+
+.conversation-history-chip:hover { border-color: var(--chat-control-line-hover); }
+
+.conversation-history-chip[data-active="true"] {
+  border-color: var(--chat-accent-line);
+  color: var(--chat-accent);
+  background: var(--chat-accent-soft);
+}
+
+.conversation-history-chip[data-active="true"] small { color: var(--chat-accent); }
+
 .conversation-changes-list {
   display: flex;
   flex-direction: column;

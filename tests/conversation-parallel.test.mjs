@@ -5,6 +5,7 @@ import {
   conversationMarkdown,
   conversationSearchHits,
   inspectConversationMention,
+  conversationHistoryTools,
   shouldCollapseMessage,
   conversationStarters,
   diffProjectChanges,
@@ -140,6 +141,8 @@ const IDS = [
   'conversation-project-list',
   'conversation-history-list',
   'conversation-history-state',
+  'conversation-empty',
+  'conversation-starter-list',
   'conversation-new-chat',
   'conversation-project-name',
   'conversation-project-path',
@@ -169,6 +172,8 @@ const IDS = [
   'conversation-mention-menu',
   'conversation-usage',
   'conversation-snippet-select',
+  'conversation-history-filter',
+  'conversation-history-state',
   'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
@@ -185,7 +190,7 @@ function flush(times = 24) {
   });
 }
 
-function fixture({ projects, installed = ['claude'], focused = true, appView, t } = {}) {
+function fixture({ projects, installed = ['claude'], focused = true, appView, history, t } = {}) {
   const byId = new Map(IDS.map(id => [id, new FakeEl(id === 'conversation-provider-select' ? 'select' : 'div')]));
   const scroller = new FakeEl();
   scroller.appendChild(byId.get('conversation-messages'));
@@ -252,7 +257,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
       return () => {};
     },
     notify: (message, level) => toasts.push({ message, level }),
-    loadHistory: async () => ({ groups: [] }),
+    loadHistory: async () => history || { groups: [] },
     invalidateHistory: () => {},
     onManageSnippets: () => { manageOpens.push(Date.now()); },
   });
@@ -960,4 +965,64 @@ test('超长回答默认收起，展开后保持展开', async t => {
 
   fire(expand, 'click');
   assert.ok(assistantRow.classNames.has('is-collapsed'), '可以再收回去');
+});
+
+test('历史筛选只统计真出现过的 CLI，按条数排序', () => {
+  const tools = conversationHistoryTools([
+    { tool: 'claude', label: 'Claude' },
+    { tool: 'codex', label: 'Codex' },
+    { tool: 'claude', label: 'Claude' },
+    { tool: '', label: '坏数据' },
+  ]);
+  assert.deepEqual(tools, [
+    { tool: 'claude', label: 'Claude', count: 2 },
+    { tool: 'codex', label: 'Codex', count: 1 },
+  ]);
+  assert.deepEqual(conversationHistoryTools(null), []);
+});
+
+test('历史列表按 CLI 筛选，只有一家时不显示筛选条', async t => {
+  const mixed = {
+    groups: [
+      { tool: 'claude', label: 'Claude', sessions: [
+        { id: 'c1', title: 'Claude 一', atMs: 300 },
+        { id: 'c2', title: 'Claude 二', atMs: 200 },
+      ] },
+      { tool: 'codex', label: 'Codex', sessions: [{ id: 'x1', title: 'Codex 一', atMs: 100 }] },
+    ],
+  };
+  const fx = fixture({ projects: [project('a', '项目 A')], history: mixed, t });
+  await flush();
+  const filter = fx.el('conversation-history-filter');
+  const list = fx.el('conversation-history-list');
+  assert.equal(filter.hidden, false);
+  assert.deepEqual(
+    filter.childNodes.map(chip => `${chip.childNodes[0].textContent}:${chip.childNodes[1].textContent}`),
+    ['全部:3', 'Claude:2', 'Codex:1'],
+  );
+  assert.equal(list.childNodes.length, 3);
+
+  fire(filter.childNodes[2], 'click');
+  assert.equal(fx.el('conversation-history-list').childNodes.length, 1, '只留 Codex 的');
+  fire(fx.el('conversation-history-filter').childNodes[2], 'click');
+  assert.equal(fx.el('conversation-history-list').childNodes.length, 3, '再点一次取消筛选');
+});
+
+test('一个项目都没有时给三步引导，有项目后换成普通空状态', async t => {
+  const fx = fixture({ projects: [], t });
+  await flush();
+  const empty = fx.el('conversation-empty');
+  assert.equal(empty.dataset.mode, 'onboarding');
+  assert.match(empty.childNodes[0].textContent, /先添加一个项目/);
+  const steps = empty.childNodes.find(node => node.tagName === 'OL');
+  assert.equal(steps.childNodes.length, 3);
+  assert.match(steps.childNodes[2].textContent, /允许修改项目/, '第一次就把只读边界说清楚');
+  assert.ok(empty.childNodes.some(node => node.textContent === '新建项目'));
+  assert.equal(fx.el('conversation-starter-list').hidden, true, '没项目时不给快捷句');
+
+  fx.controller.setProjects([project('a', '项目 A')]);
+  await flush();
+  assert.equal(fx.el('conversation-empty').dataset.mode, 'ready');
+  assert.match(fx.el('conversation-empty').childNodes[0].textContent, /今天想推进什么/);
+  assert.equal(fx.el('conversation-starter-list').hidden, false);
 });

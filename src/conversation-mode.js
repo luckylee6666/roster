@@ -70,6 +70,21 @@ export function inspectConversationPrompt(value) {
 const MANAGE_SNIPPETS_VALUE = '__manage__';
 const COLLAPSE_MESSAGE_CHARS = 3000;
 
+/** 历史里实际出现过的 CLI，按条数从多到少，用来生成筛选。 */
+export function conversationHistoryTools(sessions) {
+  const counts = new Map();
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    const tool = String(session?.tool || '').trim();
+    if (!tool) continue;
+    const seen = counts.get(tool) || { tool, label: session.label || tool, count: 0 };
+    seen.count += 1;
+    counts.set(tool, seen);
+  }
+  return [...counts.values()].sort((left, right) => (
+    right.count - left.count || left.tool.localeCompare(right.tool)
+  ));
+}
+
 /** 长回答默认收起。按字数判定，避免每帧去量高度触发重排。 */
 export function shouldCollapseMessage(message) {
   return Boolean(
@@ -411,6 +426,7 @@ export function installConversationMode({
     projectSearch: document.getElementById('conversation-project-search'),
     projectList: document.getElementById('conversation-project-list'),
     historyList: document.getElementById('conversation-history-list'),
+    historyFilter: document.getElementById('conversation-history-filter'),
     historyState: document.getElementById('conversation-history-state'),
     newChat: document.getElementById('conversation-new-chat'),
     exportChat: document.getElementById('conversation-export'),
@@ -496,6 +512,7 @@ export function installConversationMode({
   let mentionIndex = 0;
   let mentionRevision = 0;
   let mentionDismissed = false;
+  let historyToolFilter = '';
   let usageText = '';
   let usageFetchedAt = 0;
   let usageRevision = 0;
@@ -1392,6 +1409,46 @@ export function installConversationMode({
     }
   }
 
+  // 第一次打开时项目列表是空的，「今天想推进什么」这句话没有落点，
+  // 不如直接把这三步说清楚。
+  function renderEmptyState() {
+    if (!dom.empty) return;
+    const signature = projects.length === 0
+      ? 'onboarding'
+      : selectedProject ? 'ready' : 'pick';
+    if (dom.empty.dataset.mode === signature) return;
+    dom.empty.dataset.mode = signature;
+    dom.empty.replaceChildren();
+    if (signature === 'ready') {
+      dom.empty.append(
+        element(document, 'h2', '', '今天想推进什么？'),
+        element(document, 'p', '', '用日常语言说明目标，Roster 会在当前项目里处理。'),
+      );
+      return;
+    }
+    if (signature === 'pick') {
+      dom.empty.append(
+        element(document, 'h2', '', '先选一个项目'),
+        element(document, 'p', '', '在左边点一个项目，就能和它的最近一次对话接着聊。'),
+      );
+      return;
+    }
+    dom.empty.append(
+      element(document, 'h2', '', '先添加一个项目'),
+      element(document, 'p', '', 'Roster 把本机已安装的 AI 命令行工具接进对话，只在你指定的项目目录里干活。'),
+    );
+    const steps = element(document, 'ol', 'conversation-onboarding');
+    [
+      '选一个本机的项目文件夹，Roster 只在这个目录里工作。',
+      '用日常语言说你想做什么，再挑一个已安装的助手。',
+      '默认是只读的；要让它改文件，得在那一轮明确勾上「允许修改项目」。',
+    ].forEach(text => steps.appendChild(element(document, 'li', '', text)));
+    const create = element(document, 'button', 'conversation-create-project', '新建项目');
+    create.type = 'button';
+    create.addEventListener('click', () => openCreateProject());
+    dom.empty.append(steps, create);
+  }
+
   function renderStarters() {
     if (!dom.starters) return;
     const wanted = conversationStarters(projectContext);
@@ -1412,7 +1469,7 @@ export function installConversationMode({
         dom.starters.appendChild(button);
       });
     }
-    dom.starters.hidden = state.messages.length > 0;
+    dom.starters.hidden = state.messages.length > 0 || !selectedProject;
   }
 
   const mentionInspect = () => inspectConversationMention(
@@ -1871,6 +1928,7 @@ export function installConversationMode({
     renderActivities();
     renderProjectContext();
     renderChangeReport();
+    renderEmptyState();
     renderStarters();
     renderSearch();
     renderSnippets();
@@ -1910,11 +1968,44 @@ export function installConversationMode({
     return '';
   }
 
+  function renderHistoryFilter(sessions, onPick) {
+    const bar = dom.historyFilter;
+    if (!bar) return;
+    const tools = conversationHistoryTools(sessions);
+    // 只有一家的时候筛选没有意义，别占地方。
+    const show = tools.length > 1;
+    bar.hidden = !show;
+    bar.replaceChildren();
+    if (!show) return;
+    [{ tool: '', label: '全部', count: sessions.length }, ...tools].forEach(entry => {
+      const chip = element(document, 'button', 'conversation-history-chip');
+      chip.type = 'button';
+      chip.dataset.tool = entry.tool;
+      chip.dataset.active = entry.tool === historyToolFilter ? 'true' : 'false';
+      chip.append(
+        element(document, 'span', '', entry.label),
+        element(document, 'small', '', String(entry.count)),
+      );
+      chip.addEventListener('click', () => onPick(entry.tool));
+      bar.appendChild(chip);
+    });
+  }
+
   function renderHistory(history, project) {
     if (!dom.historyList || !dom.historyState || selectedProject?.id !== project?.id) return;
     dom.historyList.replaceChildren();
-    const sessions = flattenConversationHistory(history, { limit: 30 });
-    dom.historyState.textContent = sessions.length ? '' : '这个项目还没有历史对话';
+    const all = flattenConversationHistory(history, { limit: 30 });
+    if (historyToolFilter && !all.some(session => session.tool === historyToolFilter)) {
+      historyToolFilter = '';
+    }
+    renderHistoryFilter(all, tool => {
+      historyToolFilter = historyToolFilter === tool ? '' : tool;
+      renderHistory(history, project);
+    });
+    const sessions = historyToolFilter
+      ? all.filter(session => session.tool === historyToolFilter)
+      : all;
+    dom.historyState.textContent = all.length ? '' : '这个项目还没有历史对话';
     const activeKey = activeHistoryKey();
     sessions.forEach(session => {
       const row = element(document, 'div', 'conversation-history-row');
@@ -2115,6 +2206,7 @@ export function installConversationMode({
 
   function activateProject(next) {
     stashActiveConversation();
+    historyToolFilter = '';
     selectedProject = next;
     transcriptRevision += 1;
     contextRevision += 1;
