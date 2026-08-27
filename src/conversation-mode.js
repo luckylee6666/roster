@@ -908,7 +908,10 @@ export function installConversationMode({
           element(document, 'span', 'conversation-tuning-row-value', item.value),
           element(document, 'span', 'conversation-tuning-row-arrow', '›'),
         );
-        row.addEventListener('click', () => {
+        row.addEventListener('click', event => {
+          // 这一下会把面板内容整个换掉，被点的节点随即离开 DOM；若让它继续
+          // 冒泡，document 上那个"点外面收起"的判断会因为 contains 落空而误收。
+          event?.stopPropagation?.();
           tuningSection = item.key;
           renderTuning();
         });
@@ -922,7 +925,8 @@ export function installConversationMode({
       element(document, 'span', 'conversation-tuning-row-arrow', '‹'),
       element(document, 'span', '', section.label),
     );
-    back.addEventListener('click', () => {
+    back.addEventListener('click', event => {
+      event?.stopPropagation?.();
       tuningSection = '';
       renderTuning();
     });
@@ -938,7 +942,8 @@ export function installConversationMode({
         copy.appendChild(element(document, 'strong', '', option.label));
         if (option.hint) copy.appendChild(element(document, 'small', '', option.hint));
         item.append(copy, element(document, 'span', 'conversation-tuning-check', option.id === section.current ? '✓' : ''));
-        item.addEventListener('click', () => {
+        item.addEventListener('click', event => {
+          event?.stopPropagation?.();
           section.apply(option.id);
           closeTuning();
           renderState();

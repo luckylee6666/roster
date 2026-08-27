@@ -135,6 +135,10 @@ class FakeEl {
   }
   focus() {}
   closest() { return null; }
+  contains(node) {
+    if (node === this) return true;
+    return this.childNodes.some(child => child.contains?.(node));
+  }
 }
 
 const IDS = [
@@ -358,6 +362,15 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
         .find(node => node.dataset.tool === id);
       if (!row) throw new Error(`交接目标里没有 ${id}`);
       (row.listeners.click || []).forEach(fn => fn());
+    },
+    // 真实浏览器里点击会冒泡到 document；这里显式重放，用来守住
+    // "点开分节后被自己的外部点击监听误收起"那个 bug。
+    clickWithBubble: node => {
+      let stopped = false;
+      const event = { target: node, stopPropagation() { stopped = true; } };
+      (node.listeners.click || []).forEach(fn => fn(event));
+      if (stopped) return;
+      (docListeners.click || []).forEach(fn => fn(event));
     },
     key: ({ appView: view, ...init }) => {
       const root = document.documentElement.dataset;
@@ -1265,4 +1278,30 @@ test('模型、推理强度、模式收在同一个入口，会话模式不用�
   const run = fx.startedRuns().pop();
   assert.equal(run.model, 'opus', '选中的模型要真的带到下一轮');
   assert.equal(run.effort, 'high');
+});
+
+test('点开分节不会被"点外面收起"误关，点面板外才收起', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude'], t });
+  await flush();
+  fx.setSlashLists({ models: [{ id: 'opus', label: 'opus' }], efforts: [] });
+  fx.pickAssistant('claude');
+  await flush();
+
+  const panel = fx.el('conversation-tuning-panel');
+  fx.clickWithBubble(fx.el('conversation-tuning-toggle'));
+  assert.equal(panel.hidden, false, '点按钮要打开');
+
+  const modelRow = panel.childNodes.find(node => node.dataset.section === 'model');
+  fx.clickWithBubble(modelRow);
+  assert.equal(panel.hidden, false, '点分节后面板必须还开着');
+  assert.deepEqual(
+    panel.childNodes.filter(node => node.dataset.optionId !== undefined)
+      .map(node => node.dataset.optionId),
+    ['', 'opus'],
+    '应展示该分节的取值',
+  );
+
+  // 点面板以外的地方才收起
+  fx.clickWithBubble(fx.el('conversation-composer'));
+  assert.equal(panel.hidden, true);
 });
