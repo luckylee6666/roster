@@ -7,6 +7,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- Very long replies start collapsed with a fade and an expand control that says roughly how long they are; expanding is remembered per message and streaming replies are never collapsed mid-flight.
 - A failed turn now offers to retry it: the original message and its images go back into the composer, still waiting on your confirmation. The empty assistant bubble a failure used to leave behind is no longer rendered.
 - The composer footer is less crowded: snippet management moved into the snippet picker as its own entry, and the send hint no longer repeats the model name that the assistant picker already shows.
 - The conversation sidebar shows the current assistant's rate-limit usage (Claude and Codex only, reusing the existing limit endpoints). It is fetched when the assistant or project changes and after a turn finishes, at most once every three minutes, and stays hidden when the assistant has no limit endpoint or the query fails.
@@ -25,6 +26,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **新增**
+- 特别长的回答默认收起，底部渐隐并给出「展开全部（约 N 千字）」；展开状态按消息记住，流式过程中不会中途折叠。
 - 失败的一轮可以一键重试：原消息连同图片放回输入框，仍然由你确认后再发。失败留下的空助手气泡不再显示。
 - 输入框底部不再那么挤：片段管理并进片段下拉，发送提示也不再重复助手选择器上已经写着的模型名。
 - 对话左栏显示当前助手的限流用量（只有 Claude 与 Codex 有，复用已有的限流接口）。切换助手、切换项目和一轮结束后才查，最快三分钟一次；助手没有限流接口或查询失败时安静地不显示。

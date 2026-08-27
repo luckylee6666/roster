@@ -68,6 +68,17 @@ export function inspectConversationPrompt(value) {
 }
 
 const MANAGE_SNIPPETS_VALUE = '__manage__';
+const COLLAPSE_MESSAGE_CHARS = 3000;
+
+/** 长回答默认收起。按字数判定，避免每帧去量高度触发重排。 */
+export function shouldCollapseMessage(message) {
+  return Boolean(
+    message
+    && message.role === 'assistant'
+    && !message.pending
+    && String(message.text || '').length > COLLAPSE_MESSAGE_CHARS,
+  );
+}
 
 const BASE_CONVERSATION_STARTERS = [
   { label: '梳理项目现状', prompt: '帮我看看这个项目目前做到哪里了，并给出下一步建议' },
@@ -504,6 +515,7 @@ export function installConversationMode({
   const seenProjectGroups = new Set();
   const projectMediaCache = new Map();
   const messageNodes = new Map();
+  const expandedMessages = new Set();
   const runController = createConversationRunController({ invoke });
 
   function cachedProjectMedia(projectId, source) {
@@ -1124,12 +1136,21 @@ export function installConversationMode({
       const body = element(document, 'div', 'conversation-message-body');
       const label = element(document, 'div', 'conversation-message-label');
       const content = element(document, 'div', 'conversation-message-content');
-      body.append(label, content);
+      const expand = element(document, 'button', 'conversation-message-expand');
+      expand.type = 'button';
+      expand.hidden = true;
+      expand.addEventListener('click', () => {
+        if (expandedMessages.has(key)) expandedMessages.delete(key);
+        else expandedMessages.add(key);
+        renderMessages();
+      });
+      body.append(label, content, expand);
       row.append(body, messageToolsNode(message, () => entry.text || ''));
       entry = {
         row,
         label,
         content,
+        expand,
         labelText: '',
         tool: '',
         text: null,
@@ -1174,6 +1195,16 @@ export function installConversationMode({
         dots.append(element(document, 'i'), element(document, 'i'), element(document, 'i'));
         entry.content.appendChild(dots);
       }
+    }
+    const collapsible = shouldCollapseMessage(message);
+    const collapsed = collapsible && !expandedMessages.has(key);
+    entry.row.classList?.toggle('is-collapsed', collapsed);
+    if (entry.expand) {
+      entry.expand.hidden = !collapsible;
+      const label = collapsed
+        ? `展开全部（约 ${Math.round(text.length / 100) / 10} 千字）`
+        : '收起';
+      if (entry.expand.textContent !== label) entry.expand.textContent = label;
     }
     return entry.row;
   }

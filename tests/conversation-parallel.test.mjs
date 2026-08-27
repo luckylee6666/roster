@@ -5,6 +5,7 @@ import {
   conversationMarkdown,
   conversationSearchHits,
   inspectConversationMention,
+  shouldCollapseMessage,
   conversationStarters,
   diffProjectChanges,
   installConversationMode,
@@ -927,4 +928,36 @@ test('片段下拉自带管理入口，选它只开弹窗不插内容', async t 
   assert.equal(fx.el('conversation-composer').value, '', '管理项不插入正文');
   assert.equal(select.value, '');
   assert.equal(fx.manageOpens.length, 1, '打开的是片段管理弹窗');
+});
+
+test('超长回答默认收起，展开后保持展开', async t => {
+  assert.equal(shouldCollapseMessage({ role: 'assistant', text: 'x'.repeat(3001) }), true);
+  assert.equal(shouldCollapseMessage({ role: 'assistant', text: 'x'.repeat(2999) }), false);
+  assert.equal(shouldCollapseMessage({ role: 'assistant', text: 'x'.repeat(9000), pending: true }), false, '还在流式时不折叠');
+  assert.equal(shouldCollapseMessage({ role: 'user', text: 'x'.repeat(9000) }), false, '用户消息不折叠');
+
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('给我一篇长的');
+  const run = fx.startedRuns()[0];
+  fx.emit({
+    runId: run.runId,
+    providerId: run.providerId,
+    kind: 'assistant_message',
+    data: { text: '很长的回答'.repeat(1000) },
+  });
+  await flush();
+
+  const assistantRow = fx.el('conversation-messages').childNodes[1];
+  const expand = assistantRow.childNodes[0].childNodes[2];
+  assert.ok(assistantRow.classNames.has('is-collapsed'), '长回答默认收起');
+  assert.equal(expand.hidden, false);
+  assert.match(expand.textContent, /^展开全部/);
+
+  fire(expand, 'click');
+  assert.ok(!assistantRow.classNames.has('is-collapsed'));
+  assert.equal(expand.textContent, '收起');
+
+  fire(expand, 'click');
+  assert.ok(assistantRow.classNames.has('is-collapsed'), '可以再收回去');
 });

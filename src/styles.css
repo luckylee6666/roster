@@ -6408,6 +6408,45 @@ html[data-app-view="developer"] #conversation-surface {
   margin-bottom: 22px;
 }
 
+.conversation-message.is-collapsed .conversation-message-content {
+  position: relative;
+  max-height: 460px;
+  overflow: hidden;
+}
+
+/* 渐隐盖住截断处，别让文字硬生生断掉 */
+.conversation-message.is-collapsed .conversation-message-content::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 72px;
+  background: linear-gradient(to bottom, transparent, var(--chat-panel));
+  pointer-events: none;
+}
+
+.conversation-message-expand {
+  margin-top: 8px;
+  padding: 3px 10px;
+  appearance: none;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 7px;
+  background: var(--chat-panel);
+  color: var(--chat-control-ink);
+  font: inherit;
+  font-size: 11px;
+  line-height: 17px;
+  cursor: pointer;
+}
+
+.conversation-message-expand[hidden] { display: none; }
+
+.conversation-message-expand:hover {
+  border-color: var(--chat-control-line-hover);
+  color: var(--chat-ink);
+}
+
 /* The tool row sits inside the gap below each message so revealing it on
    hover never reflows the transcript. */
 .conversation-message-tools {
