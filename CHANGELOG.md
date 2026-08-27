@@ -7,6 +7,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- Cmd/Ctrl+F searches inside the open conversation: matching messages are ringed, Enter and Shift+Enter step through them with a counter, and Esc closes and clears. Search never re-renders the Markdown, so long transcripts stay smooth.
 - Stopping a turn no longer dead-ends: the notice offers to pick up where the reply stopped, filling the composer with a continuation so you still confirm before sending.
 - Any conversation with content can be exported to Markdown from the Recent conversations header; the file holds only the readable transcript and is saved wherever the native dialog puts it.
 - Images can now be attached by dragging them onto the composer or picking them with a button, not only by pasting. Dropped and picked files are read and validated in the backend by magic bytes, regular-file check, and an 8 MB limit; extensions are never trusted, and the four-image limit per message still applies. Drag and drop is ignored while Developer mode is on screen.
@@ -20,6 +21,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **新增**
+- ⌘/Ctrl + F 在当前对话里搜索：命中的消息描边高亮，Enter / Shift + Enter 上下跳并显示第几处，Esc 关闭并清除。搜索不重新渲染 Markdown，长对话不会因此卡顿。
 - 停止不再是死路：提示条上给出「接着刚才继续」，把续写指令填进输入框，仍由你确认后发送。
 - 有内容的对话可以从「最近对话」标题旁一键导出成 Markdown，文件里只有能读的正文，保存位置由原生对话框决定。
 - 图片除了粘贴，现在还能直接拖进输入框，或用按钮从文件里选。拖入和选中的文件由后端按魔数、普通文件和 8MB 上限校验，不认扩展名；一条消息最多四张的限制不变。停在开发模式时不接管拖放。

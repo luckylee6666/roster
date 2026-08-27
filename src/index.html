@@ -72,6 +72,14 @@
         </header>
 
         <div class="conversation-scroll">
+          <div class="conversation-search-bar" id="conversation-search-bar" hidden role="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+            <input id="conversation-search-input" type="search" placeholder="在这段对话里找…" autocomplete="off" aria-label="在当前对话中搜索" />
+            <span id="conversation-search-count" class="conversation-search-count" aria-live="polite"></span>
+            <button id="conversation-search-prev" class="conversation-search-step" type="button" title="上一处（Shift + Enter）" aria-label="上一处">↑</button>
+            <button id="conversation-search-next" class="conversation-search-step" type="button" title="下一处（Enter）" aria-label="下一处">↓</button>
+            <button id="conversation-search-close" class="conversation-search-step" type="button" title="关闭（Esc）" aria-label="关闭搜索">×</button>
+          </div>
           <div class="conversation-empty" id="conversation-empty">
             <h2>今天想推进什么？</h2>
             <p>用日常语言说明目标，Roster 会在当前项目里处理。</p>

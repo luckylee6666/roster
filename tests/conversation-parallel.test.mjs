@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   changedFileLabel,
   conversationMarkdown,
+  conversationSearchHits,
   conversationStarters,
   diffProjectChanges,
   installConversationMode,
@@ -157,6 +158,12 @@ const IDS = [
   'conversation-scroll-bottom',
   'conversation-attach-image',
   'conversation-export',
+  'conversation-search-bar',
+  'conversation-search-input',
+  'conversation-search-count',
+  'conversation-search-prev',
+  'conversation-search-next',
+  'conversation-search-close',
   'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
@@ -745,4 +752,55 @@ test('导出按钮只在有内容时出现，并把 Markdown 交给后端保存'
   assert.ok(call, '要调用后端导出');
   assert.match(call.payload.suggestedName, /项目 A\.md$/);
   assert.match(call.payload.content, /## 你\n\n问题/);
+});
+
+test('对话内搜索按消息命中，空查询不算命中', () => {
+  const messages = [
+    { text: '帮我看看 Roster 的深色模式' },
+    { text: '深色模式已经做完了' },
+    { text: '换个话题' },
+  ];
+  assert.deepEqual(conversationSearchHits(messages, '深色'), [0, 1]);
+  assert.deepEqual(conversationSearchHits(messages, 'ROSTER'), [0], '忽略大小写');
+  assert.deepEqual(conversationSearchHits(messages, '   '), []);
+  assert.deepEqual(conversationSearchHits(null, '深色'), []);
+});
+
+test('⌘F 打开对话内搜索，可上下跳并用 Esc 关掉', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('第一次说到深色');
+  const run = fx.startedRuns()[0];
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'assistant_message', data: { text: '深色模式已经做完了' } });
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+
+  const bar = fx.el('conversation-search-bar');
+  assert.equal(bar.hidden, true);
+  fx.key({ key: 'f', metaKey: true });
+  assert.equal(bar.hidden, false, '⌘F 打开搜索');
+
+  const input = fx.el('conversation-search-input');
+  input.value = '深色';
+  fire(input, 'input');
+  assert.equal(fx.el('conversation-search-count').textContent, '1/2');
+  const [userRow, assistantRow] = fx.el('conversation-messages').childNodes;
+  assert.ok(userRow.classNames.has('is-search-current'));
+  assert.ok(assistantRow.classNames.has('is-search-hit'));
+  assert.ok(!assistantRow.classNames.has('is-search-current'));
+
+  fire(fx.el('conversation-search-next'), 'click');
+  assert.equal(fx.el('conversation-search-count').textContent, '2/2');
+  assert.ok(assistantRow.classNames.has('is-search-current'));
+  fire(fx.el('conversation-search-next'), 'click');
+  assert.equal(fx.el('conversation-search-count').textContent, '1/2', '到底了回到第一处');
+
+  input.value = '压根没有的词';
+  fire(input, 'input');
+  assert.equal(fx.el('conversation-search-count').textContent, '没有匹配');
+  assert.ok(!userRow.classNames.has('is-search-hit'), '不匹配时清掉高亮');
+
+  fire(input, 'keydown', { key: 'Escape', preventDefault() {} });
+  assert.equal(bar.hidden, true, 'Esc 关掉搜索');
+  assert.equal(input.value, '');
 });

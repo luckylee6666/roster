@@ -83,8 +83,16 @@
           <span class="conversation-run-status" data-status="running">Grok 正在处理 · 12 秒</span>
         </header>
         <div class="conversation-scroll">
+          <div class="conversation-search-bar" role="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+            <input type="search" value="深色" aria-label="在当前对话中搜索" />
+            <span class="conversation-search-count">1/2</span>
+            <button class="conversation-search-step" type="button">↑</button>
+            <button class="conversation-search-step" type="button">↓</button>
+            <button class="conversation-search-step" type="button">×</button>
+          </div>
           <div class="conversation-messages">
-            <article class="conversation-message is-user">
+            <article class="conversation-message is-user is-search-hit is-search-current">
               <div class="conversation-message-body">
                 <div class="conversation-message-label">你</div>
                 <div class="conversation-message-content">你有没有建议的方向 做一个有用的软件</div>

@@ -96,6 +96,15 @@ export function conversationStarters(context) {
   return suggestions.slice(0, 3);
 }
 
+/** 命中的是消息序号，交给渲染层去定位节点。 */
+export function conversationSearchHits(messages, query) {
+  const needle = String(query || '').trim().toLocaleLowerCase('zh-CN');
+  if (!needle) return [];
+  return (Array.isArray(messages) ? messages : []).flatMap((message, index) => (
+    String(message?.text || '').toLocaleLowerCase('zh-CN').includes(needle) ? [index] : []
+  ));
+}
+
 /** 把当前对话拼成一份能直接读的 Markdown，不带任何内部字段。 */
 export function conversationMarkdown({ projectName = '', messages = [], now = Date.now() } = {}) {
   const head = [
@@ -380,6 +389,12 @@ export function installConversationMode({
     empty: document.getElementById('conversation-empty'),
     starters: document.getElementById('conversation-starter-list'),
     scrollBottom: document.getElementById('conversation-scroll-bottom'),
+    searchBar: document.getElementById('conversation-search-bar'),
+    searchInput: document.getElementById('conversation-search-input'),
+    searchCount: document.getElementById('conversation-search-count'),
+    searchPrev: document.getElementById('conversation-search-prev'),
+    searchNext: document.getElementById('conversation-search-next'),
+    searchClose: document.getElementById('conversation-search-close'),
     composer: document.getElementById('conversation-composer'),
     attachments: document.getElementById('conversation-attachments'),
     attachImage: document.getElementById('conversation-attach-image'),
@@ -439,6 +454,8 @@ export function installConversationMode({
   let elapsedTimer = null;
   let inlineAlert = null;
   let inlineResume = null;
+  let searchOpen = false;
+  let searchIndex = 0;
   let deletingHistory = null;
   let resumeLatestOnHistory = false;
   // Each project keeps its own transcript, draft and run, so a turn started in
@@ -1296,6 +1313,72 @@ export function installConversationMode({
     dom.starters.hidden = state.messages.length > 0;
   }
 
+  function messageRowAt(index) {
+    const message = state.messages[index];
+    if (!message) return null;
+    return messageNodes.get(`${state.projectId || ''}\u0000${String(message.id || '')}`)?.row || null;
+  }
+
+  function clearSearchMarks() {
+    messageNodes.forEach(entry => {
+      entry.row.classList?.remove('is-search-hit');
+      entry.row.classList?.remove('is-search-current');
+    });
+  }
+
+  function renderSearch({ reveal = false } = {}) {
+    if (!dom.searchBar) return;
+    dom.searchBar.hidden = !searchOpen;
+    clearSearchMarks();
+    if (!searchOpen) {
+      if (dom.searchCount) dom.searchCount.textContent = '';
+      return;
+    }
+    const hits = conversationSearchHits(state.messages, dom.searchInput?.value);
+    if (!hits.length) {
+      searchIndex = 0;
+      if (dom.searchCount) {
+        dom.searchCount.textContent = String(dom.searchInput?.value || '').trim() ? '没有匹配' : '';
+      }
+      if (dom.searchPrev) dom.searchPrev.disabled = true;
+      if (dom.searchNext) dom.searchNext.disabled = true;
+      return;
+    }
+    searchIndex = ((searchIndex % hits.length) + hits.length) % hits.length;
+    if (dom.searchCount) dom.searchCount.textContent = `${searchIndex + 1}/${hits.length}`;
+    if (dom.searchPrev) dom.searchPrev.disabled = hits.length < 2;
+    if (dom.searchNext) dom.searchNext.disabled = hits.length < 2;
+    hits.forEach((messageIndex, order) => {
+      const row = messageRowAt(messageIndex);
+      if (!row) return;
+      row.classList?.add('is-search-hit');
+      if (order === searchIndex) row.classList?.add('is-search-current');
+    });
+    if (!reveal) return;
+    messageRowAt(hits[searchIndex])?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  }
+
+  function stepSearch(delta) {
+    const hits = conversationSearchHits(state.messages, dom.searchInput?.value);
+    if (!hits.length) return;
+    searchIndex += delta;
+    renderSearch({ reveal: true });
+  }
+
+  function toggleSearch(open) {
+    searchOpen = open;
+    if (open) {
+      searchIndex = 0;
+      renderSearch({ reveal: false });
+      dom.searchInput?.focus?.();
+      dom.searchInput?.select?.();
+      return;
+    }
+    if (dom.searchInput) dom.searchInput.value = '';
+    renderSearch({ reveal: false });
+    dom.composer?.focus?.();
+  }
+
   // 滚上去看历史时，新回复会滚出视野；给一个明确的回去入口。
   function updateScrollAffordance() {
     const scroller = dom.stream?.parentElement;
@@ -1574,6 +1657,7 @@ export function installConversationMode({
     renderProjectContext();
     renderChangeReport();
     renderStarters();
+    renderSearch();
     renderSnippets();
     renderSlashMenu();
     renderHandoffNote();
@@ -2315,6 +2399,11 @@ export function installConversationMode({
     if (document.documentElement?.dataset?.appView === 'developer') return;
     if (document.querySelector?.('.modal-mask.active')) return;
     const key = String(event.key || '').toLowerCase();
+    if (key === 'f' && !event.shiftKey) {
+      event.preventDefault();
+      toggleSearch(true);
+      return;
+    }
     if (key === 'k' && !event.shiftKey) {
       event.preventDefault();
       dom.projectSearch?.focus?.();
@@ -2329,6 +2418,23 @@ export function installConversationMode({
   document.addEventListener?.('keydown', onWorkspaceKeydown);
 
   dom.projectSearch?.addEventListener('input', renderProjects);
+  dom.searchInput?.addEventListener('input', () => {
+    searchIndex = 0;
+    renderSearch({ reveal: true });
+  });
+  dom.searchInput?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      toggleSearch(false);
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    stepSearch(event.shiftKey ? -1 : 1);
+  });
+  dom.searchPrev?.addEventListener('click', () => stepSearch(-1));
+  dom.searchNext?.addEventListener('click', () => stepSearch(1));
+  dom.searchClose?.addEventListener('click', () => toggleSearch(false));
   dom.newChat?.addEventListener('click', newChat);
   dom.exportChat?.addEventListener('click', async () => {
     if (dom.exportChat.disabled) return;
