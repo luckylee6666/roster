@@ -4,6 +4,7 @@ import {
   changedFileLabel,
   conversationMarkdown,
   conversationSearchHits,
+  inspectConversationMention,
   conversationStarters,
   diffProjectChanges,
   installConversationMode,
@@ -164,6 +165,7 @@ const IDS = [
   'conversation-search-prev',
   'conversation-search-next',
   'conversation-search-close',
+  'conversation-mention-menu',
   'conversation-project-search',
   'conversation-project-context',
   'conversation-activity-list',
@@ -189,6 +191,11 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
   const toasts = [];
   let changedFiles = [{ status: 'M', path: 'src/a.js' }];
   let pickedImages = [];
+  let projectFiles = [
+    { path: 'README.md', name: 'README.md', depth: 0 },
+    { path: 'src/main.js', name: 'main.js', depth: 1 },
+    { path: 'src/mainframe.js', name: 'mainframe.js', depth: 1 },
+  ];
   const tauriListeners = {};
   const chatEvents = [];
   const values = new Map();
@@ -223,6 +230,9 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, t 
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
       if (command === 'pick_attachment_images') return pickedImages;
+      if (command === 'conversation_project_files') {
+        return projectFiles.filter(file => file.path.toLowerCase().includes(String(payload.query || '').toLowerCase()));
+      }
       if (command === 'read_conversation_attachment_image') {
         if (!/\.(png|jpe?g|gif|webp)$/i.test(payload.path)) throw new Error('只支持 PNG、JPEG、GIF、WebP 图片');
         return { kind: 'image', mimeType: 'image/png', dataUrl: `data:image/png;base64,AAAA${payload.path.length}` };
@@ -803,4 +813,40 @@ test('⌘F 打开对话内搜索，可上下跳并用 Esc 关掉', async t => {
   fire(input, 'keydown', { key: 'Escape', preventDefault() {} });
   assert.equal(bar.hidden, true, 'Esc 关掉搜索');
   assert.equal(input.value, '');
+});
+
+test('只有行首或空白后的 @token 才算引用文件', () => {
+  assert.deepEqual(inspectConversationMention('@ma', 3), { active: true, query: 'ma', start: 0, end: 3 });
+  assert.equal(inspectConversationMention('看看 @src/m', 8).active, true);
+  assert.equal(inspectConversationMention('a@b.com', 7).active, false, '邮箱不算');
+  assert.equal(inspectConversationMention('@ma in', 6).active, false, 'token 里不能有空格');
+  assert.equal(inspectConversationMention('没有引用', 4).active, false);
+  assert.equal(inspectConversationMention(`@${'x'.repeat(200)}`, 201).active, false);
+});
+
+test('@ 会列出项目文件，选中后把相对路径插进输入框', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  const menu = fx.el('conversation-mention-menu');
+
+  composer.value = '看看 @main';
+  composer.selectionStart = composer.value.length;
+  fire(composer, 'input');
+  await flush();
+  assert.equal(menu.hidden, false, '有匹配就展开');
+  assert.deepEqual(
+    menu.childNodes.map(node => node.childNodes[1].textContent),
+    ['src/main.js', 'src/mainframe.js'],
+  );
+
+  fire(menu.childNodes[1], 'click');
+  assert.equal(composer.value, '看看 src/mainframe.js ', '插入相对路径并去掉 @');
+  assert.equal(menu.hidden, true);
+
+  composer.value = '普通的一句话';
+  composer.selectionStart = composer.value.length;
+  fire(composer, 'input');
+  await flush();
+  assert.equal(menu.hidden, true, '没有 @ 时不弹');
 });

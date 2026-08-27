@@ -23,6 +23,7 @@ mod conversation_media;
 mod conversation_slash;
 mod native_esc;
 mod orchestra;
+mod project_files;
 mod project_memory;
 mod project_sessions;
 mod proxy_settings;
@@ -1991,6 +1992,27 @@ async fn preview_conversation_transcript(
     .map_err(|error| error.to_string())?
 }
 
+/// `@` 引用用的项目文件清单：路径只由后端从已保存项目解析，前端只给项目 ID。
+#[tauri::command]
+async fn conversation_project_files(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    query: String,
+) -> Result<Vec<project_files::ProjectFile>, String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || project_files::list_project_files(&path, &query))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn read_conversation_project_media(
     app_state: State<'_, Mutex<AppState>>,
@@ -3270,6 +3292,7 @@ pub fn run() {
             preview_session_handoff,
             preview_conversation_transcript,
             read_conversation_project_media,
+            conversation_project_files,
             read_conversation_attachment_image,
             pick_attachment_images,
             export_conversation_markdown,

@@ -7,6 +7,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Added**
+- Typing `@` in the composer lists project files and inserts the project-relative path, so a request can point at an exact file without typing the path. The listing is produced in the backend from the saved project record — the frontend only sends the project ID — and the walk is bounded by depth, entry count, and result count, skips version-control, dependency, build, and hidden entries, and never follows a symlinked directory out of the project.
 - Cmd/Ctrl+F searches inside the open conversation: matching messages are ringed, Enter and Shift+Enter step through them with a counter, and Esc closes and clears. Search never re-renders the Markdown, so long transcripts stay smooth.
 - Stopping a turn no longer dead-ends: the notice offers to pick up where the reply stopped, filling the composer with a continuation so you still confirm before sending.
 - Any conversation with content can be exported to Markdown from the Recent conversations header; the file holds only the readable transcript and is saved wherever the native dialog puts it.
@@ -21,6 +22,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **新增**
+- 输入框里打 `@` 会列出项目文件并插入项目内相对路径，指名道姓地让助手看某个文件，不用自己敲路径。清单由后端从已保存的项目记录生成（前端只传项目 ID），扫描的深度、条目数与返回数都有上限，跳过版本库、依赖、构建产物和隐藏项，并且不跟随目录符号链接走出项目。
 - ⌘/Ctrl + F 在当前对话里搜索：命中的消息描边高亮，Enter / Shift + Enter 上下跳并显示第几处，Esc 关闭并清除。搜索不重新渲染 Markdown，长对话不会因此卡顿。
 - 停止不再是死路：提示条上给出「接着刚才继续」，把续写指令填进输入框，仍由你确认后发送。
 - 有内容的对话可以从「最近对话」标题旁一键导出成 Markdown，文件里只有能读的正文，保存位置由原生对话框决定。

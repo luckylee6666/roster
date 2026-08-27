@@ -96,6 +96,26 @@ export function conversationStarters(context) {
   return suggestions.slice(0, 3);
 }
 
+/**
+ * 光标处正在写的 `@xxx`。只有紧跟空白或行首的 `@` 才算，token 里不允许空格，
+ * 免得把邮箱、装饰符号和普通文本都当成引用。
+ */
+export function inspectConversationMention(value, caret) {
+  const text = String(value ?? '');
+  const position = Number.isInteger(caret)
+    ? Math.max(0, Math.min(caret, text.length))
+    : text.length;
+  const head = text.slice(0, position);
+  const at = head.lastIndexOf('@');
+  const idle = { active: false, query: '', start: position, end: position };
+  if (at < 0) return idle;
+  const before = at === 0 ? '' : head[at - 1];
+  if (before && !/\s/.test(before)) return idle;
+  const query = head.slice(at + 1);
+  if (/\s/.test(query) || query.length > 120) return idle;
+  return { active: true, query, start: at, end: position };
+}
+
 /** 命中的是消息序号，交给渲染层去定位节点。 */
 export function conversationSearchHits(messages, query) {
   const needle = String(query || '').trim().toLocaleLowerCase('zh-CN');
@@ -411,6 +431,7 @@ export function installConversationMode({
     createCancel: document.getElementById('conversation-create-cancel'),
     createSave: document.getElementById('conversation-create-save'),
     slashMenu: document.getElementById('conversation-slash-menu'),
+    mentionMenu: document.getElementById('conversation-mention-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
     manageSnippets: document.getElementById('conversation-manage-snippets'),
     handoffNote: document.getElementById('conversation-handoff-note'),
@@ -456,6 +477,10 @@ export function installConversationMode({
   let inlineResume = null;
   let searchOpen = false;
   let searchIndex = 0;
+  let mentionFiles = [];
+  let mentionIndex = 0;
+  let mentionRevision = 0;
+  let mentionDismissed = false;
   let deletingHistory = null;
   let resumeLatestOnHistory = false;
   // Each project keeps its own transcript, draft and run, so a turn started in
@@ -1313,6 +1338,83 @@ export function installConversationMode({
     dom.starters.hidden = state.messages.length > 0;
   }
 
+  const mentionInspect = () => inspectConversationMention(
+    dom.composer?.value,
+    dom.composer?.selectionStart,
+  );
+
+  const mentionOpen = () => Boolean(
+    !mentionDismissed
+    && mentionFiles.length
+    && mentionInspect().active
+    && selectedProject,
+  );
+
+  function renderMentionMenu() {
+    const menu = dom.mentionMenu;
+    if (!menu) return;
+    const open = mentionOpen();
+    menu.hidden = !open;
+    if (!open) {
+      menu.replaceChildren();
+      return;
+    }
+    mentionIndex = Math.max(0, Math.min(mentionIndex, mentionFiles.length - 1));
+    menu.replaceChildren();
+    mentionFiles.forEach((file, index) => {
+      const item = element(document, 'button', 'conversation-slash-item');
+      item.type = 'button';
+      item.dataset.active = index === mentionIndex ? 'true' : 'false';
+      item.append(
+        element(document, 'strong', '', file.name || file.path),
+        element(document, 'span', '', file.path),
+      );
+      item.addEventListener('mousedown', event => event.preventDefault?.());
+      item.addEventListener('click', () => applyMention(index));
+      menu.appendChild(item);
+    });
+  }
+
+  async function refreshMentionFiles() {
+    const parsed = mentionInspect();
+    const project = selectedProject;
+    if (!parsed.active || !project) {
+      mentionFiles = [];
+      renderMentionMenu();
+      return;
+    }
+    const revision = ++mentionRevision;
+    try {
+      const files = await invoke('conversation_project_files', {
+        projectId: project.id,
+        query: parsed.query,
+      });
+      if (destroyed || revision !== mentionRevision || selectedProject?.id !== project.id) return;
+      mentionFiles = Array.isArray(files) ? files : [];
+      mentionIndex = 0;
+    } catch (_) {
+      if (revision !== mentionRevision) return;
+      mentionFiles = [];
+    }
+    renderMentionMenu();
+  }
+
+  function applyMention(index) {
+    const parsed = mentionInspect();
+    const file = mentionFiles[index];
+    if (!parsed.active || !file || !dom.composer) return;
+    const text = String(dom.composer.value || '');
+    const inserted = `${file.path} `;
+    dom.composer.value = `${text.slice(0, parsed.start)}${inserted}${text.slice(parsed.end)}`;
+    const caret = parsed.start + inserted.length;
+    dom.composer.setSelectionRange?.(caret, caret);
+    mentionFiles = [];
+    mentionDismissed = false;
+    renderMentionMenu();
+    dom.composer.focus();
+    syncComposer();
+  }
+
   function messageRowAt(index) {
     const message = state.messages[index];
     if (!message) return null;
@@ -1660,6 +1762,7 @@ export function installConversationMode({
     renderSearch();
     renderSnippets();
     renderSlashMenu();
+    renderMentionMenu();
     renderHandoffNote();
     renderControls();
     syncElapsedTimer();
@@ -1679,6 +1782,7 @@ export function installConversationMode({
       dom.composer.style.height = `${Math.min(180, Math.max(52, dom.composer.scrollHeight))}px`;
     }
     renderSlashMenu();
+    renderMentionMenu();
     renderControls();
   }
 
@@ -2475,6 +2579,8 @@ export function installConversationMode({
   });
   dom.composer?.addEventListener('input', () => {
     slashDismissed = false;
+    mentionDismissed = false;
+    void refreshMentionFiles();
     syncComposer();
   });
   dom.composer?.addEventListener('paste', event => {
@@ -2498,6 +2604,26 @@ export function installConversationMode({
   });
   dom.composer?.addEventListener('keydown', event => {
     if (event.isComposing) return;
+    if (mentionOpen()) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        mentionIndex = (mentionIndex + step + mentionFiles.length) % mentionFiles.length;
+        renderMentionMenu();
+        return;
+      }
+      if (event.key === 'Tab' || event.key === 'Enter') {
+        event.preventDefault();
+        applyMention(mentionIndex);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        mentionDismissed = true;
+        renderMentionMenu();
+        return;
+      }
+    }
     const parsed = slashInspect();
     const slashOpen = parsed.active && parsed.matches.length > 0 && !slashDismissed;
     if (slashOpen && event.key === 'ArrowDown') {
