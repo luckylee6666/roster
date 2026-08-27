@@ -72,6 +72,20 @@ test('对话工作台补齐片段管理、交接与无项目入口', async () =>
   assert.match(css, /\.conversation-compact-action/);
 });
 
+test('模型/强度/模式的入口紧挨发送按钮', async () => {
+  const html = await read('src/index.html');
+  const foot = html.slice(
+    html.indexOf('conversation-composer-foot'),
+    html.indexOf('id="conversation-send"'),
+  );
+  const hintAt = foot.indexOf('id="conversation-composer-hint"');
+  const tuningAt = foot.indexOf('id="conversation-tuning-toggle"');
+  const snippetAt = foot.indexOf('id="conversation-snippet-select"');
+  // 它决定"按下发送会发生什么"，所以归到发送那一侧，输入辅助留在左边。
+  assert.ok(snippetAt > 0 && hintAt > snippetAt, '片段等输入辅助在左');
+  assert.ok(tuningAt > hintAt, '调节入口靠右，紧挨发送');
+});
+
 test('助手选择弹窗沿用可居中的弹窗结构', async () => {
   const html = await read('src/index.html');
   const start = html.indexOf('id="conversation-assistant-overlay"');
