@@ -432,7 +432,8 @@ export function installConversationMode({
     exportChat: document.getElementById('conversation-export'),
     projectName: document.getElementById('conversation-project-name'),
     projectPath: document.getElementById('conversation-project-path'),
-    providerSelect: document.getElementById('conversation-provider-select'),
+    assistantBadge: document.getElementById('conversation-assistant-badge'),
+    assistantName: document.getElementById('conversation-assistant-name'),
     providerState: document.getElementById('conversation-provider-state'),
     status: document.getElementById('conversation-status'),
     stream: document.getElementById('conversation-messages'),
@@ -1114,57 +1115,25 @@ export function installConversationMode({
     });
   }
 
-  function renderProviderPicker() {
-    if (!dom.providerSelect) return;
-    dom.providerSelect.replaceChildren();
-    if (installedCliIds === null) {
-      const option = element(document, 'option', '', '正在检查本机 CLI');
-      option.value = '';
-      dom.providerSelect.appendChild(option);
-      dom.providerSelect.disabled = true;
-      return;
-    }
-
-    const options = runnableProviders();
-    const current = currentProvider();
-    if (!options.some(provider => provider.id === current.id)) {
-      const option = element(
-        document,
-        'option',
-        '',
-        `${current.label}${current.historyOnly ? '（仅历史）' : '（未安装）'}`,
-      );
-      option.value = current.id;
-      option.disabled = true;
-      dom.providerSelect.appendChild(option);
-    }
-    options.forEach(provider => {
-      const model = String(providerModels[provider.id] || '').trim();
-      const effort = String(providerEfforts[provider.id] || '').trim();
-      const details = [model, effort].filter(Boolean).join(' · ');
-      const option = element(
-        document,
-        'option',
-        '',
-        details ? `${provider.label} · ${details}` : provider.label,
-      );
-      option.value = provider.id;
-      dom.providerSelect.appendChild(option);
-    });
-    if (!options.length && !dom.providerSelect.options.length) {
-      const option = element(document, 'option', '', '没有可用的 CLI');
-      option.value = '';
-      dom.providerSelect.appendChild(option);
-    }
-    dom.providerSelect.value = current.id;
+  function renderAssistantBadge() {
+    const provider = currentProvider();
     const started = conversationHasOpenSession(state);
-    dom.providerSelect.title = started
-      ? `这条对话由 ${current.label} 负责，开始后不再更换；要换人请用「交接」`
-      : [current.label, providerModels[current.id], providerEfforts[current.id]]
-        .filter(Boolean)
-        .join(' · ');
-    // 会话属于某一家 CLI，开启之后就不能中途改嫁。
-    dom.providerSelect.disabled = started || isRunning() || options.length === 0;
+    if (dom.assistantName) {
+      dom.assistantName.textContent = installedCliIds === null && !selectedProject
+        ? '选择助手'
+        : provider.label;
+    }
+    if (!dom.assistantBadge) return;
+    const options = runnableProviders();
+    // 开始之后助手就定了，这时它只是个标识；没开始才让点。
+    const changeable = Boolean(selectedProject) && !started && !isRunning() && options.length > 0;
+    dom.assistantBadge.disabled = !changeable;
+    dom.assistantBadge.dataset.locked = started ? 'true' : 'false';
+    dom.assistantBadge.title = started
+      ? `这条对话由 ${provider.label} 负责，开始后不再更换；要换人请用「交接」`
+      : changeable
+        ? `当前用 ${provider.label}，点击可换一个助手`
+        : provider.label;
   }
 
   function providerConnectionLabel() {
@@ -1225,7 +1194,7 @@ export function installConversationMode({
     const ready = providerReady(provider.id);
     if (dom.projectName) dom.projectName.textContent = selectedProject?.name || '选择一个项目';
     if (dom.projectPath) dom.projectPath.textContent = selectedProject?.localPath || '先在开发模式中添加项目';
-    renderProviderPicker();
+    renderAssistantBadge();
     if (dom.providerState) {
       const label = providerConnectionLabel();
       dom.providerState.dataset.state = installedCliIds === null
@@ -1996,13 +1965,7 @@ export function installConversationMode({
       dom.exportChat.hidden = !exportable;
       dom.exportChat.disabled = busy || !exportable;
     }
-    if (dom.providerSelect) {
-      // 与 renderProviderPicker 保持同一口径：对话开启后助手就锁定了。
-      dom.providerSelect.disabled = busy
-        || conversationHasOpenSession(state)
-        || installedCliIds === null
-        || runnableProviders().length === 0;
-    }
+    renderAssistantBadge();
     if (dom.openFolder) dom.openFolder.disabled = !selectedProject;
     if (dom.refreshProject) dom.refreshProject.disabled = !selectedProject || contextLoading;
     dom.starters?.childNodes?.forEach?.(button => { button.disabled = unavailable || busy || deleting; });
@@ -2462,11 +2425,13 @@ export function installConversationMode({
       providerId: providerId || providerForNewChat(),
     });
     conversationStates.set(selectedProject.id, state);
+    usageText = '';
     persistSelection();
     renderState();
     void refreshHistory();
     void refreshSlashCommands();
     void refreshModeOptions();
+    void refreshUsage({ force: true });
     dom.composer?.focus();
   }
 
@@ -3001,7 +2966,14 @@ export function installConversationMode({
       if (!/未选择保存位置/.test(reason)) notify?.(`导出失败：${reason}`, 'error');
     }
   });
-  dom.providerSelect?.addEventListener('change', () => selectProvider(dom.providerSelect.value));
+  dom.assistantBadge?.addEventListener('click', () => {
+    if (dom.assistantBadge.disabled) return;
+    openAssistantPicker({
+      title: '这条对话用哪个助手？',
+      hint: '还没开始的对话可以随便换；发出第一条消息之后就定下来了。',
+      onPick: startChatWith,
+    });
+  });
   dom.handoff?.addEventListener('click', () => {
     if (dom.handoff.disabled) return;
     const source = currentProvider();

@@ -93,7 +93,7 @@ test('CSS 加载前恢复应用视图，首次安装默认对话模式', async (
   assert.match(html, /savedAppShell\.appView === 'developer'[\s\S]*\? 'developer'[\s\S]*: 'conversation'/);
 });
 
-test('空状态收在输入区上方，助手选择靠近发送，空闲时隐藏步骤和动态', async () => {
+test('空状态收在输入区上方，助手标识在顶栏，空闲时隐藏步骤和动态', async () => {
   const [html, css, conversation] = await Promise.all([
     read('src/index.html'),
     read('src/styles.css'),
@@ -102,14 +102,16 @@ test('空状态收在输入区上方，助手选择靠近发送，空闲时隐�
   const emptyAt = html.indexOf('id="conversation-empty"');
   const composeAt = html.indexOf('conversation-compose-wrap');
   const starterAt = html.indexOf('id="conversation-starter-list"');
-  const pickerAt = html.indexOf('id="conversation-provider-select"');
+  const badgeAt = html.indexOf('id="conversation-assistant-badge"');
   const headerAt = html.indexOf('class="conversation-header"');
   const headerEnd = html.indexOf('</header>', headerAt);
   assert.ok(emptyAt > 0 && composeAt > emptyAt);
   assert.ok(starterAt > composeAt);
-  assert.ok(pickerAt > composeAt);
+  // 助手不能中途更换，所以它是顶栏上的标识，不是输入栏里的控件。
+  assert.ok(badgeAt > 0 && badgeAt < composeAt, '助手标识应在顶栏');
+  assert.ok(html.slice(headerAt, headerEnd).includes('conversation-assistant-badge'));
   assert.ok(html.slice(headerAt, headerEnd).includes('conversation-run-status'));
-  assert.doesNotMatch(html.slice(headerAt, headerEnd), /conversation-provider-select/);
+  assert.doesNotMatch(html, /conversation-provider-select/, '不再有可切换的助手下拉');
   assert.doesNotMatch(html, /conversation-agent-card/);
   assert.doesNotMatch(html, /conversation-empty-mark/);
   assert.match(html, /conversation-plan-section" hidden/);

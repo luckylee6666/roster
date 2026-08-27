@@ -6272,68 +6272,6 @@ html[data-app-view="developer"] #conversation-surface {
   white-space: nowrap;
 }
 
-.conversation-provider-picker {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 6px;
-  color: var(--chat-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.conversation-provider-label {
-  font-size: 11px;
-  font-weight: 620;
-}
-
-.conversation-provider-select-wrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.conversation-provider-select-wrap select {
-  width: 186px;
-  max-width: 26vw;
-  height: 28px;
-  appearance: none;
-  padding: 0 26px 0 8px;
-  border: 1px solid var(--chat-control-line);
-  border-radius: 8px;
-  outline: 0;
-  color: var(--chat-control-ink);
-  background: var(--chat-panel);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 620;
-  cursor: pointer;
-}
-
-.conversation-provider-select-wrap select:hover:not(:disabled) {
-  border-color: var(--chat-control-line-hover);
-}
-
-.conversation-provider-select-wrap select:focus-visible {
-  border-color: var(--chat-focus-line);
-  box-shadow: 0 0 0 3px var(--chat-accent-glow);
-}
-
-.conversation-provider-select-wrap select:disabled {
-  color: var(--chat-disabled-ink);
-  cursor: not-allowed;
-  background: var(--chat-disabled-bg);
-}
-
-.conversation-provider-select-wrap svg {
-  position: absolute;
-  right: 8px;
-  width: 13px;
-  height: 13px;
-  color: var(--chat-disabled-ink);
-  pointer-events: none;
-}
-
 .conversation-snippet-picker select {
   width: 96px;
   height: 27px;
@@ -6944,6 +6882,44 @@ html[data-app-view="developer"] #conversation-surface {
   white-space: nowrap;
 }
 
+.conversation-header-side {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.conversation-assistant-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  appearance: none;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 999px;
+  background: var(--chat-panel);
+  color: var(--chat-ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.conversation-assistant-badge strong { font-weight: 560; }
+
+.conversation-assistant-badge:hover:not(:disabled) {
+  border-color: var(--chat-accent-line);
+  color: var(--chat-accent);
+}
+
+/* 已开始的对话：助手就是个标识，不再是可点的控件 */
+.conversation-assistant-badge:disabled {
+  border-color: transparent;
+  background: var(--chat-hover-bg-soft);
+  color: var(--chat-muted);
+  cursor: default;
+}
+
 .conversation-assistant-hint {
   margin: 0 0 10px;
   color: var(--chat-muted);
@@ -6998,11 +6974,6 @@ html[data-app-view="developer"] #conversation-surface {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.conversation-provider-select-wrap select:disabled {
-  opacity: 0.72;
-  cursor: default;
 }
 
 .conversation-mode-picker {
@@ -7354,9 +7325,7 @@ html[data-app-view="developer"] #conversation-surface {
   .conversation-sidebar-foot { padding-top: 5px; }
   .conversation-mode-switch { min-height: 38px; }
   .conversation-header { min-height: 64px; padding-top: 8px; padding-bottom: 8px; }
-  .conversation-provider-label { display: none; }
-  .conversation-provider-select-wrap select { height: 28px; }
-  .conversation-empty { padding-top: 16px; padding-bottom: 4px; }
+      .conversation-empty { padding-top: 16px; padding-bottom: 4px; }
   .conversation-starter-list { margin-bottom: 8px; }
   .conversation-messages { padding-top: 20px; padding-bottom: 24px; }
   .conversation-message { margin-bottom: 20px; }

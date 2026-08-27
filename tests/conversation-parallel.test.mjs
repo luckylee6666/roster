@@ -146,7 +146,8 @@ const IDS = [
   'conversation-new-chat',
   'conversation-project-name',
   'conversation-project-path',
-  'conversation-provider-select',
+  'conversation-assistant-badge',
+  'conversation-assistant-name',
   'conversation-status',
   'conversation-messages',
   'conversation-empty',
@@ -196,7 +197,7 @@ function flush(times = 24) {
 }
 
 function fixture({ projects, installed = ['claude'], focused = true, appView, history, t } = {}) {
-  const byId = new Map(IDS.map(id => [id, new FakeEl(id === 'conversation-provider-select' ? 'select' : 'div')]));
+  const byId = new Map(IDS.map(id => [id, new FakeEl(id.endsWith('-select') ? 'select' : 'div')]));
   const scroller = new FakeEl();
   scroller.appendChild(byId.get('conversation-messages'));
 
@@ -299,6 +300,22 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
     sessionTitles,
     manageOpens,
     fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
+    pickAssistant: id => {
+      const badge = byId.get('conversation-assistant-badge');
+      (badge.listeners.click || []).forEach(fn => fn());
+      const row = byId.get('conversation-assistant-list').childNodes
+        .find(node => node.dataset.tool === id);
+      if (!row) throw new Error(`助手选择里没有 ${id}`);
+      (row.listeners.click || []).forEach(fn => fn());
+    },
+    handoffTo: id => {
+      const handoff = byId.get('conversation-handoff');
+      (handoff.listeners.click || []).forEach(fn => fn());
+      const row = byId.get('conversation-assistant-list').childNodes
+        .find(node => node.dataset.tool === id);
+      if (!row) throw new Error(`交接目标里没有 ${id}`);
+      (row.listeners.click || []).forEach(fn => fn());
+    },
     key: ({ appView: view, ...init }) => {
       const root = document.documentElement.dataset;
       const previous = root.appView;
@@ -342,6 +359,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
 }
 
 const project = (id, name) => ({ id, name, localPath: `/tmp/${id}`, group: '' });
+const conversationLabel = id => ({ claude: 'Claude', grok: 'Grok', codex: 'Codex' }[id] || id);
 
 test('流式增量渲染复用未变化的消息节点', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], t });
@@ -580,9 +598,7 @@ test('换助手时输入框上方说明会接手什么，并能一键改回', as
   assert.equal(note.hidden, true, '没换助手时不显示交接说明');
 
   const target = run.providerId === 'claude' ? 'grok' : 'claude';
-  const select = fx.el('conversation-provider-select');
-  select.value = target;
-  fire(select, 'change');
+  fx.handoffTo(target);
   await flush();
   assert.equal(note.hidden, false);
   assert.match(note.childNodes[0].textContent, /接手[\s\S]*这段对话/);
@@ -593,6 +609,7 @@ test('换助手时输入框上方说明会接手什么，并能一键改回', as
   fire(undo, 'click');
   await flush();
   assert.equal(note.hidden, true, '改回来源助手后说明消失');
+  assert.equal(fx.el('conversation-assistant-name').textContent, conversationLabel(run.providerId));
 });
 
 test('只统计磁盘上真的变了的文件，截断的快照标成部分', () => {
@@ -896,22 +913,20 @@ test('侧栏显示当前助手的限流用量，换到没有用量的助手就�
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
   await flush();
   const usage = fx.el('conversation-usage');
-  const select = fx.el('conversation-provider-select');
 
-  select.value = 'claude';
-  fire(select, 'change');
+  fx.pickAssistant('claude');
   await flush();
   assert.equal(usage.hidden, false);
   assert.match(usage.textContent, /5 小时 32% · 7 天 7%/);
 
-  select.value = 'grok';
-  fire(select, 'change');
+  const beforeGrok = fx.invokes.filter(entry => entry.command === 'oauth_usage').length;
+  fx.pickAssistant('grok');
   await flush();
   assert.equal(usage.hidden, true, 'Grok 没有限流接口，这行就不显示');
   assert.equal(
     fx.invokes.filter(entry => entry.command === 'oauth_usage').length,
-    1,
-    '只在需要时查一次，不轮询',
+    beforeGrok,
+    '没有限流接口的助手不该发查询',
   );
 });
 
@@ -1089,8 +1104,7 @@ test('模式选择器只列当前助手有的档，选中后按 provider 记住'
   const select = fx.el('conversation-mode-select');
   const composer = fx.el('conversation-composer');
 
-  fx.el('conversation-provider-select').value = 'claude';
-  fire(fx.el('conversation-provider-select'), 'change');
+  fx.pickAssistant('claude');
   await flush();
   assert.deepEqual(
     select.childNodes.map(node => node.textContent),
@@ -1113,13 +1127,12 @@ test('模式选择器只列当前助手有的档，选中后按 provider 记住'
   fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
   await flush();
 
-  fx.el('conversation-provider-select').value = 'grok';
-  fire(fx.el('conversation-provider-select'), 'change');
+  fx.handoffTo('grok');
   await flush();
   assert.deepEqual(
     select.childNodes.map(node => node.textContent),
     ['只读计划'],
-    '换到 Grok 就只剩 Grok 有的档',
+    '交接给 Grok 后只剩 Grok 有的档',
   );
 });
 
@@ -1127,10 +1140,8 @@ test('换助手时旧的模式表立刻失效，不会把别家的档位发出�
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
   await flush();
   const select = fx.el('conversation-mode-select');
-  const providerSelect = fx.el('conversation-provider-select');
 
-  providerSelect.value = 'claude';
-  fire(providerSelect, 'change');
+  fx.pickAssistant('claude');
   await flush();
   select.value = 'acceptEdits';
   fire(select, 'change');
@@ -1138,8 +1149,7 @@ test('换助手时旧的模式表立刻失效，不会把别家的档位发出�
   assert.equal(select.value, 'acceptEdits');
 
   // 换到 Grok：异步请求还没回来时，旧表就必须已经不可选了
-  providerSelect.value = 'grok';
-  fire(providerSelect, 'change');
+  fx.pickAssistant('grok');
   assert.deepEqual(
     select.childNodes.map(node => node.textContent),
     ['默认'],
@@ -1165,9 +1175,10 @@ test('换助手时旧的模式表立刻失效，不会把别家的档位发出�
 test('对话一开始就锁定助手，要换人只能走交接', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
   await flush();
-  const providerSelect = fx.el('conversation-provider-select');
+  const badge = fx.el('conversation-assistant-badge');
   const handoff = fx.el('conversation-handoff');
-  assert.equal(providerSelect.disabled, false, '还没开始时可以挑助手');
+  assert.equal(badge.disabled, false, '还没开始时可以挑助手');
+  assert.equal(badge.dataset.locked, 'false');
   assert.equal(handoff.hidden, true, '没开始就没有交接可言');
 
   await fx.send('第一句');
@@ -1176,8 +1187,9 @@ test('对话一开始就锁定助手，要换人只能走交接', async t => {
   fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
   await flush();
 
-  assert.equal(providerSelect.disabled, true, '开启之后助手锁定');
-  assert.match(providerSelect.title, /开始后不再更换/);
+  assert.equal(badge.disabled, true, '开启之后助手锁定');
+  assert.equal(badge.dataset.locked, 'true');
+  assert.match(badge.title, /开始后不再更换/);
   assert.equal(handoff.hidden, false, '这时才给交接入口');
 
   fire(handoff, 'click');

@@ -28,7 +28,7 @@ test('最近对话汇总各家 CLI，并把真实来源工具传给历史预览'
 test('对话模式提供多 CLI 选择和常用项目操作', async () => {
   const html = await read('src/index.html');
   for (const id of [
-    'conversation-provider-select',
+    'conversation-assistant-badge',
     'conversation-project-context',
     'conversation-handoff-note',
     'conversation-open-folder',

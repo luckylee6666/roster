@@ -69,7 +69,17 @@
             <h1 id="conversation-project-name">选择一个项目</h1>
             <p id="conversation-project-path">先在开发模式中添加项目</p>
           </div>
-          <span class="conversation-run-status" id="conversation-status" data-status="idle" aria-live="polite">等待你的消息</span>
+          <div class="conversation-header-side">
+            <button class="conversation-assistant-badge" id="conversation-assistant-badge" type="button" disabled>
+              <span class="conversation-provider" id="conversation-provider-state" data-state="loading" title="正在检查本机 CLI">
+                <i aria-hidden="true"></i>
+                <span class="visually-hidden">正在检查本机 CLI</span>
+              </span>
+              <strong id="conversation-assistant-name">选择助手</strong>
+            </button>
+            <button id="conversation-handoff" class="conversation-compact-action" type="button" title="让另一位助手接手这段对话" hidden>交接</button>
+            <span class="conversation-run-status" id="conversation-status" data-status="idle" aria-live="polite">等待你的消息</span>
+          </div>
         </header>
 
         <div class="conversation-scroll">
@@ -100,20 +110,6 @@
                       aria-describedby="conversation-composer-hint conversation-safety-note"
                       data-app-view-focus></textarea>
             <div class="conversation-composer-foot">
-              <label class="conversation-provider-picker" for="conversation-provider-select">
-                <span class="conversation-provider-label">助手</span>
-                <span class="conversation-provider" id="conversation-provider-state" data-state="loading" title="正在检查本机 CLI">
-                  <i aria-hidden="true"></i>
-                  <span class="visually-hidden">正在检查本机 CLI</span>
-                </span>
-                <span class="conversation-provider-select-wrap">
-                  <select id="conversation-provider-select" aria-label="选择当前 AI 助手" disabled>
-                    <option value="">正在检查本机 CLI</option>
-                  </select>
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
-                </span>
-              </label>
-              <button id="conversation-handoff" class="conversation-compact-action" type="button" title="让另一位助手接手这段对话" hidden>交接</button>
               <button id="conversation-attach-image" class="conversation-compact-action conversation-attach-image" type="button" title="添加图片，也可以直接拖进来" aria-label="添加图片" disabled>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M21 12.5V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8"/><path d="M3 15l4-4 4 4 3-3 3 3"/><circle cx="8.5" cy="9" r="1.3"/></svg>
               </button>
