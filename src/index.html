@@ -1057,17 +1057,19 @@
 
     <!-- 对话模式新建项目：不离开对话工作台即可添加项目和分组 -->
     <div class="modal-mask" id="conversation-assistant-overlay" data-app-global-overlay>
-      <div class="modal modal-narrow">
-        <div class="modal-head">
-          <strong id="conversation-assistant-title">选择助手</strong>
-          <button class="modal-x" id="conversation-assistant-close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <p class="conversation-assistant-hint" id="conversation-assistant-hint"></p>
-          <div class="conversation-assistant-list" id="conversation-assistant-list"></div>
-        </div>
-        <div class="modal-foot">
-          <button class="btn btn-default" id="conversation-assistant-cancel" type="button">取消</button>
+      <div class="modal-wrap">
+        <div class="modal modal-sm">
+          <div class="modal-header">
+            <span class="modal-title" id="conversation-assistant-title">选择助手</span>
+            <button class="modal-x" id="conversation-assistant-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="conversation-assistant-hint" id="conversation-assistant-hint"></p>
+            <div class="conversation-assistant-list" id="conversation-assistant-list"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="conversation-assistant-cancel" type="button">取消</button>
+          </div>
         </div>
       </div>
     </div>

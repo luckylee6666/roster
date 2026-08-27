@@ -6953,8 +6953,10 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-assistant-list {
   display: flex;
+  max-height: min(52vh, 420px);
   flex-direction: column;
   gap: 6px;
+  overflow-y: auto;
 }
 
 .conversation-assistant-item {

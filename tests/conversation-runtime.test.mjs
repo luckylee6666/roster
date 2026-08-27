@@ -72,6 +72,19 @@ test('对话工作台补齐片段管理、交接与无项目入口', async () =>
   assert.match(css, /\.conversation-compact-action/);
 });
 
+test('助手选择弹窗沿用可居中的弹窗结构', async () => {
+  const html = await read('src/index.html');
+  const start = html.indexOf('id="conversation-assistant-overlay"');
+  const end = html.indexOf('</div>', html.indexOf('conversation-assistant-list'));
+  const markup = html.slice(start, end);
+  // modal-wrap 那层才负责居中，漏了它弹窗会贴在窗口左上角
+  assert.match(markup, /modal-wrap/);
+  assert.match(markup, /class="modal modal-sm"/);
+  assert.match(markup, /modal-header/);
+  assert.match(markup, /modal-title/);
+  assert.doesNotMatch(markup, /modal-head"/);
+});
+
 test('CSS 加载前恢复应用视图，首次安装默认对话模式', async () => {
   const html = await read('src/index.html');
   const cssLink = html.indexOf('href="styles.css"');
