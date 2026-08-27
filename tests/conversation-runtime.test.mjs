@@ -72,6 +72,21 @@ test('对话工作台补齐片段管理、交接与无项目入口', async () =>
   assert.match(css, /\.conversation-compact-action/);
 });
 
+test('额度显示在顶栏助手徽标旁，不再挂在侧栏底部', async () => {
+  const html = await read('src/index.html');
+  const headerAt = html.indexOf('class="conversation-header"');
+  const headerEnd = html.indexOf('</header>', headerAt);
+  const header = html.slice(headerAt, headerEnd);
+  const sidebar = html.slice(html.indexOf('conversation-sidebar'), html.indexOf('conversation-main'));
+  // 额度是这家助手的属性，跟徽标是一组。
+  assert.match(header, /id="conversation-usage"/);
+  assert.ok(
+    header.indexOf('conversation-assistant-badge') < header.indexOf('conversation-usage'),
+    '额度紧跟在助手徽标之后',
+  );
+  assert.doesNotMatch(sidebar, /conversation-usage/);
+});
+
 test('模型/强度/模式的入口紧挨发送按钮', async () => {
   const html = await read('src/index.html');
   const foot = html.slice(

@@ -971,7 +971,7 @@ test('侧栏显示当前助手的限流用量，换到没有用量的助手就�
   fx.pickAssistant('claude');
   await flush();
   assert.equal(usage.hidden, false);
-  assert.match(usage.textContent, /5 小时 32% · 7 天 7%/);
+  assert.equal(usage.textContent, '5 小时 32% · 7 天 7%', '徽标就在旁边，不用再写一遍助手名');
 
   const beforeGrok = fx.invokes.filter(entry => entry.command === 'oauth_usage').length;
   fx.pickAssistant('grok');

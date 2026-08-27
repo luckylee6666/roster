@@ -5670,8 +5670,7 @@ html[data-app-view="developer"] #conversation-surface {
 .conversation-project-item .conversation-project-copy { flex: 1; }
 
 .conversation-usage {
-  margin: 0 0 6px;
-  padding: 0 10px;
+  min-width: 0;
   overflow: hidden;
   color: var(--chat-faint);
   font-size: 11px;

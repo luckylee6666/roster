@@ -1783,7 +1783,8 @@ export function installConversationMode({
       const payload = await invoke(usageCommandForAgent(agent));
       if (destroyed || revision !== usageRevision) return;
       usage = conversationUsageState(agent, payload);
-      usageText = usage.text ? `${currentProvider().label} · ${usage.text}` : '';
+      // 紧挨着助手徽标显示，不必再重复一遍助手名字。
+      usageText = usage.text;
     } catch (_) {
       if (revision !== usageRevision) return;
       usage = { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
