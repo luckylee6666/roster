@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.2.24** — per-project ideas, handoff between any installed AI CLI, dynamic local CLI filtering, and hardened local persistence. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.3.0** — a new default conversation workspace for all eight installed AI CLIs, projects that run in parallel with completion notifications, a dark theme, and per-message and code-block copying. Developer mode keeps every terminal, file, Git, collaboration, and game workflow one click away. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 

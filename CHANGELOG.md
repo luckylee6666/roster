@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
-## Unreleased
+## v1.3.0
 
 ### English
 

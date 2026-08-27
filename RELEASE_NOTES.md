@@ -1,20 +1,32 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.2.24 / 本版更新
+## What's new in v1.3.0 / 本版更新
 
 **English**
-- Added per-project ideas in the terminal: capture, refine, archive, and place a draft into the active project conversation without pressing Enter.
-- Added handoff between any two installed registered AI CLIs, using the source tool's latest project conversation plus the current Git workspace context.
-- Project cards, Collaborate, and handoff target selection now use live local CLI detection; stale background probes no longer disable the handoff action.
-- Hardened idea and handoff persistence with bounded UTF-8 input, project/session validation, safe atomic writes, and symlink/special-file protections.
+- **New default conversation workspace** for non-developers: pick a project, talk to any of the eight installed AI CLIs (Claude, Grok, Codex, OpenCode, Gemini, agy, Qwen, MiMo Code), and read one merged history timeline with source badges. The full Developer mode — terminal, files, Git, split panes, collaboration, companion web, games — is one click away and unchanged.
+- **Projects run in parallel.** Every project keeps its own conversation, draft, and running turn, so a turn started in one project keeps streaming while you read or type in another. The project list marks running projects, and up to four turns run at once.
+- **You get told when a turn ends**: live elapsed time while it runs, total duration when it finishes, and a desktop notification when the result lands in a background project, an unfocused window, or while Developer mode is on screen.
+- **Dark theme** for the conversation workspace, following the system by default with a system / light / dark switch in the sidebar. Every conversation colour now comes from a palette token, applied before the stylesheet so launching never flashes white.
+- **Copy anything**: hover a message to copy it, drop a question of your own back into the composer, or copy a fenced code block on its own.
+- **Clearer cross-CLI handoff**: switching the assistant with a session open now states who takes over from whom, that only the last 24 messages travel, and that the source session is left untouched — with one click to switch back.
+- Paste images straight into the composer, create projects without leaving the workspace, and reuse prompt snippets and project context in place.
+- Long transcripts stream smoothly: only the message being written is re-rendered, so local images and videos no longer flicker.
+- Turns default to each CLI's read-only/plan policy; writing to the project needs an explicit per-turn toggle that resets when the turn ends.
+- The project-ideas feature was removed from both modes; existing `ideas.json` data is left untouched on disk.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- 终端新增按项目隔离的「想法」：可记录、持续完善、归档，并在不自动回车的情况下放入当前项目对话。
-- 支持任意两家已安装且已登记的 AI CLI 双向交接，交接稿包含来源工具的最新项目会话与当前 Git 工作区现场。
-- 项目卡片、开协作和交接目标统一使用本机 CLI 实时探测；过期的后台探测不再错误禁用交接按钮。
-- 想法与交接持久化增加 UTF-8 容量边界、项目/会话校验、安全原子写入及符号链接/特殊文件防护。
+- **新增面向普通用户的默认对话工作台**：选一个项目，直接和本机已安装的 8 家 AI CLI（Claude、Grok、Codex、OpenCode、Gemini、agy、Qwen、MiMo Code）对话，最近会话合并成一条带来源色标的时间线。原有开发模式（终端、文件、Git、分屏、协作、伴生网页、游戏）一键即回，功能不变。
+- **多项目并行**：每个项目保留自己的对话、草稿和运行中的轮次，一个项目在跑时可以自由切到别的项目查看或输入，两边互不覆盖；项目列表标出正在处理的项目，最多 4 个同时跑。
+- **跑完会告诉你**：运行中实时显示已用时间，结束显示本轮用时；结果落在后台项目、窗口失焦或人停在开发模式时会发桌面通知。
+- **对话工作台支持深色**：默认跟随系统，左下角可在跟随系统 / 浅色 / 深色之间切换。对话区所有颜色改为配色令牌，并在样式表之前生效，启动不会闪白。
+- **想复制就复制**：消息 hover 出现复制，自己问过的话可以「重新提问」放回输入框，回答里的代码块各自带复制按钮。
+- **跨 CLI 交接说得清楚了**：会话打开时切换助手，输入框上方直接说明谁接手谁、只带最近 24 条正文、来源会话保持不动，并可一键改回。
+- 输入框支持直接粘贴图片，工作台内即可新建项目，Prompt 片段与项目现场就地复用。
+- 长对话流式更稳：只重建正在书写的那一条消息，项目内图片和视频不再闪烁。
+- 每轮默认使用各 CLI 的只读/计划策略；要改项目必须本轮明确勾选，进入终态立即复位。
+- 项目想法功能已从两个模式移除，磁盘上已有的 `ideas.json` 原样保留。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装

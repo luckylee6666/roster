@@ -683,7 +683,11 @@ fn prune_paste_files(dir: &std::path::Path, keep: usize) {
     }
 }
 
-fn prompt_with_attachments(prompt: &str, paths: &[std::path::PathBuf], provider_id: &str) -> String {
+fn prompt_with_attachments(
+    prompt: &str,
+    paths: &[std::path::PathBuf],
+    provider_id: &str,
+) -> String {
     if paths.is_empty() {
         return prompt.to_string();
     }
@@ -1726,8 +1730,10 @@ pub fn start(
         )?
     };
     crate::codex_chat::validate_prompt(&prompt)?;
-    let attachment_paths =
-        prepare_attachments(&attachments, &crate::data_dir().join("media").join("pastes"))?;
+    let attachment_paths = prepare_attachments(
+        &attachments,
+        &crate::data_dir().join("media").join("pastes"),
+    )?;
     if !attachment_paths.is_empty() && slash.is_some() {
         return Err("执行 / 命令时暂不支持图片附件；请去掉图片直接发送，或先执行命令".into());
     }
@@ -2490,7 +2496,11 @@ mod tests {
         assert!(prepare_attachments(&bad_mime, dir.path()).is_err());
         let empty = vec![attachment_input("a", "image/png", &[])];
         assert!(prepare_attachments(&empty, dir.path()).is_err());
-        let oversized = vec![attachment_input("a", "image/png", &vec![0u8; MAX_ATTACHMENT_BYTES + 1])];
+        let oversized = vec![attachment_input(
+            "a",
+            "image/png",
+            &vec![0u8; MAX_ATTACHMENT_BYTES + 1],
+        )];
         assert!(prepare_attachments(&oversized, dir.path()).is_err());
         let too_many = vec![
             attachment_input("a", "image/png", &[1]),
