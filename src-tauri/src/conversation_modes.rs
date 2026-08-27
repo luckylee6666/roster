@@ -1,0 +1,169 @@
+//! 每家 CLI 自己的权限模式。
+//!
+//! Roster 不再用一个二元开关去映射各家策略——那是有损的，而且实测证明同名不
+//! 等于同行为（Grok 的 `acceptEdits` 在无头下根本无法自我批准）。这里把各家原
+//! 生的档位原样登记下来，前端只传模式 ID，认不认由这份白名单说了算。
+//!
+//! 收录标准有两条：
+//! 1. 必须在无头（`--print` / `run` / app-server）下实测能跑通，需要 TTY 交互
+//!    才能应答的档不收——没人应答只会变成挂起或 `User cancelled`。
+//! 2. 会完全绕过沙箱或权限检查的档不收：`bypassPermissions`、
+//!    `danger-full-access`、`--dangerously-skip-permissions`、`--yolo`。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMode {
+    /// 各家 CLI 自己的取值，直接作为参数传下去。
+    pub id: &'static str,
+    pub label: &'static str,
+    pub hint: &'static str,
+    /// 这一档是否可能改动项目文件。
+    pub writes: bool,
+}
+
+const fn mode(
+    id: &'static str,
+    label: &'static str,
+    hint: &'static str,
+    writes: bool,
+) -> ConversationMode {
+    ConversationMode {
+        id,
+        label,
+        hint,
+        writes,
+    }
+}
+
+const CLAUDE_MODES: &[ConversationMode] = &[
+    mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
+    mode(
+        "acceptEdits",
+        "自动接受修改",
+        "文件改动直接生效，不再逐条确认",
+        true,
+    ),
+    mode("auto", "自动", "由 Claude 自行判断该不该动手", true),
+];
+
+// Grok 的 acceptEdits 在无头下仍会发审批请求且无人应答，故不收录。
+const GROK_MODES: &[ConversationMode] = &[
+    mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
+    mode("auto", "自动", "由 Grok 自行判断该不该动手", true),
+];
+
+const CODEX_MODES: &[ConversationMode] = &[
+    mode("read-only", "只读", "只能读项目，写入一律被沙箱挡下", false),
+    mode(
+        "workspace-write",
+        "可改工作区",
+        "可以改项目目录里的文件",
+        true,
+    ),
+];
+
+const GEMINI_MODES: &[ConversationMode] = &[
+    mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
+    mode("auto_edit", "自动接受修改", "文件改动直接生效", true),
+];
+
+const AGY_MODES: &[ConversationMode] = &[
+    mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
+    mode("accept-edits", "自动接受修改", "文件改动直接生效", true),
+];
+
+const AGENT_MODES: &[ConversationMode] = &[
+    mode("plan", "只读计划", "用内置 plan agent，只读不写", false),
+    mode(
+        "build",
+        "可改工作区",
+        "用默认 build agent，可以改文件",
+        true,
+    ),
+];
+
+pub fn modes_for(provider: &str) -> &'static [ConversationMode] {
+    match provider {
+        "claude" => CLAUDE_MODES,
+        "grok" => GROK_MODES,
+        "codex" => CODEX_MODES,
+        "gemini" | "qwen" => GEMINI_MODES,
+        "agy" => AGY_MODES,
+        "opencode" | "mimo" => AGENT_MODES,
+        _ => &[],
+    }
+}
+
+/// 第一档永远是这家最保守的那个，空模式和未知 provider 都落到这里。
+pub fn default_mode(provider: &str) -> ConversationMode {
+    modes_for(provider).first().copied().unwrap_or(mode(
+        "plan",
+        "只读计划",
+        "读项目、给方案，不动任何文件",
+        false,
+    ))
+}
+
+/// 不认的模式 ID 直接拒绝，不退回成"给个写入权限算了"。
+pub fn resolve(provider: &str, requested: &str) -> Result<ConversationMode, String> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Ok(default_mode(provider));
+    }
+    modes_for(provider)
+        .iter()
+        .find(|entry| entry.id == requested)
+        .copied()
+        .ok_or_else(|| format!("这个助手没有「{requested}」这个模式"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_provider_starts_read_only_and_rejects_unknown_modes() {
+        for provider in [
+            "claude", "grok", "codex", "gemini", "qwen", "agy", "opencode", "mimo",
+        ] {
+            let modes = modes_for(provider);
+            assert!(!modes.is_empty(), "{provider} 应该有模式表");
+            assert!(!modes[0].writes, "{provider} 的第一档必须是只读");
+            assert_eq!(
+                resolve(provider, "").unwrap(),
+                modes[0],
+                "{provider} 空模式应落到最保守的一档"
+            );
+            assert!(
+                resolve(provider, "bypassPermissions").is_err(),
+                "{provider} 不得接受绕过档"
+            );
+            assert!(resolve(provider, "随便编的").is_err());
+        }
+    }
+
+    #[test]
+    fn never_exposes_trust_bypassing_modes() {
+        for provider in [
+            "claude", "grok", "codex", "gemini", "qwen", "agy", "opencode", "mimo",
+        ] {
+            for entry in modes_for(provider) {
+                assert!(
+                    !matches!(
+                        entry.id,
+                        "bypassPermissions" | "danger-full-access" | "dontAsk" | "yolo"
+                    ),
+                    "{provider} 暴露了绕过档 {}",
+                    entry.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_provider_falls_back_to_read_only() {
+        assert!(modes_for("nope").is_empty());
+        assert!(!default_mode("nope").writes);
+        assert!(!resolve("nope", "").unwrap().writes);
+    }
+}

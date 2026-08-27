@@ -153,7 +153,7 @@ const IDS = [
   'conversation-starter-list',
   'conversation-composer',
   'conversation-attachments',
-  'conversation-write-access',
+  'conversation-mode-select',
   'conversation-send',
   'conversation-stop',
   'conversation-composer-hint',
@@ -240,6 +240,14 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
       if (command === 'pick_attachment_images') return pickedImages;
+      if (command === 'conversation_mode_list') {
+        return payload.providerId === 'claude'
+          ? [
+              { id: 'plan', label: '只读计划', hint: '不动文件', writes: false },
+              { id: 'acceptEdits', label: '自动接受修改', hint: '改动直接生效', writes: true },
+            ]
+          : [{ id: 'plan', label: '只读计划', hint: '不动文件', writes: false }];
+      }
       if (command === 'list_conversation_session_titles') return { ...sessionTitles };
       if (command === 'set_conversation_session_title') {
         if (payload.title) sessionTitles[`${payload.tool}:${payload.id}`] = payload.title;
@@ -623,18 +631,20 @@ test('只有允许修改项目的那一轮才拍基线并出改动清单', async
   await fx.send('只读的一轮');
   assert.equal(contextCalls(), readOnlyBefore, '只读轮不额外拍基线');
   const readOnlyRun = fx.startedRuns()[0];
-  assert.equal(readOnlyRun.allowWrite, false);
+  assert.equal(readOnlyRun.mode, '', '没选过模式就交给后端用最保守的一档');
   fx.emit({ runId: readOnlyRun.runId, providerId: readOnlyRun.providerId, kind: 'completed', data: { status: 'completed' } });
   await flush();
   assert.equal(fx.el('conversation-changes-list').childNodes.length, 0);
 
-  fx.el('conversation-write-access').checked = true;
+  const modeSelect = fx.el('conversation-mode-select');
+  modeSelect.value = 'acceptEdits';
+  fire(modeSelect, 'change');
   const writeBefore = contextCalls();
   await fx.send('去改一下文件');
   assert.equal(contextCalls(), writeBefore + 1, '写入轮发送时先拍基线');
   fx.setChanges([{ status: 'M', path: 'src/a.js' }, { status: 'A', path: 'src/new.js' }]);
   const writeRun = fx.startedRuns()[1];
-  assert.equal(writeRun.allowWrite, true);
+  assert.equal(writeRun.mode, 'acceptEdits', '把选中的模式原样传给后端');
   fx.emit({ runId: writeRun.runId, providerId: writeRun.providerId, kind: 'completed', data: { status: 'completed' } });
   await flush();
   const rows = fx.el('conversation-changes-list').childNodes;
@@ -1024,7 +1034,7 @@ test('一个项目都没有时给三步引导，有项目后换成普通空状�
   assert.match(empty.childNodes[0].textContent, /先添加一个项目/);
   const steps = empty.childNodes.find(node => node.tagName === 'OL');
   assert.equal(steps.childNodes.length, 3);
-  assert.match(steps.childNodes[2].textContent, /允许修改项目/, '第一次就把只读边界说清楚');
+  assert.match(steps.childNodes[2].textContent, /最保守的那一档/, '第一次就把只读边界说清楚');
   assert.ok(empty.childNodes.some(node => node.textContent === '新建项目'));
   assert.equal(fx.el('conversation-starter-list').hidden, true, '没项目时不给快捷句');
 
@@ -1062,4 +1072,44 @@ test('历史会话可以改名，改回原名等于清掉别名', async t => {
   await flush();
   assert.equal(titleOf(), '原始标题');
   assert.equal('claude:c1' in fx.sessionTitles, false, '改回原名就不再占一条别名');
+});
+
+test('模式选择器只列当前助手有的档，选中后按 provider 记住', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+  const select = fx.el('conversation-mode-select');
+  const composer = fx.el('conversation-composer');
+
+  fx.el('conversation-provider-select').value = 'claude';
+  fire(fx.el('conversation-provider-select'), 'change');
+  await flush();
+  assert.deepEqual(
+    select.childNodes.map(node => node.textContent),
+    ['只读计划', '自动接受修改'],
+    'Claude 列自己的两档',
+  );
+  assert.equal(select.value, 'plan', '默认落在最保守的一档');
+  assert.equal(select.dataset.writes, 'false');
+
+  select.value = 'acceptEdits';
+  fire(select, 'change');
+  await flush();
+  assert.equal(select.dataset.writes, 'true', '会改文件的档要有视觉重量');
+
+  composer.value = '改点东西';
+  fire(fx.el('conversation-send'), 'click');
+  await flush();
+  const run = fx.startedRuns().pop();
+  assert.equal(run.mode, 'acceptEdits');
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+
+  fx.el('conversation-provider-select').value = 'grok';
+  fire(fx.el('conversation-provider-select'), 'change');
+  await flush();
+  assert.deepEqual(
+    select.childNodes.map(node => node.textContent),
+    ['只读计划'],
+    '换到 Grok 就只剩 Grok 有的档',
+  );
 });

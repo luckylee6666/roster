@@ -58,7 +58,7 @@ function fixture({ history, composerValue = '' } = {}) {
     'conversation-history-state',
     'conversation-composer',
     'conversation-new-chat',
-    'conversation-write-access',
+    'conversation-mode-select',
   ].forEach(ensure);
   ensure('conversation-composer').value = composerValue;
 

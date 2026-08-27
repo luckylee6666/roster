@@ -20,6 +20,7 @@ mod cli_detect;
 mod codex_chat;
 mod conversation_chat;
 mod conversation_media;
+mod conversation_modes;
 mod conversation_slash;
 mod native_esc;
 mod orchestra;
@@ -1993,6 +1994,12 @@ async fn preview_conversation_transcript(
     .map_err(|error| error.to_string())?
 }
 
+/// 模式表由后端给出，界面只负责显示；能不能用仍由启动时的白名单复核。
+#[tauri::command]
+fn conversation_mode_list(provider_id: String) -> Vec<conversation_modes::ConversationMode> {
+    conversation_modes::modes_for(&provider_id).to_vec()
+}
+
 #[tauri::command]
 async fn list_conversation_session_titles() -> Result<session_titles::SessionTitles, String> {
     tauri::async_runtime::spawn_blocking(session_titles::load)
@@ -3313,6 +3320,7 @@ pub fn run() {
             preview_conversation_transcript,
             read_conversation_project_media,
             conversation_project_files,
+            conversation_mode_list,
             list_conversation_session_titles,
             set_conversation_session_title,
             read_conversation_attachment_image,

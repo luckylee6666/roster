@@ -99,8 +99,9 @@ pub struct ConversationChatStartInput {
     #[serde(default)]
     pub thread_id: String,
     pub prompt: String,
+    /// 各家 CLI 自己的权限模式 ID，空串表示用这家最保守的一档。
     #[serde(default)]
-    pub allow_write: bool,
+    pub mode: String,
     #[serde(default)]
     pub handoff_provider_id: String,
     #[serde(default)]
@@ -866,16 +867,14 @@ fn provider_command(
     model: &str,
     effort: &str,
 ) -> Command {
-    provider_command_with_slash(
-        spec,
-        binary,
-        prompt,
-        thread_id,
-        allow_write,
-        model,
-        effort,
-        None,
-    )
+    // 测试按"要不要写"取这家对应的那一档，省得每个用例都写死模式名。
+    let modes = crate::conversation_modes::modes_for(spec.id);
+    let mode = modes
+        .iter()
+        .find(|entry| entry.writes == allow_write)
+        .copied()
+        .unwrap_or_else(|| crate::conversation_modes::default_mode(spec.id));
+    provider_command_with_slash(spec, binary, prompt, thread_id, mode, model, effort, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -884,11 +883,12 @@ fn provider_command_with_slash(
     binary: PathBuf,
     prompt: &str,
     thread_id: &str,
-    allow_write: bool,
+    mode: crate::conversation_modes::ConversationMode,
     model: &str,
     effort: &str,
     slash: Option<&crate::conversation_slash::ConversationSlashInvocation>,
 ) -> Command {
+    let allow_write = mode.writes;
     let mut command = Command::new(binary);
     match spec.id {
         "claude" => {
@@ -899,7 +899,7 @@ fn provider_command_with_slash(
             command.args([
                 "--strict-mcp-config",
                 "--permission-mode",
-                if allow_write { "acceptEdits" } else { "plan" },
+                mode.id,
                 "--disallowedTools",
                 "WebSearch,WebFetch",
             ]);
@@ -914,11 +914,15 @@ fn provider_command_with_slash(
             command.args([
                 "--output-format",
                 "streaming-messages-json",
+                // 实测：Grok 的 --sandbox 收的是 ~/.grok/sandbox.toml 里的 profile 名，
+                // 不是 Codex 那种固定枚举。`workspace-write` 并不存在，Grok 会拒绝启动；
+                // 内建的可写基础 profile 叫 `workspace`。另外无头下 `acceptEdits` 仍会
+                // 发审批请求而没人应答，最终变成 User cancelled，只有 `auto` 能自我批准。
                 "--permission-mode",
-                if allow_write { "acceptEdits" } else { "plan" },
+                mode.id,
                 "--sandbox",
                 if allow_write {
-                    "workspace-write"
+                    "workspace"
                 } else {
                     "read-only"
                 },
@@ -937,7 +941,7 @@ fn provider_command_with_slash(
                 "--output-format",
                 "stream-json",
                 "--approval-mode",
-                if allow_write { "auto_edit" } else { "plan" },
+                mode.id,
                 "--sandbox",
             ]);
             if !thread_id.is_empty() {
@@ -952,7 +956,7 @@ fn provider_command_with_slash(
                 "--output-format",
                 "stream-json",
                 "--mode",
-                if allow_write { "accept-edits" } else { "plan" },
+                mode.id,
                 "--sandbox",
             ]);
             if slash.is_none() {
@@ -1013,7 +1017,7 @@ fn provider_command_with_slash(
                 "stream-json",
                 "--include-partial-messages",
                 "--approval-mode",
-                if allow_write { "auto_edit" } else { "plan" },
+                mode.id,
                 "--sandbox",
             ]);
             if slash.is_none() {
@@ -1563,7 +1567,7 @@ struct HeadlessStart {
     run_id: String,
     thread_id: String,
     prompt: String,
-    allow_write: bool,
+    mode: crate::conversation_modes::ConversationMode,
     model: String,
     effort: String,
     slash: Option<crate::conversation_slash::ConversationSlashInvocation>,
@@ -1581,7 +1585,7 @@ fn start_headless(
         run_id,
         thread_id,
         prompt,
-        allow_write,
+        mode,
         model,
         effort,
         slash,
@@ -1600,7 +1604,7 @@ fn start_headless(
         binary,
         &prompt,
         &thread_id,
-        allow_write,
+        mode,
         &model,
         &effort,
         slash.as_ref(),
@@ -1741,7 +1745,7 @@ pub fn start(
         run_id,
         thread_id,
         prompt,
-        allow_write,
+        mode,
         handoff_provider_id,
         handoff_session_id,
         model,
@@ -1749,6 +1753,9 @@ pub fn start(
         attachments,
     } = input;
     crate::codex_chat::validate_run_id(&run_id)?;
+    // 模式必须是这家自己有的档，不认就拒，不退回成"给个写入权限算了"。
+    let mode = crate::conversation_modes::resolve(&provider_id, &mode)?;
+    let allow_write = mode.writes;
     let prompt = crate::codex_chat::validate_prompt(&prompt)?;
     let model = validate_model(&model)?;
     let effort = validate_effort(&effort)?;
@@ -1829,7 +1836,7 @@ pub fn start(
             run_id,
             thread_id,
             prompt,
-            allow_write,
+            mode,
             model,
             effort,
             slash,
@@ -1855,6 +1862,68 @@ mod tests {
         assert!(provider_spec("opencode").is_some());
         assert!(provider_spec("mimo").is_some());
         assert!(provider_spec("../../bin/sh").is_none());
+    }
+
+    #[test]
+    fn write_modes_use_values_each_cli_actually_accepts_headless() {
+        // 本机实测固化：Grok 的 --sandbox 收的是自定义 profile 名，`workspace-write`
+        // 不存在会拒绝启动；无头下 `acceptEdits` 也无法自我批准，只有 `auto` 能写。
+        let fake = PathBuf::from("/bin/echo");
+        let grok = provider_command(
+            provider_spec("grok").unwrap(),
+            fake.clone(),
+            "写点东西",
+            "",
+            true,
+            "",
+            "",
+        );
+        let grok_args = grok
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            grok_args
+                .windows(2)
+                .any(|pair| pair == ["--sandbox", "workspace"]),
+            "Grok 写入必须用内建的 workspace profile"
+        );
+        assert!(
+            !grok_args.iter().any(|arg| arg == "workspace-write"),
+            "workspace-write 不是 Grok 的 profile"
+        );
+        assert!(
+            grok_args
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "auto"]),
+            "无头下只有 auto 能自我批准"
+        );
+
+        // 传下去的永远是模式表里的原生取值，不是 Roster 自己编的词。
+        for id in ["claude", "gemini", "qwen", "agy"] {
+            let spec = provider_spec(id).unwrap();
+            for mode in crate::conversation_modes::modes_for(id) {
+                let command = provider_command_with_slash(
+                    spec,
+                    fake.clone(),
+                    "你好",
+                    "",
+                    *mode,
+                    "",
+                    "",
+                    None,
+                );
+                let args = command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                assert!(
+                    args.iter().any(|arg| arg == mode.id),
+                    "{id} 的 {} 模式没有原样传下去",
+                    mode.id
+                );
+            }
+        }
     }
 
     #[test]
@@ -2067,7 +2136,7 @@ mod tests {
             fake.clone(),
             "/team/review 检查暂存区",
             "",
-            false,
+            crate::conversation_modes::default_mode("opencode"),
             "",
             "high",
             Some(&command_invocation),
@@ -2094,7 +2163,7 @@ mod tests {
             fake.clone(),
             "/review 检查暂存区",
             "",
-            false,
+            crate::conversation_modes::default_mode("opencode"),
             "",
             "",
             Some(&skill_invocation),
@@ -2113,7 +2182,7 @@ mod tests {
             fake.clone(),
             "/review 检查暂存区",
             "",
-            false,
+            crate::conversation_modes::default_mode("mimo"),
             "",
             "max",
             Some(&skill_invocation),
@@ -2135,7 +2204,7 @@ mod tests {
             fake.clone(),
             "/team/review --model 不应成为进程参数",
             "",
-            false,
+            crate::conversation_modes::default_mode("mimo"),
             "",
             "",
             Some(&command_invocation),
@@ -2157,7 +2226,7 @@ mod tests {
                 fake.clone(),
                 "/review 检查暂存区",
                 "",
-                false,
+                crate::conversation_modes::default_mode(id),
                 "",
                 "",
                 Some(&skill_invocation),
@@ -2174,7 +2243,7 @@ mod tests {
             fake,
             "/review 检查暂存区",
             "",
-            false,
+            crate::conversation_modes::default_mode("qwen"),
             "",
             "",
             Some(&skill_invocation),
@@ -2193,7 +2262,7 @@ mod tests {
             PathBuf::from("/bin/echo"),
             "/review 检查暂存区",
             "",
-            false,
+            crate::conversation_modes::default_mode("gemini"),
             "",
             "",
             Some(&skill_invocation),

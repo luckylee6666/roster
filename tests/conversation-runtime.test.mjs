@@ -24,7 +24,7 @@ test('对话工作台具有项目、历史、消息、输入和进度三区结�
     'conversation-composer',
     'conversation-snippet-select',
     'conversation-handoff-note',
-    'conversation-write-access',
+    'conversation-mode-select',
     'conversation-send',
     'conversation-plan-list',
     'conversation-activity-list',
@@ -203,7 +203,7 @@ test('对话使用结构化多 CLI IPC 和 DOMPurify，不解析终端 ANSI', as
   assert.match(rust, /conversation_chat_cancel/);
   assert.match(rust, /preview_conversation_transcript/);
   assert.match(rust, /read_conversation_project_media/);
-  assert.match(conversation, /allowWrite/);
+  assert.match(conversation, /mode: currentMode\(\)/);
   assert.match(codexAdapter, /json!\(\{ "type": "readOnly" \}\)/);
   assert.match(codexAdapter, /get_webview_window\("main"\)/);
   assert.doesNotMatch(codexAdapter, /app\.emit\(/);

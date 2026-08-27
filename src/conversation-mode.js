@@ -465,7 +465,7 @@ export function installConversationMode({
     mentionMenu: document.getElementById('conversation-mention-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
     handoffNote: document.getElementById('conversation-handoff-note'),
-    writeAccess: document.getElementById('conversation-write-access'),
+    modeSelect: document.getElementById('conversation-mode-select'),
     safetyNote: document.getElementById('conversation-safety-note'),
     send: document.getElementById('conversation-send'),
     stop: document.getElementById('conversation-stop'),
@@ -654,8 +654,12 @@ export function installConversationMode({
 
   const MODEL_STORAGE_KEY = 'roster-conversation-models-v1';
   const EFFORT_STORAGE_KEY = 'roster-conversation-efforts-v1';
+  const MODE_STORAGE_KEY = 'roster-conversation-modes-v1';
   let providerModels = {};
   let providerEfforts = {};
+  let providerModes = {};
+  let modeOptions = [];
+  let modeRevision = 0;
   try {
     const storedModels = JSON.parse(storage?.getItem(MODEL_STORAGE_KEY) || 'null');
     if (storedModels?.version === 1 && storedModels.models && typeof storedModels.models === 'object') {
@@ -666,6 +670,12 @@ export function installConversationMode({
     const storedEfforts = JSON.parse(storage?.getItem(EFFORT_STORAGE_KEY) || 'null');
     if (storedEfforts?.version === 1 && storedEfforts.efforts && typeof storedEfforts.efforts === 'object') {
       providerEfforts = { ...storedEfforts.efforts };
+    }
+  } catch (_) {}
+  try {
+    const storedModes = JSON.parse(storage?.getItem(MODE_STORAGE_KEY) || 'null');
+    if (storedModes?.version === 1 && storedModes.modes && typeof storedModes.modes === 'object') {
+      providerModes = { ...storedModes.modes };
     }
   } catch (_) {}
   let slashIndex = 0;
@@ -737,6 +747,65 @@ export function installConversationMode({
     slashModelsLoading = false;
     renderSlashMenu();
     renderControls();
+  }
+
+  function persistProviderModes() {
+    try {
+      storage?.setItem(MODE_STORAGE_KEY, JSON.stringify({ version: 1, modes: providerModes }));
+    } catch (_) {}
+  }
+
+  const currentMode = () => String(providerModes[currentProvider().id] || '').trim();
+
+  const currentModeWrites = () => Boolean(
+    modeOptions.find(entry => entry.id === currentMode())?.writes,
+  );
+
+  // 模式表由后端给，界面不自己维护一份，免得和真正的白名单漂移。
+  async function refreshModeOptions() {
+    const provider = currentProvider().id;
+    const revision = ++modeRevision;
+    try {
+      const options = await invoke('conversation_mode_list', { providerId: provider });
+      if (destroyed || revision !== modeRevision) return;
+      modeOptions = Array.isArray(options) ? options : [];
+    } catch (_) {
+      if (revision !== modeRevision) return;
+      modeOptions = [];
+    }
+    // 存着的模式如果这家没有（换过 CLI、升级过版本），退回最保守的一档。
+    if (currentMode() && !modeOptions.some(entry => entry.id === currentMode())) {
+      delete providerModes[currentProvider().id];
+      persistProviderModes();
+    }
+    renderModePicker();
+    renderControls();
+  }
+
+  function renderModePicker() {
+    const select = dom.modeSelect;
+    if (!select) return;
+    const provider = currentProvider();
+    select.replaceChildren();
+    if (!modeOptions.length) {
+      const option = element(document, 'option', '', '默认');
+      option.value = '';
+      select.appendChild(option);
+      select.disabled = true;
+      if (dom.modeHint) dom.modeHint.textContent = '';
+      return;
+    }
+    modeOptions.forEach(entry => {
+      const option = element(document, 'option', '', entry.label);
+      option.value = entry.id;
+      option.title = `${entry.id} · ${entry.hint}`;
+      select.appendChild(option);
+    });
+    const active = currentMode() || modeOptions[0].id;
+    select.value = active;
+    const chosen = modeOptions.find(entry => entry.id === active) || modeOptions[0];
+    select.title = `${provider.label} · ${chosen.id}：${chosen.hint}`;
+    select.dataset.writes = chosen.writes ? 'true' : 'false';
   }
 
   function persistProviderModels() {
@@ -1138,7 +1207,10 @@ export function installConversationMode({
     }
     renderRunStatus();
     if (dom.safetyNote) {
-      dom.safetyNote.textContent = `默认使用 ${provider.label} 的只读/计划策略。打开“允许修改项目”后才切换到写入模式；第三方 CLI 的本机配置仍由其自身控制。`;
+      const active = modeOptions.find(entry => entry.id === (currentMode() || modeOptions[0]?.id));
+      dom.safetyNote.textContent = active
+        ? `当前用 ${provider.label} 自己的「${active.label}」模式（${active.id}）：${active.hint}。模式由该 CLI 自己执行，Roster 不额外提供系统级隔离。`
+        : `${provider.label} 由其自身的默认策略执行，Roster 不额外提供系统级隔离。`;
     }
   }
 
@@ -1443,7 +1515,7 @@ export function installConversationMode({
     [
       '选一个本机的项目文件夹，Roster 只在这个目录里工作。',
       '用日常语言说你想做什么，再挑一个已安装的助手。',
-      '默认是只读的；要让它改文件，得在那一轮明确勾上「允许修改项目」。',
+      '默认走这家 CLI 最保守的那一档；要让它改文件，在输入框旁把「模式」换成会写入的档。',
     ].forEach(text => steps.appendChild(element(document, 'li', '', text)));
     const create = element(document, 'button', 'conversation-create-project', '新建项目');
     create.type = 'button';
@@ -1873,7 +1945,7 @@ export function installConversationMode({
       dom.stop.textContent = state.status === 'starting' ? '取消连接' : '停止';
     }
     if (dom.composer) dom.composer.disabled = unavailable;
-    if (dom.writeAccess) dom.writeAccess.disabled = unavailable || busy;
+    if (dom.modeSelect) dom.modeSelect.disabled = unavailable || busy || !modeOptions.length;
     if (dom.snippetSelect) {
       dom.snippetSelect.disabled = busy || deleting || !selectedProject
         || (snippets.length === 0 && !onManageSnippets);
@@ -1938,6 +2010,7 @@ export function installConversationMode({
     renderMentionMenu();
     renderHandoffNote();
     renderUsage();
+    renderModePicker();
     renderControls();
     syncElapsedTimer();
   }
@@ -2129,8 +2202,7 @@ export function installConversationMode({
         threadId: session.id,
         messages: preview?.messages,
       });
-      if (dom.writeAccess) dom.writeAccess.checked = false;
-      persistSelection();
+        persistSelection();
       if (dom.historyState) dom.historyState.textContent = preview?.truncated
         ? '这条对话非常长，已展示最近一段内容（最多 500 条）'
         : '';
@@ -2246,21 +2318,16 @@ export function installConversationMode({
     conversationDrafts.set(projectId, {
       text: String(dom.composer?.value || ''),
       attachments: pendingAttachments,
-      allowWrite: Boolean(dom.writeAccess?.checked),
     });
   }
 
   // Only a project the user has already typed in owns a draft; the others keep
   // whatever is in the composer, exactly as a single-project switch used to.
   function restoreDraft(projectId) {
-    if (!conversationDrafts.has(projectId)) {
-      if (dom.writeAccess) dom.writeAccess.checked = false;
-      return;
-    }
+    if (!conversationDrafts.has(projectId)) return;
     const draft = conversationDrafts.get(projectId) || {};
     if (dom.composer) dom.composer.value = String(draft.text || '');
     pendingAttachments = Array.isArray(draft.attachments) ? draft.attachments : [];
-    if (dom.writeAccess) dom.writeAccess.checked = Boolean(draft.allowWrite);
     renderPendingAttachments();
   }
 
@@ -2298,6 +2365,7 @@ export function installConversationMode({
     void refreshProjectContext();
     void refreshSlashCommands();
     void refreshUsage();
+    void refreshModeOptions();
     dom.composer?.focus();
     return true;
   }
@@ -2312,7 +2380,6 @@ export function installConversationMode({
       providerId: providerForNewChat(),
     });
     conversationStates.set(selectedProject.id, state);
-    if (dom.writeAccess) dom.writeAccess.checked = false;
     persistSelection();
     renderState();
     void refreshHistory();
@@ -2325,12 +2392,12 @@ export function installConversationMode({
     const next = selectConversationProvider(state, providerId);
     if (next === state) return;
     state = next;
-    if (dom.writeAccess) dom.writeAccess.checked = false;
     persistSelection();
     renderState();
     void refreshHistory();
     void refreshSlashCommands();
     void refreshUsage({ force: true });
+    void refreshModeOptions();
     dom.composer?.focus();
   }
 
@@ -2522,7 +2589,7 @@ export function installConversationMode({
     transcriptRevision += 1;
     const runId = newRunId();
     const runContext = conversationRunContext(state);
-    const allowWrite = !!dom.writeAccess?.checked;
+    const allowWrite = currentModeWrites();
     const runEntry = { runId, projectId: project.id, project: { ...project }, startedAt: Date.now() };
     if (allowWrite) {
       // 本轮到底改了什么以磁盘为准，所以先拍一张 Git 现状作基线。
@@ -2552,7 +2619,7 @@ export function installConversationMode({
         runId,
         threadId: runContext.threadId,
         prompt,
-        allowWrite,
+        mode: currentMode(),
         handoffProviderId: runContext.handoffProviderId,
         handoffSessionId: runContext.handoffSessionId,
         model: currentModel(),
@@ -2576,8 +2643,7 @@ export function installConversationMode({
       });
       activeRuns.delete(runId);
       runController.clear(runId);
-      if (dom.writeAccess) dom.writeAccess.checked = false;
-      renderState();
+        renderState();
       renderProjects();
     }
   }
@@ -2692,8 +2758,6 @@ export function installConversationMode({
     if (entry.baseline) void buildChangeReport(entry);
     const latest = projects.find(project => project.id === entry.projectId) || null;
     if (!isActiveProject(entry.projectId)) {
-      const draft = conversationDrafts.get(entry.projectId);
-      if (draft) conversationDrafts.set(entry.projectId, { ...draft, allowWrite: false });
       if (deleteAfterRun.delete(entry.projectId)) {
         conversationStates.set(entry.projectId, createConversationState({
           projectId: entry.projectId,
@@ -2704,7 +2768,6 @@ export function installConversationMode({
       announceFinishedRun(entry, finalState);
       return;
     }
-    if (dom.writeAccess) dom.writeAccess.checked = false;
     renderRunStatus();
     if (latest) {
       selectedProject = latest;
@@ -2828,6 +2891,19 @@ export function installConversationMode({
     }
   });
   dom.providerSelect?.addEventListener('change', () => selectProvider(dom.providerSelect.value));
+  dom.modeSelect?.addEventListener('change', () => {
+    if (dom.modeSelect.disabled) return;
+    const picked = String(dom.modeSelect.value || '').trim();
+    if (picked && modeOptions.some(entry => entry.id === picked)) {
+      providerModes[currentProvider().id] = picked;
+    } else {
+      delete providerModes[currentProvider().id];
+    }
+    persistProviderModes();
+    renderModePicker();
+    renderControls();
+    dom.composer?.focus();
+  });
   dom.snippetSelect?.addEventListener('change', () => {
     if (dom.snippetSelect.value === MANAGE_SNIPPETS_VALUE) {
       dom.snippetSelect.value = '';
@@ -3038,6 +3114,7 @@ export function installConversationMode({
       renderState();
       void refreshSlashCommands();
       void refreshUsage({ force: true });
+      void refreshModeOptions();
     },
     setSnippets(nextSnippets) {
       snippets = Array.isArray(nextSnippets) ? nextSnippets : [];

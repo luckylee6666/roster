@@ -6944,33 +6944,42 @@ html[data-app-view="developer"] #conversation-surface {
   white-space: nowrap;
 }
 
-.conversation-write-access {
-  display: inline-flex;
+.conversation-mode-picker {
+  display: flex;
   flex: none;
   align-items: center;
   gap: 6px;
-  margin-right: 4px;
   color: var(--chat-muted);
-  font-size: 10.5px;
-  line-height: 18px;
-  cursor: pointer;
+  font-size: 11px;
   white-space: nowrap;
 }
 
-.conversation-write-access input {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--chat-accent);
+.conversation-mode-picker select {
+  height: 26px;
+  max-width: 22vw;
+  appearance: none;
+  padding: 0 22px 0 8px;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 8px;
+  outline: 0;
+  background: var(--chat-panel);
+  color: var(--chat-control-ink);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
 }
 
-.conversation-write-access:has(input:checked) {
-  color: var(--chat-accent);
-  font-weight: 620;
+.conversation-mode-picker select:hover:not(:disabled) {
+  border-color: var(--chat-control-line-hover);
 }
 
-.conversation-write-access:has(input:disabled) {
-  cursor: not-allowed;
-  opacity: 0.55;
+.conversation-mode-picker select:disabled { opacity: 0.55; cursor: default; }
+
+/* 会改文件的档给一个明确的视觉重量，别让人不知不觉停在写入模式 */
+.conversation-mode-picker select[data-writes="true"] {
+  border-color: var(--chat-warn-line);
+  color: var(--chat-warn-ink);
+  background: var(--chat-warn-bg);
 }
 
 .conversation-send,

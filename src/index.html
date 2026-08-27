@@ -121,9 +121,9 @@
                   <option value="">常用片段</option>
                 </select>
               </label>
-              <label class="conversation-write-access" for="conversation-write-access" title="打开后，当前 AI 助手可以在项目中修改文件和执行项目命令">
-                <input id="conversation-write-access" type="checkbox" />
-                <span>允许修改项目</span>
+              <label class="conversation-mode-picker" for="conversation-mode-select" title="这一轮用当前助手的哪个权限模式">
+                <span class="conversation-mode-label">模式</span>
+                <select id="conversation-mode-select" aria-label="选择当前助手的权限模式" disabled></select>
               </label>
               <span id="conversation-composer-hint">正在检查本机 CLI</span>
               <button class="conversation-stop" id="conversation-stop" type="button" hidden>停止</button>
@@ -132,7 +132,7 @@
               </button>
             </div>
           </div>
-          <p class="conversation-safety-note" id="conversation-safety-note">默认使用所选 CLI 的只读/计划策略；打开“允许修改项目”后才切换到写入模式。</p>
+          <p class="conversation-safety-note" id="conversation-safety-note">模式用的是所选 CLI 自己的档位，由该 CLI 执行。</p>
         </div>
       </main>
 
