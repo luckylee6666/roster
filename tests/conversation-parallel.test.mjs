@@ -143,6 +143,7 @@ const IDS = [
   'conversation-send',
   'conversation-stop',
   'conversation-composer-hint',
+  'conversation-handoff-note',
   'conversation-project-context',
   'conversation-activity-list',
   'conversation-plan-list',
@@ -473,4 +474,31 @@ test('左侧分组第一次出现时是折叠的，用户展开后保持展开',
   assert.ok(!personal().classNames.has('is-collapsed'), '点开之后要展开');
   fx.controller.setSnippets([]);
   assert.ok(!personal().classNames.has('is-collapsed'), '重绘后保持用户选择');
+});
+
+test('换助手时输入框上方说明会接手什么，并能一键改回', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+  await fx.send('第一个问题');
+  const run = fx.startedRuns()[0];
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'thread', data: { threadId: 'sess-1' } });
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  const note = fx.el('conversation-handoff-note');
+  assert.equal(note.hidden, true, '没换助手时不显示交接说明');
+
+  const target = run.providerId === 'claude' ? 'grok' : 'claude';
+  const select = fx.el('conversation-provider-select');
+  select.value = target;
+  fire(select, 'change');
+  await flush();
+  assert.equal(note.hidden, false);
+  assert.match(note.childNodes[0].textContent, /接手[\s\S]*这段对话/);
+  assert.match(note.childNodes[0].textContent, /最近 24 条正文/);
+
+  const undo = note.childNodes[1];
+  assert.match(undo.textContent, /^改回 /);
+  fire(undo, 'click');
+  await flush();
+  assert.equal(note.hidden, true, '改回来源助手后说明消失');
 });

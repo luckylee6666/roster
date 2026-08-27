@@ -5588,6 +5588,42 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-project-item .conversation-project-copy { flex: 1; }
 
+.conversation-handoff-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 1px solid #d9dcf5;
+  border-radius: 10px;
+  background: var(--chat-accent-soft);
+  color: #3f3f8c;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.conversation-handoff-note[hidden] { display: none; }
+
+.conversation-handoff-text { flex: 1; min-width: 0; }
+
+.conversation-handoff-undo {
+  flex: none;
+  appearance: none;
+  padding: 3px 9px;
+  border: 1px solid #c3c6ee;
+  border-radius: 7px;
+  background: var(--chat-panel);
+  color: #3f3f8c;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.conversation-handoff-undo:hover:not(:disabled) { border-color: var(--chat-accent); }
+
+.conversation-handoff-undo:disabled { opacity: 0.55; cursor: default; }
+
 .conversation-project-run-dot {
   flex: none;
   align-self: center;

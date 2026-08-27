@@ -28,6 +28,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - `/effort` lists live reasoning levels for Grok, Claude, agy, and Codex, and passes `--effort` or Codex `model_reasoning_effort` on the next turn.
 - The transcript reuses the DOM node of every unchanged message, so streaming re-parses only the message being written; long sessions no longer stutter and local images/videos stop flickering or restarting on each frame.
 - Project groups in the conversation sidebar start collapsed the first time they appear. The group holding the current project stays open, and expand/collapse choices persist for the session.
+- Handing a conversation to another assistant no longer sits behind a separate “Handoff” button that only reopened the assistant dropdown. Switching the assistant while a session is open now states the consequence right above the composer — who takes over from whom, that only the last 24 messages travel, and that the source session is left untouched — with one click to switch back.
 
 **Removed**
 - Removed the project-ideas feature from both Conversation and Developer modes; existing `ideas.json` data is left untouched on disk and is no longer read or written.
@@ -38,7 +39,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Gemini stream UUIDs are resolved back to verified project session files before reuse; structured CLI errors stop immediately; long streamed Codex replies are preserved per message item; and Codex resolves only validated executables and closes App Server stdin before graceful cleanup. Conversation deletion resolves a saved project ID in the backend; project media is opened component-by-component without following symlinks on Unix and verified against the actual opened handle on Windows. Bursty metadata rendering is coalesced while terminal events remain immediate, and destructive actions use the application confirmation dialog supported by WKWebView.
 
 **Tests**
-- Frontend suite: 362 tests. Rust suite: 142 tests, including provider routing/command/parser coverage, bounded historical transcript and symlink-safe media validation, current-PATH-first bounded CLI lookup, live slash-command discovery, Grok/Claude/Codex/agy model and effort listing, long-transcript composer containment, project-scoped deletion, process-tree cleanup, Gemini session canonicalization, atomic start reservations, completion/timeout signaling, paste-image validation/saving/pruning with per-provider prompt hints, and a fake Codex App Server contract for start, resume, approvals, long streamed replies, stdin EOF, completion, and cancellation.
+- Frontend suite: 363 tests. Rust suite: 142 tests, including provider routing/command/parser coverage, bounded historical transcript and symlink-safe media validation, current-PATH-first bounded CLI lookup, live slash-command discovery, Grok/Claude/Codex/agy model and effort listing, long-transcript composer containment, project-scoped deletion, process-tree cleanup, Gemini session canonicalization, atomic start reservations, completion/timeout signaling, paste-image validation/saving/pruning with per-provider prompt hints, and a fake Codex App Server contract for start, resume, approvals, long streamed replies, stdin EOF, completion, and cancellation.
 
 ### 中文
 
@@ -64,6 +65,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - `/effort` 覆盖 Grok、Claude、agy、Codex 的实时推理强度，下一轮带上 `--effort` 或 Codex 的 `model_reasoning_effort`。
 - 消息区改为复用未变化消息的 DOM 节点，流式只重新解析正在书写的那一条；长会话不再卡顿，项目内图片/视频也不会每帧重建导致闪烁或重播。
 - 对话左侧的项目分组第一次出现时默认折叠；当前项目所在的分组保持展开，用户自己的展开/收起在本次会话内保留。
+- 跨 CLI 交接不再依赖一个「点了只会重新弹开助手下拉」的「交接」按钮。会话打开时切换助手，输入框上方直接说明后果：谁接手谁、只带最近 24 条正文、来源会话保持不动，并可一键改回原助手。
 
 **移除**
 - 移除项目想法功能（对话模式与开发模式）；磁盘上已有的 `ideas.json` 数据原样保留，应用不再读写。
@@ -74,7 +76,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Gemini 流式 UUID 会在续接前解析回已验证的项目会话文件；CLI 结构化错误会立即停止；Codex 长流式回复按消息项保留，并且只运行已验证的可执行文件、正常完成时先关闭 App Server stdin 再清理。对话删除由后端解析已保存项目 ID；Unix 下项目媒体逐级安全打开且不跟随符号链接，Windows 下按实际打开句柄复核路径。高频元数据合并渲染但终态仍立即呈现，删除统一使用 WKWebView 可用的应用内确认弹窗。
 
 **测试**
-- 前端 362 项、Rust 142 项；新增多 CLI 路由、命令与结构化解析、有界历史正文与符号链接安全媒体验证、当前 PATH 优先的有界命令定位、Grok/Claude/Codex/agy 模型与推理强度解析、长会话输入区布局边界、项目范围删除、进程树回收、Gemini 会话归一化、启动原子占位及完成/超时信号覆盖、粘贴图片校验/保存/清理与按 CLI 的图片提示，并保留 fake Codex App Server 对新建、续接、审批、长流式回复、stdin EOF、完成与取消协议的验证。
+- 前端 363 项、Rust 142 项；新增多 CLI 路由、命令与结构化解析、有界历史正文与符号链接安全媒体验证、当前 PATH 优先的有界命令定位、Grok/Claude/Codex/agy 模型与推理强度解析、长会话输入区布局边界、项目范围删除、进程树回收、Gemini 会话归一化、启动原子占位及完成/超时信号覆盖、粘贴图片校验/保存/清理与按 CLI 的图片提示，并保留 fake Codex App Server 对新建、续接、审批、长流式回复、stdin EOF、完成与取消协议的验证。
 
 ## v1.2.24
 

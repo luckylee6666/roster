@@ -299,7 +299,7 @@ export function installConversationMode({
     slashMenu: document.getElementById('conversation-slash-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
     manageSnippets: document.getElementById('conversation-manage-snippets'),
-    handoff: document.getElementById('conversation-handoff'),
+    handoffNote: document.getElementById('conversation-handoff-note'),
     writeAccess: document.getElementById('conversation-write-access'),
     safetyNote: document.getElementById('conversation-safety-note'),
     send: document.getElementById('conversation-send'),
@@ -1270,6 +1270,32 @@ export function installConversationMode({
     dom.snippetSelect.value = '';
   }
 
+  // Switching the assistant while a session is open is what actually hands the
+  // conversation over, so the consequence is spelled out where it happens
+  // instead of hiding behind a separate button.
+  function renderHandoffNote() {
+    const note = dom.handoffNote;
+    if (!note) return;
+    const context = conversationRunContext(state);
+    const show = Boolean(context.handoffProviderId && context.handoffSessionId);
+    note.hidden = !show;
+    note.replaceChildren();
+    if (!show) return;
+    const source = conversationProvider(context.handoffProviderId);
+    const target = conversationProvider(context.providerId);
+    note.appendChild(element(
+      document,
+      'span',
+      'conversation-handoff-text',
+      `发送后由 ${target.label} 接手 ${source.label} 的这段对话：只带最近 24 条正文，${source.label} 的会话保持不动。`,
+    ));
+    const back = element(document, 'button', 'conversation-handoff-undo', `改回 ${source.label}`);
+    back.type = 'button';
+    back.disabled = isRunning() || !providerReady(source.id);
+    back.addEventListener('click', () => selectProvider(source.id));
+    note.appendChild(back);
+  }
+
   function renderControls() {
     const provider = currentProvider();
     const unavailable = !selectedProjectExists() || !providerReady(provider.id) || !listenerReady;
@@ -1290,9 +1316,6 @@ export function installConversationMode({
     if (dom.writeAccess) dom.writeAccess.disabled = unavailable || busy;
     if (dom.snippetSelect) dom.snippetSelect.disabled = busy || deleting || !selectedProject || snippets.length === 0;
     if (dom.manageSnippets) dom.manageSnippets.disabled = busy || !onManageSnippets;
-    if (dom.handoff) dom.handoff.disabled = busy
-      || !conversationHasOpenSession(state)
-      || runnableProviders().length < 2;
     if (dom.newChat) {
       const showNewChat = Boolean(selectedProject && conversationHasOpenSession(state));
       dom.newChat.hidden = !showNewChat;
@@ -1324,9 +1347,7 @@ export function installConversationMode({
                     ? `${provider.label} 正在处理；可继续输入，完成后再发送`
                     : promptState.tooLong
                       ? promptTooLongMessage(promptState.byteLength)
-                      : state.sourceTool && state.sourceTool !== provider.id
-                        ? `发送后由 ${provider.label} 接手 ${conversationProvider(state.sourceTool).label} 的上下文`
-                        : [currentModel(), currentEffort()].filter(Boolean).length
+                      : [currentModel(), currentEffort()].filter(Boolean).length
                       ? `Enter 发送，Shift + Enter 换行 · ${[currentModel(), currentEffort()].filter(Boolean).join(' · ')}`
                       : 'Enter 发送，Shift + Enter 换行';
     }
@@ -1344,6 +1365,7 @@ export function installConversationMode({
     renderProjectContext();
     renderSnippets();
     renderSlashMenu();
+    renderHandoffNote();
     renderControls();
     syncElapsedTimer();
   }
@@ -2010,17 +2032,6 @@ export function installConversationMode({
     syncComposer();
   });
   dom.manageSnippets?.addEventListener('click', () => onManageSnippets?.());
-  dom.handoff?.addEventListener('click', () => {
-    if (dom.handoff.disabled) return;
-    dom.providerSelect?.focus();
-    notify?.('请选择接手当前对话的助手；下一条消息会带上交接上下文', 'info');
-    try {
-      if (typeof dom.providerSelect?.showPicker === 'function') dom.providerSelect.showPicker();
-      else dom.providerSelect?.click?.();
-    } catch (_) {
-      dom.providerSelect?.click?.();
-    }
-  });
   dom.composer?.addEventListener('input', () => {
     slashDismissed = false;
     syncComposer();

@@ -24,7 +24,7 @@ test('对话工作台具有项目、历史、消息、输入和进度三区结�
     'conversation-composer',
     'conversation-snippet-select',
     'conversation-manage-snippets',
-    'conversation-handoff',
+    'conversation-handoff-note',
     'conversation-write-access',
     'conversation-send',
     'conversation-plan-list',
@@ -57,11 +57,10 @@ test('对话工作台补齐片段管理、交接与无项目入口', async () =>
     read('src/styles.css'),
   ]);
   assert.match(html, /id="conversation-manage-snippets"/);
-  assert.match(html, /id="conversation-handoff"/);
+  assert.match(html, /id="conversation-handoff-note"/);
   assert.match(html, /id="snippet-modal-overlay" data-app-global-overlay/);
   assert.match(conversation, /onManageSnippets\?\.\(\)/);
-  assert.match(conversation, /providerSelect\?\.showPicker/);
-  assert.match(conversation, /conversationHasOpenSession\(state\)[\s\S]{0,100}runnableProviders\(\)\.length < 2/);
+  assert.match(conversation, /改回 \$\{source\.label\}/);
   assert.match(conversation, /conversation-create-project/);
   assert.match(conversation, /仅含用户记录/);
   assert.match(main, /onManageSnippets: openSnippetModal/);
