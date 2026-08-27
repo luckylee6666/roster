@@ -526,7 +526,10 @@ export function installConversationMode({
   let sessionTitles = {};
   let renamingKey = '';
   let usageText = '';
-  let usage = { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
+  // 和模式表一样，额度必须带上它属于哪个助手：切换助手/续接历史都会换人，
+  // 不打归属就会把上一家的数字留在新助手的徽标旁边。
+  const EMPTY_USAGE = { providerId: '', text: '', level: 'ok', peak: 0, reset: '', blocked: false };
+  let usage = EMPTY_USAGE;
   let usageFetchedAt = 0;
   let usageRevision = 0;
   let deletingHistory = null;
@@ -1758,8 +1761,18 @@ export function installConversationMode({
 
   function renderUsage() {
     if (!dom.usage) return;
+    // 归属对不上就当没有：宁可不显示，也不能把别家的数字挂在这家名下。
+    if (usage.providerId && usage.providerId !== currentProvider().id) {
+      usage = EMPTY_USAGE;
+      usageText = '';
+    }
     dom.usage.hidden = !usageText;
-    if (!usageText) return;
+    if (!usageText) {
+      // 连文本一起清掉：隐藏着的陈旧数字一旦被重新显示就是错的。
+      dom.usage.textContent = '';
+      dom.usage.dataset.level = 'ok';
+      return;
+    }
     // 平时安静；接近上限才需要被看见，这时补上重置时间。
     dom.usage.dataset.level = usage.level;
     dom.usage.textContent = usage.reset && (usage.level === 'danger' || usage.blocked)
@@ -1771,9 +1784,11 @@ export function installConversationMode({
   async function refreshUsage({ force = false, maxAge = USAGE_MIN_INTERVAL_MS } = {}) {
     const agent = currentProvider().id;
     if (!USAGE_AGENTS.includes(agent)) {
-      usage = { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
+      usage = EMPTY_USAGE;
       usageText = '';
       renderUsage();
+      renderControls();
+      renderAssistantBadge();
       return;
     }
     if (!force && Date.now() - usageFetchedAt < maxAge) return;
@@ -1782,12 +1797,12 @@ export function installConversationMode({
     try {
       const payload = await invoke(usageCommandForAgent(agent));
       if (destroyed || revision !== usageRevision) return;
-      usage = conversationUsageState(agent, payload);
+      usage = { ...conversationUsageState(agent, payload), providerId: agent };
       // 紧挨着助手徽标显示，不必再重复一遍助手名字。
       usageText = usage.text;
     } catch (_) {
       if (revision !== usageRevision) return;
-      usage = { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
+      usage = EMPTY_USAGE;
       usageText = '';
     }
     renderUsage();
@@ -2359,6 +2374,9 @@ export function installConversationMode({
       renderState();
       renderProjects();
       void refreshSlashCommands();
+      // 打开历史会连带换掉助手，模式表和额度都要按新助手重新取。
+      void refreshModeOptions();
+      void refreshUsage({ force: true });
       await refreshHistory();
     } catch (error) {
       if (revision !== transcriptRevision) return;
@@ -2571,7 +2589,6 @@ export function installConversationMode({
       providerId: providerId || providerForNewChat(),
     });
     conversationStates.set(selectedProject.id, state);
-    usageText = '';
     persistSelection();
     renderState();
     void refreshHistory();

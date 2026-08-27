@@ -295,7 +295,9 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       return () => {};
     },
     notify: (message, level) => toasts.push({ message, level }),
-    loadHistory: async () => history || { groups: [] },
+    loadHistory: async path => (
+      (typeof history === 'function' ? history(path) : history) || { groups: [] }
+    ),
     invalidateHistory: () => {},
     onManageSnippets: () => { manageOpens.push(Date.now()); },
   });
@@ -1366,4 +1368,63 @@ test('额度接近上限才抢注意力，打满时发送前就说清楚', async
     queries,
     '一分钟内重复聚焦不重复查询',
   );
+});
+
+test('额度带助手归属，换到没有额度接口的助手立刻清掉', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+  const usage = fx.el('conversation-usage');
+
+  fx.pickAssistant('claude');
+  await flush();
+  assert.equal(usage.hidden, false);
+  assert.equal(usage.textContent, '5 小时 32% · 7 天 7%');
+
+  // Grok 没有额度接口：绝不能把 Claude 的数字留在它的徽标旁
+  fx.pickAssistant('grok');
+  await flush();
+  assert.equal(usage.hidden, true, '换到没有额度接口的助手就该消失');
+  assert.equal(usage.textContent, '');
+  assert.doesNotMatch(fx.el('conversation-assistant-badge').title, /额度/);
+});
+
+test('切项目后自动续接换了助手，额度不能留着上一家的', async t => {
+  // 只有项目 B 有历史，这样项目 A 那边可以先挑 Claude
+  const history = path => (path.endsWith('/b')
+    ? { groups: [{ tool: 'grok', label: 'Grok', sessions: [{ id: 'g1', title: 'Grok 的会话', atMs: 500 }] }] }
+    : { groups: [] });
+  const fx = fixture({
+    projects: [project('a', '项目 A'), project('b', '项目 B')],
+    installed: ['claude', 'grok'],
+    history,
+    t,
+  });
+  await flush();
+  const usage = fx.el('conversation-usage');
+
+  fx.pickAssistant('claude');
+  await flush();
+  assert.equal(usage.textContent, '5 小时 32% · 7 天 7%', 'Claude 有额度');
+
+  // 切到另一个项目，最近一条历史是 Grok 的，会自动续接并换掉助手
+  fx.clickProject('b');
+  await flush();
+  assert.equal(fx.el('conversation-assistant-name').textContent, 'Grok');
+  assert.equal(usage.hidden, true, '换成 Grok 后不能还挂着 Claude 的数字');
+  assert.equal(usage.textContent, '');
+});
+
+test('换助手的瞬间旧额度立刻消失，不等新请求回来', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'codex'], t });
+  await flush();
+  const usage = fx.el('conversation-usage');
+
+  fx.pickAssistant('claude');
+  await flush();
+  assert.equal(usage.textContent, '5 小时 32% · 7 天 7%');
+
+  // 故意不 flush：Codex 的额度请求还在路上，这一瞬间绝不能还挂着 Claude 的数字
+  fx.pickAssistant('codex');
+  assert.equal(usage.hidden, true, '请求未回来时就该清空，而不是留着上一家的');
+  assert.equal(usage.textContent, '');
 });
