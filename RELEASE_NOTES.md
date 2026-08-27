@@ -1,32 +1,26 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.3.0 / 本版更新
+## What's new in v1.3.1 / 本版更新
 
 **English**
-- **New default conversation workspace** for non-developers: pick a project, talk to any of the eight installed AI CLIs (Claude, Grok, Codex, OpenCode, Gemini, agy, Qwen, MiMo Code), and read one merged history timeline with source badges. The full Developer mode — terminal, files, Git, split panes, collaboration, companion web, games — is one click away and unchanged.
-- **Projects run in parallel.** Every project keeps its own conversation, draft, and running turn, so a turn started in one project keeps streaming while you read or type in another. The project list marks running projects, and up to four turns run at once.
-- **You get told when a turn ends**: live elapsed time while it runs, total duration when it finishes, and a desktop notification when the result lands in a background project, an unfocused window, or while Developer mode is on screen.
-- **Dark theme** for the conversation workspace, following the system by default with a system / light / dark switch in the sidebar. Every conversation colour now comes from a palette token, applied before the stylesheet so launching never flashes white.
-- **Copy anything**: hover a message to copy it, drop a question of your own back into the composer, or copy a fenced code block on its own.
-- **Clearer cross-CLI handoff**: switching the assistant with a session open now states who takes over from whom, that only the last 24 messages travel, and that the source session is left untouched — with one click to switch back.
-- Paste images straight into the composer, create projects without leaving the workspace, and reuse prompt snippets and project context in place.
-- Long transcripts stream smoothly: only the message being written is re-rendered, so local images and videos no longer flicker.
-- Turns default to each CLI's read-only/plan policy; writing to the project needs an explicit per-turn toggle that resets when the turn ends.
-- The project-ideas feature was removed from both modes; existing `ideas.json` data is left untouched on disk.
+- **A conversation belongs to one assistant.** Starting a new conversation asks which installed assistant to use; once it has begun the assistant is locked and shown as a badge in the header. Switching mid-thread was never really a switch — a session's ID, sandbox binding and history file belong to one CLI — so bringing in another one is now an explicit **Handoff** that opens a new conversation over there and leaves the original untouched.
+- **The "allow writing" checkbox is gone.** Each assistant now offers its own permission modes (Claude: `plan` / `acceptEdits` / `auto`; Codex: 只读 / 帮我批准), validated against a per-provider allowlist on start. Modes that need a person to answer a prompt are excluded because the workspace runs headless, and modes that bypass the sandbox entirely are never offered.
+- **Model, reasoning effort and mode are visible controls**, gathered into one button next to Send that reads out the current setup and opens a two-level menu. They used to be reachable only through `/model` and `/effort`, which is no use to the people this workspace is for.
+- **Rate-limit usage moved to the header** beside the assistant it belongs to, stays a quiet grey until it matters, and turns amber past 70% and red past 90% with the reset time. When the quota is spent the composer says so **before** you press Send.
+- **Fixed: Grok could not write at all.** Its `--sandbox` takes a profile name from `~/.grok/sandbox.toml`, not Codex's fixed enum, so the value Roster passed made Grok refuse to start; and headless `acceptEdits` emitted approval requests nobody could answer. Write turns now use `auto` with the built-in `workspace` profile, verified end to end.
+- **Fixed: Claude history could not be resumed in projects whose path contains non-ASCII characters** — Roster's own project-memory directory was shadowing the one that actually holds the sessions.
+- **Fixed: state that belonged to one assistant could show up under another** — the mode list and the quota now carry the assistant they came from and are dropped the moment it no longer matches.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- **新增面向普通用户的默认对话工作台**：选一个项目，直接和本机已安装的 8 家 AI CLI（Claude、Grok、Codex、OpenCode、Gemini、agy、Qwen、MiMo Code）对话，最近会话合并成一条带来源色标的时间线。原有开发模式（终端、文件、Git、分屏、协作、伴生网页、游戏）一键即回，功能不变。
-- **多项目并行**：每个项目保留自己的对话、草稿和运行中的轮次，一个项目在跑时可以自由切到别的项目查看或输入，两边互不覆盖；项目列表标出正在处理的项目，最多 4 个同时跑。
-- **跑完会告诉你**：运行中实时显示已用时间，结束显示本轮用时；结果落在后台项目、窗口失焦或人停在开发模式时会发桌面通知。
-- **对话工作台支持深色**：默认跟随系统，左下角可在跟随系统 / 浅色 / 深色之间切换。对话区所有颜色改为配色令牌，并在样式表之前生效，启动不会闪白。
-- **想复制就复制**：消息 hover 出现复制，自己问过的话可以「重新提问」放回输入框，回答里的代码块各自带复制按钮。
-- **跨 CLI 交接说得清楚了**：会话打开时切换助手，输入框上方直接说明谁接手谁、只带最近 24 条正文、来源会话保持不动，并可一键改回。
-- 输入框支持直接粘贴图片，工作台内即可新建项目，Prompt 片段与项目现场就地复用。
-- 长对话流式更稳：只重建正在书写的那一条消息，项目内图片和视频不再闪烁。
-- 每轮默认使用各 CLI 的只读/计划策略；要改项目必须本轮明确勾选，进入终态立即复位。
-- 项目想法功能已从两个模式移除，磁盘上已有的 `ideas.json` 原样保留。
+- **一条对话固定属于一个助手。** 开新对话时先问用哪个已安装的助手；一旦开始，助手就锁定并显示在顶栏。中途"换助手"从来不是换——会话 ID、沙箱绑定和历史文件都属于某一家 CLI，所以请别人接手改成明确的**交接**：在那边新开一条，原会话保持不动。
+- **去掉「允许修改项目」复选框。** 每个助手改用自己的权限模式（Claude：`plan` / `acceptEdits` / `auto`；Codex：只读 / 帮我批准），启动时按各自白名单复核。需要人应答的档不收（工作台是无头的），完全绕过沙箱的档一律不提供。
+- **模型、推理强度、模式变成看得见的控件**，收进发送按钮旁的同一个入口：收起显示当前配置，点开分两层选。以前只有 `/model`、`/effort` 能进，而这个工作台的用户根本不会去打命令。
+- **限流用量移到顶栏**、紧跟它所属的助手，平时是安静的灰字，超过 70% 转暖色、超过 90% 转红并带出重置时间；额度打满时**在按下发送之前**就说清楚。
+- **修复：Grok 其实一直写不了。** 它的 `--sandbox` 收的是 `~/.grok/sandbox.toml` 里的 profile 名而不是固定枚举，Roster 传的值会让它拒绝启动；而且无头下 `acceptEdits` 会发出没人能应答的审批请求。写入轮改用 `auto` 配内建 `workspace` profile，已端到端验证。
+- **修复：项目路径含中文时 Claude 历史无法续接**——Roster 自己的项目记忆目录遮蔽了真正存放会话的那个目录。
+- **修复：属于某一家助手的状态可能显示在另一家名下**——模式表和额度现在都带上它们的归属，一旦对不上立刻作废。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装
