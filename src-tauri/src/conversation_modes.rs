@@ -35,15 +35,23 @@ const fn mode(
     }
 }
 
+// Claude 的 --permission-mode 里真正有区别的三档。manual 与 dontAsk 在无头下
+// 都只是"拒绝"的变体（实测：不挂住，直接拒），列出来只会让人分不清；
+// bypassPermissions 属绕过档，不收。标签用 Claude 自己的取值打头。
 const CLAUDE_MODES: &[ConversationMode] = &[
-    mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
+    mode(
+        "plan",
+        "plan · 只读计划",
+        "只读取和分析，先给方案，不动任何文件",
+        false,
+    ),
     mode(
         "acceptEdits",
-        "自动接受修改",
-        "文件改动直接生效，不再逐条确认",
+        "acceptEdits · 自动接受修改",
+        "文件修改直接生效，不再逐条确认",
         true,
     ),
-    mode("auto", "自动", "由 Claude 自行判断该不该动手", true),
+    mode("auto", "auto · 自动", "由 Claude 自行判断该不该动手", true),
 ];
 
 // Grok 的 acceptEdits 在无头下仍会发审批请求且无人应答，故不收录。
@@ -155,13 +163,43 @@ mod tests {
                 assert!(
                     !matches!(
                         entry.id,
-                        "bypassPermissions" | "danger-full-access" | "dontAsk" | "yolo"
+                        // dontAsk 不在此列：实测它是"不问且拒绝"，与绕过相反。
+                        "bypassPermissions" | "danger-full-access" | "yolo" | "workspace-write"
                     ),
-                    "{provider} 暴露了绕过档 {}",
+                    "{provider} 暴露了绕过档或裸沙箱值 {}",
                     entry.id
                 );
             }
         }
+    }
+
+    #[test]
+    fn claude_lists_its_own_permission_modes() {
+        let ids = modes_for("claude")
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        // 只留真正有区别的三档，取值与 `claude --help` 的枚举一致。
+        assert_eq!(ids, vec!["plan", "acceptEdits", "auto"]);
+        // manual / dontAsk 在无头下都只是"拒绝"的变体，不进选择器。
+        assert!(resolve("claude", "manual").is_err());
+        assert!(resolve("claude", "dontAsk").is_err());
+        assert!(resolve("claude", "bypassPermissions").is_err());
+        // 标签用 Claude 自己的取值打头，不自造一套名字。
+        for entry in modes_for("claude") {
+            assert!(
+                entry.label.starts_with(entry.id),
+                "{} 的标签应以原生取值开头",
+                entry.id
+            );
+        }
+        // 无头下能自我批准写文件的只有这两档，其余按实测都是拒绝。
+        let writable = modes_for("claude")
+            .iter()
+            .filter(|entry| entry.writes)
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(writable, vec!["acceptEdits", "auto"]);
     }
 
     #[test]

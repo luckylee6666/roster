@@ -249,10 +249,10 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       if (command === 'conversation_mode_list') {
         return payload.providerId === 'claude'
           ? [
-              { id: 'plan', label: '只读计划', hint: '不动文件', writes: false },
-              { id: 'acceptEdits', label: '自动接受修改', hint: '改动直接生效', writes: true },
+              { id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false },
+              { id: 'acceptEdits', label: 'acceptEdits · 自动接受修改', hint: '改动直接生效', writes: true },
             ]
-          : [{ id: 'plan', label: '只读计划', hint: '不动文件', writes: false }];
+          : [{ id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false }];
       }
       if (command === 'list_conversation_session_titles') return { ...sessionTitles };
       if (command === 'set_conversation_session_title') {
@@ -1108,8 +1108,8 @@ test('模式选择器只列当前助手有的档，选中后按 provider 记住'
   await flush();
   assert.deepEqual(
     select.childNodes.map(node => node.textContent),
-    ['只读计划', '自动接受修改'],
-    'Claude 列自己的两档',
+    ['plan · 只读计划', 'acceptEdits · 自动接受修改'],
+    'Claude 列自己的档位，标签用它自己的取值打头',
   );
   assert.equal(select.value, 'plan', '默认落在最保守的一档');
   assert.equal(select.dataset.writes, 'false');
@@ -1131,7 +1131,7 @@ test('模式选择器只列当前助手有的档，选中后按 provider 记住'
   await flush();
   assert.deepEqual(
     select.childNodes.map(node => node.textContent),
-    ['只读计划'],
+    ['plan · 只读计划'],
     '交接给 Grok 后只剩 Grok 有的档',
   );
 });
@@ -1158,7 +1158,7 @@ test('换助手时旧的模式表立刻失效，不会把别家的档位发出�
   assert.equal(select.disabled, true);
 
   await flush();
-  assert.deepEqual(select.childNodes.map(node => node.textContent), ['只读计划']);
+  assert.deepEqual(select.childNodes.map(node => node.textContent), ['plan · 只读计划']);
 
   // 就算有人把值塞成别家的档，也不该被接受
   select.value = 'acceptEdits';
