@@ -280,9 +280,11 @@ fn claude_session_from_jsonl(
 fn find_claude_project_dir(home: &Path, cwd: &str) -> Option<PathBuf> {
     let projects = home.join(".claude").join("projects");
     let encoded = projects.join(encode_claude_project_dir(cwd));
-    if encoded.is_dir()
-        && (dir_has_matching_claude_cwd(&encoded, cwd) || is_encoded_claude_dir(&encoded, cwd))
-    {
+    // 先认"里面真有这个项目的会话"，再认"名字对得上"。Claude 各版本对非 ASCII
+    // 路径的编码并不一致（`/杂项` 新版会变成 `---`），而且项目记忆功能会按
+    // Roster 自己的编码建出同名空目录；只看名字会选中那个空壳，导致明明有历史
+    // 却报"会话不属于当前项目"。
+    if encoded.is_dir() && dir_has_matching_claude_cwd(&encoded, cwd) {
         return Some(encoded);
     }
     for entry in fs::read_dir(&projects).ok()?.flatten() {
@@ -293,6 +295,10 @@ fn find_claude_project_dir(home: &Path, cwd: &str) -> Option<PathBuf> {
         if dir_has_matching_claude_cwd(&path, cwd) {
             return Some(path);
         }
+    }
+    // 谁都没有会话时才退回名字匹配的目录：新项目还没写过历史，这条路要留着。
+    if encoded.is_dir() && is_encoded_claude_dir(&encoded, cwd) {
+        return Some(encoded);
     }
     None
 }
@@ -3025,6 +3031,49 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn claude_dir_lookup_prefers_the_folder_that_actually_holds_the_sessions() {
+        // 真实踩到的场景：项目路径含中文时，Claude 新版把 `/杂项` 编码成 `---`，
+        // 而 Roster 的项目记忆按自己的编码建了个同名空目录（里面只有 memory/）。
+        // 只看名字会选中那个空壳，于是明明有历史却报「会话不属于当前项目」。
+        let home = tempfile::tempdir().unwrap();
+        let cwd = "/Users/lucky/git/smalltree/self/杂项";
+        let projects = home.path().join(".claude").join("projects");
+
+        let shadow = projects.join(encode_claude_project_dir(cwd));
+        std::fs::create_dir_all(shadow.join("memory")).unwrap();
+
+        let real = projects.join("-Users-lucky-git-smalltree-self---");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(
+            real.join("92477531-eb11-462d-90d8-041502ca7f4d.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({ "type": "summary", "sessionId": "x" }),
+                serde_json::json!({ "type": "user", "cwd": cwd, "message": { "content": "你好" } })
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            find_claude_project_dir(home.path(), cwd),
+            Some(real.clone()),
+            "应选中真正装着会话的目录"
+        );
+        assert!(
+            claude_session_path(home.path(), cwd, "92477531-eb11-462d-90d8-041502ca7f4d").is_ok(),
+            "续接必须能找到这条会话"
+        );
+
+        // 新项目还没有任何历史时，仍然退回名字匹配的目录。
+        let fresh = "/Users/lucky/git/smalltree/self/崭新";
+        std::fs::create_dir_all(projects.join(encode_claude_project_dir(fresh))).unwrap();
+        assert_eq!(
+            find_claude_project_dir(home.path(), fresh),
+            Some(projects.join(encode_claude_project_dir(fresh)))
+        );
+    }
+
     #[test]
     fn project_cwd_matches_an_existing_directory_symlink() {
         use std::os::unix::fs::symlink;

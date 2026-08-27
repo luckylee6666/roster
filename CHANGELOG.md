@@ -9,6 +9,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 **Added**
 - **The "allow writing" checkbox is gone.** It mapped a single yes/no onto seven CLIs with different permission systems, and the mapping was lossy — verification showed Grok's write path was broken twice over. In its place each assistant offers its own native modes (Claude: plan / acceptEdits / auto; Codex: read-only / workspace-write; and so on), listed by the backend, validated against a per-provider allowlist on start, and remembered per assistant. Modes that need a TTY to answer prompts are excluded because the workspace runs headless, and modes that bypass the sandbox or permission system entirely are never offered.
 - Codex now offers its own named levels rather than raw sandbox values: **只读** and **帮我批准**, the latter routing approvals to Codex's own automatic review (`approvalPolicy: on-request` + `approvalsReviewer: auto_review`), verified against the app-server protocol. 「请求批准」 needs a human to answer and stays out until the approval UI exists; 「完全访问权限」 is a bypass tier and is never offered.
+- **Fixed: Claude history could not be resumed in projects whose path contains non-ASCII characters.** Recent Claude versions encode every non-alphanumeric character in the project path as `-`, so `/杂项` becomes `---`, while Roster's own project-memory feature creates a directory using Roster's encoding. The lookup accepted that same-named but empty directory on name alone and never scanned further, so a project with real history reported "this session does not belong to the current project". It now prefers whichever directory actually holds sessions for that cwd, falling back to the name match only when no history exists anywhere.
 - **Fixed: switching assistants could send another assistant's mode.** The mode list was global, so while the new assistant's list was still loading the previous one stayed selectable — picking then would store, say, Grok's `auto` under Codex and the turn was rejected on start. The list is now tagged with the assistant it belongs to, is cleared the moment the assistant changes, and a stored mode the current assistant does not have is treated as unset.
 - **Fixed: Grok could not write at all.** Its `--sandbox` takes a profile name from `~/.grok/sandbox.toml`, not Codex's fixed enum, so the `workspace-write` value Roster passed made Grok refuse to start; and headless `acceptEdits` still emitted approval requests nobody could answer, ending as `User cancelled`. Write turns now use `auto` with the built-in `workspace` profile, verified end to end.
 - Sessions in Recent conversations can be renamed. The alias is Roster's own layer — no CLI history file is touched — and renaming a session back to its original title drops the alias instead of storing a duplicate. The store is bounded at 500 entries and 80 characters per title, with invalid keys dropped on load.
@@ -30,7 +31,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - The rail's plan section is no longer Codex-only: Claude, Grok, agy, and Qwen surface their todo tool as processing steps, with the step text and a coarse status crossing the boundary and nothing of the raw tool input.
 - After a turn run in a write-capable mode, the rail lists what actually changed on disk — file plus New / Modified / Deleted / Committed-or-reverted — diffed from Git before and after the turn rather than from what the CLI claimed. Git caps the listing at 20 files, and a truncated snapshot is labelled as partial.
 **Tests**
-- Frontend suite: 395 tests. Rust suite: 152 tests, adding the parallel-project run registry, incremental transcript rendering, message and code copy, dark-mode tokens, drag-and-drop and picked image validation, in-conversation search, project-file mentions with a bounded symlink-safe walk, the post-write change report, todo-driven plan events, retry after failure, history filtering and renaming, and first-run guidance.
+- Frontend suite: 395 tests. Rust suite: 153 tests, adding the parallel-project run registry, incremental transcript rendering, message and code copy, dark-mode tokens, drag-and-drop and picked image validation, in-conversation search, project-file mentions with a bounded symlink-safe walk, the post-write change report, todo-driven plan events, retry after failure, history filtering and renaming, and first-run guidance.
 
 
 ### 中文
@@ -38,6 +39,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 **新增**
 - **去掉「允许修改项目」复选框。** 一个是非开关去映射七家各不相同的权限体系，本来就是有损的——实测证明 Grok 的写入路径是双重损坏的。改成每家列自己的原生模式（Claude：plan / acceptEdits / auto；Codex：read-only / workspace-write，其余同理），模式表由后端给出、启动时按 provider 白名单复核，并按助手分别记住。需要 TTY 应答的档不收（工作台是无头的，没人能应答），完全绕过沙箱或权限检查的档一律不提供。
 - Codex 改用它自己的档位名，而不是裸沙箱取值：**只读** 与 **帮我批准**——后者把审批交给 Codex 自己的自动审核（`approvalPolicy: on-request` + `approvalsReviewer: auto_review`），已对着 app-server 协议实测。「请求批准」需要人应答，做出审批界面之前不放出来；「完全访问权限」属绕过档，始终不提供。
+- **修复：项目路径含中文时，Claude 历史无法续接。** Claude 新版把项目路径里每个非字母数字字符都编码成 `-`（`/杂项` → `---`），而 Roster 的项目记忆功能会按自己的编码建出一个同名目录。查找时只凭名字就认下了那个空目录、不再往下扫，于是明明有历史却报「这个 Claude 会话不属于当前项目」。现在优先认「里面真有这个 cwd 会话」的目录，只有哪里都没有历史时才退回名字匹配。
 - **修复：换助手时可能把别家的模式发出去。** 模式表原来是全局的，新助手的表还在加载时旧表仍可选，这时改一下模式就会把比如 Grok 的 `auto` 存到 Codex 名下，启动时被拒。现在模式表带上它属于哪个助手，换助手瞬间失效，存着的档位如果当前助手没有就当作没选过。
 - **修复：Grok 其实一直写不了。** 它的 `--sandbox` 收的是 `~/.grok/sandbox.toml` 里的 profile 名，不是 Codex 那种固定枚举，Roster 传的 `workspace-write` 会让 Grok 拒绝启动；而且无头下 `acceptEdits` 仍会发出没人能应答的审批请求，最终变成 `User cancelled`。写入轮改用 `auto` 配内建的 `workspace` profile，已端到端验证。
 - 「最近对话」里的会话可以改名。别名是 Roster 自己的一层，不改任何 CLI 的历史文件；改回原标题等于清掉别名，不会存一条重复的。存储限 500 条、单条 80 字，加载时丢掉非法键。
@@ -60,7 +62,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - 用会写入的模式跑完一轮后，右栏列出磁盘上真正变化的文件，并标注新增 / 修改 / 删除 / 已提交或还原。清单来自本轮前后的 Git 对比，而不是 CLI 自己的说法；Git 最多返回 20 个文件，快照被截断时会明确标为部分。
 
 **测试**
-- 前端 395 项、Rust 152 项；新增多项目并行运行登记、消息节点复用、消息与代码复制、深色令牌、拖入与选中图片校验、对话内搜索、`@` 项目文件的有界安全扫描、写入轮改动清单、待办转处理步骤、失败重试、历史筛选与改名，以及首次使用引导。
+- 前端 395 项、Rust 153 项；新增多项目并行运行登记、消息节点复用、消息与代码复制、深色令牌、拖入与选中图片校验、对话内搜索、`@` 项目文件的有界安全扫描、写入轮改动清单、待办转处理步骤、失败重试、历史筛选与改名，以及首次使用引导。
 
 ## v1.3.0
 
