@@ -882,9 +882,12 @@ export function installConversationMode({
     const modeSection = sections.find(section => section.key === 'mode');
     toggle.dataset.writes = modeSection?.writes ? 'true' : 'false';
     if (dom.tuningSummary) {
-      dom.tuningSummary.textContent = sections.length
-        ? sections.map(section => section.value).join(' · ')
-        : '默认';
+      // 摘要只反映"你真正选过的值"，不跟着异步列表到没到而变形状；
+      // 没选过的项不占位——一个「默认」字样什么也没告诉人。
+      const parts = [currentModel(), currentEffort()].filter(Boolean);
+      const activeMode = currentModeEntry();
+      if (activeMode) parts.push(activeMode.label.split(' · ').pop());
+      dom.tuningSummary.textContent = parts.length ? parts.join(' · ') : '默认';
     }
     toggle.title = sections.length
       ? sections.map(section => `${section.label}：${section.value}`).join('\n')

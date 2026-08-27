@@ -1262,15 +1262,15 @@ test('模型、推理强度、模式收在同一个入口，会话模式不用�
 
   assert.deepEqual(fx.tuningRows(), ['model', 'effort', 'mode'], '三样都在同一个入口里');
   const summary = fx.el('conversation-tuning-summary');
-  assert.match(summary.textContent, /默认 · 默认 · 只读计划/, '收起时显示当前配置');
+  assert.equal(summary.textContent, '只读计划', '没选过的项不占位，不显示「默认」');
 
   fx.pickTuning('model', 'opus');
   await flush();
-  assert.match(summary.textContent, /^opus/);
+  assert.equal(summary.textContent, 'opus · 只读计划');
 
   fx.pickTuning('effort', 'high');
   await flush();
-  assert.match(summary.textContent, /opus · high/);
+  assert.equal(summary.textContent, 'opus · high · 只读计划');
 
   fx.el('conversation-composer').value = '跑一下';
   fire(fx.el('conversation-send'), 'click');
@@ -1304,4 +1304,25 @@ test('点开分节不会被"点外面收起"误关，点面板外才收起', asy
   // 点面板以外的地方才收起
   fx.clickWithBubble(fx.el('conversation-composer'));
   assert.equal(panel.hidden, true);
+});
+
+test('摘要不跟着异步列表变形状，只反映选过的值', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude'], t });
+  await flush();
+  const summary = fx.el('conversation-tuning-summary');
+
+  // 模型/强度列表还没回来（空表）时的形状
+  fx.setSlashLists({ models: [], efforts: [] });
+  fx.pickAssistant('claude');
+  await flush();
+  const before = summary.textContent;
+  assert.equal(before, '只读计划');
+  assert.doesNotMatch(before, /默认/);
+
+  // 列表回来了，但用户一个都没选——形状必须不变
+  fx.setSlashLists({ models: [{ id: 'opus', label: 'opus' }], efforts: [{ id: 'high', label: 'high' }] });
+  fx.pickAssistant('claude');
+  await flush();
+  assert.equal(summary.textContent, before, '列表到位不该改变摘要');
+  assert.deepEqual(fx.tuningRows(), ['model', 'effort', 'mode'], '但面板里该有这三行');
 });
