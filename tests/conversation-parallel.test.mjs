@@ -154,7 +154,9 @@ const IDS = [
   'conversation-starter-list',
   'conversation-composer',
   'conversation-attachments',
-  'conversation-mode-select',
+  'conversation-tuning-toggle',
+  'conversation-tuning-summary',
+  'conversation-tuning-panel',
   'conversation-handoff',
   'conversation-assistant-overlay',
   'conversation-assistant-list',
@@ -205,6 +207,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
   const toasts = [];
   let changedFiles = [{ status: 'M', path: 'src/a.js' }];
   let pickedImages = [];
+  let slashLists = { models: [], efforts: [] };
   const sessionTitles = {};
   let projectFiles = [
     { path: 'README.md', name: 'README.md', depth: 0 },
@@ -230,6 +233,15 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
   };
   let emit = () => {};
   const docListeners = {};
+  // 保证面板是"开着且停在第一层"：已经开着就先收起再打开（切换按钮每次点击
+  // 都会把层级复位），否则可能停在某个选项列表里，找不到分节行。
+  const ensureTuningOpen = () => {
+    const panel = byId.get('conversation-tuning-panel');
+    const toggle = byId.get('conversation-tuning-toggle');
+    const click = () => (toggle.listeners.click || []).forEach(fn => fn());
+    if (!panel.hidden) click();
+    click();
+  };
   const manageOpens = [];
   const controller = installConversationMode({
     document,
@@ -246,6 +258,8 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
       if (command === 'pick_attachment_images') return pickedImages;
+      if (command === 'conversation_model_list') return { models: slashLists.models };
+      if (command === 'conversation_effort_list') return { efforts: slashLists.efforts };
       if (command === 'conversation_mode_list') {
         return payload.providerId === 'claude'
           ? [
@@ -297,9 +311,38 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
     emit: payload => emit(payload),
     setChanges: files => { changedFiles = files; },
     setPickedImages: paths => { pickedImages = paths; },
+    setSlashLists: lists => { slashLists = { models: [], efforts: [], ...lists }; },
     sessionTitles,
     manageOpens,
     fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
+    tuningRows: () => {
+      ensureTuningOpen();
+      return byId.get('conversation-tuning-panel').childNodes
+        .map(node => node.dataset.section)
+        .filter(Boolean);
+    },
+    openTuning: section => {
+      ensureTuningOpen();
+      if (!section) return;
+      const row = byId.get('conversation-tuning-panel').childNodes
+        .find(node => node.dataset.section === section);
+      if (!row) throw new Error(`面板里没有 ${section} 这一项`);
+      (row.listeners.click || []).forEach(fn => fn());
+    },
+    tuningOptions: () => byId.get('conversation-tuning-panel').childNodes
+      .filter(node => node.dataset.optionId !== undefined)
+      .map(node => node.dataset.optionId),
+    pickTuning: (section, optionId) => {
+      ensureTuningOpen();
+      const row = byId.get('conversation-tuning-panel').childNodes
+        .find(node => node.dataset.section === section);
+      if (!row) throw new Error(`面板里没有 ${section} 这一项`);
+      (row.listeners.click || []).forEach(fn => fn());
+      const option = byId.get('conversation-tuning-panel').childNodes
+        .find(node => node.dataset.optionId === optionId);
+      if (!option) throw new Error(`${section} 里没有 ${optionId}`);
+      (option.listeners.click || []).forEach(fn => fn());
+    },
     pickAssistant: id => {
       const badge = byId.get('conversation-assistant-badge');
       (badge.listeners.click || []).forEach(fn => fn());
@@ -658,9 +701,7 @@ test('只有允许修改项目的那一轮才拍基线并出改动清单', async
   await flush();
   assert.equal(fx.el('conversation-changes-list').childNodes.length, 0);
 
-  const modeSelect = fx.el('conversation-mode-select');
-  modeSelect.value = 'acceptEdits';
-  fire(modeSelect, 'change');
+  fx.pickTuning('mode', 'acceptEdits');
   const writeBefore = contextCalls();
   await fx.send('去改一下文件');
   assert.equal(contextCalls(), writeBefore + 1, '写入轮发送时先拍基线');
@@ -1098,26 +1139,27 @@ test('历史会话可以改名，改回原名等于清掉别名', async t => {
   assert.equal('claude:c1' in fx.sessionTitles, false, '改回原名就不再占一条别名');
 });
 
-test('模式选择器只列当前助手有的档，选中后按 provider 记住', async t => {
+test('模式只列当前助手有的档，选中后按 provider 记住', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
   await flush();
-  const select = fx.el('conversation-mode-select');
+  const toggle = fx.el('conversation-tuning-toggle');
   const composer = fx.el('conversation-composer');
 
   fx.pickAssistant('claude');
   await flush();
+  fx.openTuning('mode');
   assert.deepEqual(
-    select.childNodes.map(node => node.textContent),
+    fx.el('conversation-tuning-panel').childNodes
+      .filter(node => node.dataset.optionId)
+      .map(node => node.childNodes[0].childNodes[0].textContent),
     ['plan · 只读计划', 'acceptEdits · 自动接受修改'],
     'Claude 列自己的档位，标签用它自己的取值打头',
   );
-  assert.equal(select.value, 'plan', '默认落在最保守的一档');
-  assert.equal(select.dataset.writes, 'false');
+  assert.equal(toggle.dataset.writes, 'false', '默认落在最保守的一档');
 
-  select.value = 'acceptEdits';
-  fire(select, 'change');
+  fx.pickTuning('mode', 'acceptEdits');
   await flush();
-  assert.equal(select.dataset.writes, 'true', '会改文件的档要有视觉重量');
+  assert.equal(toggle.dataset.writes, 'true', '会改文件的档要有视觉重量');
 
   composer.value = '改点东西';
   fire(fx.el('conversation-send'), 'click');
@@ -1129,8 +1171,11 @@ test('模式选择器只列当前助手有的档，选中后按 provider 记住'
 
   fx.handoffTo('grok');
   await flush();
+  fx.openTuning('mode');
   assert.deepEqual(
-    select.childNodes.map(node => node.textContent),
+    fx.el('conversation-tuning-panel').childNodes
+      .filter(node => node.dataset.optionId)
+      .map(node => node.childNodes[0].childNodes[0].textContent),
     ['plan · 只读计划'],
     '交接给 Grok 后只剩 Grok 有的档',
   );
@@ -1139,33 +1184,22 @@ test('模式选择器只列当前助手有的档，选中后按 provider 记住'
 test('换助手时旧的模式表立刻失效，不会把别家的档位发出去', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
   await flush();
-  const select = fx.el('conversation-mode-select');
+  const toggle = fx.el('conversation-tuning-toggle');
 
   fx.pickAssistant('claude');
   await flush();
-  select.value = 'acceptEdits';
-  fire(select, 'change');
+  fx.pickTuning('mode', 'acceptEdits');
   await flush();
-  assert.equal(select.value, 'acceptEdits');
+  assert.equal(toggle.dataset.writes, 'true');
 
   // 换到 Grok：异步请求还没回来时，旧表就必须已经不可选了
   fx.pickAssistant('grok');
-  assert.deepEqual(
-    select.childNodes.map(node => node.textContent),
-    ['默认'],
-    '请求未回来时不得继续显示上一家的档位',
-  );
-  assert.equal(select.disabled, true);
+  assert.equal(toggle.dataset.writes, 'false', '旧助手的写入档不得留在按钮上');
+  assert.equal(fx.tuningRows().includes('mode'), false, '请求未回来时没有模式可选');
 
   await flush();
-  assert.deepEqual(select.childNodes.map(node => node.textContent), ['plan · 只读计划']);
-
-  // 就算有人把值塞成别家的档，也不该被接受
-  select.value = 'acceptEdits';
-  fire(select, 'change');
-  await flush();
-  assert.equal(select.value, 'plan', '别家的档位不予采纳');
-
+  fx.openTuning('mode');
+  assert.deepEqual(fx.tuningOptions(), ['plan'], '只剩 Grok 有的档');
   fx.el('conversation-composer').value = '你好';
   fire(fx.el('conversation-send'), 'click');
   await flush();
@@ -1201,4 +1235,34 @@ test('对话一开始就锁定助手，要换人只能走交接', async t => {
   fire(list.childNodes[0], 'click');
   await flush();
   assert.equal(fx.el('conversation-handoff-note').hidden, false, '选完目标要出交接说明');
+});
+
+test('模型、推理强度、模式收在同一个入口，会话模式不用打命令', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude'], t });
+  await flush();
+  fx.setSlashLists({
+    models: [{ id: 'opus', label: 'opus' }, { id: 'sonnet', label: 'sonnet' }],
+    efforts: [{ id: 'high', label: 'high' }, { id: 'low', label: 'low' }],
+  });
+  fx.pickAssistant('claude');
+  await flush();
+
+  assert.deepEqual(fx.tuningRows(), ['model', 'effort', 'mode'], '三样都在同一个入口里');
+  const summary = fx.el('conversation-tuning-summary');
+  assert.match(summary.textContent, /默认 · 默认 · 只读计划/, '收起时显示当前配置');
+
+  fx.pickTuning('model', 'opus');
+  await flush();
+  assert.match(summary.textContent, /^opus/);
+
+  fx.pickTuning('effort', 'high');
+  await flush();
+  assert.match(summary.textContent, /opus · high/);
+
+  fx.el('conversation-composer').value = '跑一下';
+  fire(fx.el('conversation-send'), 'click');
+  await flush();
+  const run = fx.startedRuns().pop();
+  assert.equal(run.model, 'opus', '选中的模型要真的带到下一轮');
+  assert.equal(run.effort, 'high');
 });

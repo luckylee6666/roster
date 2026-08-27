@@ -6920,6 +6920,133 @@ html[data-app-view="developer"] #conversation-surface {
   cursor: default;
 }
 
+.conversation-tuning {
+  position: relative;
+  flex: none;
+}
+
+.conversation-tuning-toggle {
+  display: inline-flex;
+  max-width: 34vw;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px 0 9px;
+  height: 26px;
+  appearance: none;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 8px;
+  background: var(--chat-panel);
+  color: var(--chat-control-ink);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.conversation-tuning-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-tuning-toggle svg { flex: none; width: 12px; height: 12px; }
+
+.conversation-tuning-toggle:hover:not(:disabled) { border-color: var(--chat-control-line-hover); }
+
+.conversation-tuning-toggle:disabled { opacity: 0.55; cursor: default; }
+
+/* 会改文件的模式给出明确的视觉重量 */
+.conversation-tuning-toggle[data-writes="true"] {
+  border-color: var(--chat-warn-line);
+  color: var(--chat-warn-ink);
+  background: var(--chat-warn-bg);
+}
+
+.conversation-tuning-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 6;
+  display: flex;
+  width: max-content;
+  min-width: 220px;
+  max-width: min(340px, 60vw);
+  max-height: 320px;
+  flex-direction: column;
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 11px;
+  background: var(--chat-panel);
+  box-shadow: 0 10px 30px var(--chat-shadow);
+}
+
+.conversation-tuning-panel[hidden] { display: none; }
+
+.conversation-tuning-row,
+.conversation-tuning-option,
+.conversation-tuning-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  appearance: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--chat-ink);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-tuning-row:hover,
+.conversation-tuning-option:hover,
+.conversation-tuning-back:hover {
+  background: var(--chat-hover-bg);
+}
+
+.conversation-tuning-row-label { flex: 1; }
+
+.conversation-tuning-row-value {
+  overflow: hidden;
+  color: var(--chat-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-tuning-row-arrow { color: var(--chat-faint); }
+
+.conversation-tuning-back {
+  color: var(--chat-muted);
+  font-size: 11px;
+}
+
+.conversation-tuning-option-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.conversation-tuning-option-copy strong { font-weight: 520; }
+
+.conversation-tuning-option-copy small {
+  color: var(--chat-faint);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.conversation-tuning-option[data-active="true"] .conversation-tuning-option-copy strong {
+  color: var(--chat-accent);
+}
+
+.conversation-tuning-check {
+  flex: none;
+  width: 12px;
+  color: var(--chat-accent);
+}
+
 .conversation-assistant-hint {
   margin: 0 0 10px;
   color: var(--chat-muted);
@@ -6976,44 +7103,7 @@ html[data-app-view="developer"] #conversation-surface {
   white-space: nowrap;
 }
 
-.conversation-mode-picker {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 6px;
-  color: var(--chat-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.conversation-mode-picker select {
-  height: 26px;
-  max-width: 22vw;
-  appearance: none;
-  padding: 0 22px 0 8px;
-  border: 1px solid var(--chat-control-line);
-  border-radius: 8px;
-  outline: 0;
-  background: var(--chat-panel);
-  color: var(--chat-control-ink);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.conversation-mode-picker select:hover:not(:disabled) {
-  border-color: var(--chat-control-line-hover);
-}
-
-.conversation-mode-picker select:disabled { opacity: 0.55; cursor: default; }
-
 /* 会改文件的档给一个明确的视觉重量，别让人不知不觉停在写入模式 */
-.conversation-mode-picker select[data-writes="true"] {
-  border-color: var(--chat-warn-line);
-  color: var(--chat-warn-ink);
-  background: var(--chat-warn-bg);
-}
-
 .conversation-send,
 .conversation-stop {
   display: inline-flex;

@@ -24,7 +24,7 @@ test('对话工作台具有项目、历史、消息、输入和进度三区结�
     'conversation-composer',
     'conversation-snippet-select',
     'conversation-handoff-note',
-    'conversation-mode-select',
+    'conversation-tuning-toggle',
     'conversation-send',
     'conversation-plan-list',
     'conversation-activity-list',

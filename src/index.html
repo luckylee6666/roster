@@ -118,10 +118,13 @@
                   <option value="">常用片段</option>
                 </select>
               </label>
-              <label class="conversation-mode-picker" for="conversation-mode-select" title="这一轮用当前助手的哪个权限模式">
-                <span class="conversation-mode-label">模式</span>
-                <select id="conversation-mode-select" aria-label="选择当前助手的权限模式" disabled></select>
-              </label>
+              <div class="conversation-tuning">
+                <button class="conversation-tuning-toggle" id="conversation-tuning-toggle" type="button" aria-haspopup="true" aria-expanded="false" disabled>
+                  <span id="conversation-tuning-summary">默认</span>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+                </button>
+                <div class="conversation-tuning-panel" id="conversation-tuning-panel" hidden role="menu"></div>
+              </div>
               <span id="conversation-composer-hint">正在检查本机 CLI</span>
               <button class="conversation-stop" id="conversation-stop" type="button" hidden>停止</button>
               <button class="conversation-send" id="conversation-send" type="button" aria-label="发送消息" disabled>

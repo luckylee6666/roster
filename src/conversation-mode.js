@@ -466,7 +466,9 @@ export function installConversationMode({
     mentionMenu: document.getElementById('conversation-mention-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
     handoffNote: document.getElementById('conversation-handoff-note'),
-    modeSelect: document.getElementById('conversation-mode-select'),
+    tuningToggle: document.getElementById('conversation-tuning-toggle'),
+    tuningSummary: document.getElementById('conversation-tuning-summary'),
+    tuningPanel: document.getElementById('conversation-tuning-panel'),
     handoff: document.getElementById('conversation-handoff'),
     assistantOverlay: document.getElementById('conversation-assistant-overlay'),
     assistantTitle: document.getElementById('conversation-assistant-title'),
@@ -670,6 +672,8 @@ export function installConversationMode({
   // 被当成新助手的表渲染，更不能让用户在这个空档里选中别家的档位。
   let modeOptions = { providerId: '', entries: [] };
   let modeRevision = 0;
+  let tuningOpen = false;
+  let tuningSection = '';
   try {
     const storedModels = JSON.parse(storage?.getItem(MODEL_STORAGE_KEY) || 'null');
     if (storedModels?.version === 1 && storedModels.models && typeof storedModels.models === 'object') {
@@ -809,30 +813,143 @@ export function installConversationMode({
     renderControls();
   }
 
-  function renderModePicker() {
-    const select = dom.modeSelect;
-    if (!select) return;
-    const provider = currentProvider();
-    const entries = currentModeEntries();
-    select.replaceChildren();
-    if (!entries.length) {
-      const option = element(document, 'option', '', '默认');
-      option.value = '';
-      select.appendChild(option);
-      select.disabled = true;
-      if (dom.modeHint) dom.modeHint.textContent = '';
+  /** 模型、推理强度、模式：都是"这一轮怎么跑"的设置，收进同一个入口。 */
+  function tuningSections() {
+    const sections = [];
+    if (slashModels.length) {
+      sections.push({
+        key: 'model',
+        label: '模型',
+        value: currentModel() || '默认',
+        options: slashModels.map(item => ({ id: item.id, label: item.label || item.id })),
+        current: currentModel(),
+        apply: id => {
+          if (id) providerModels[currentProvider().id] = id;
+          else delete providerModels[currentProvider().id];
+          persistProviderModels();
+        },
+      });
+    }
+    if (slashEfforts.length) {
+      sections.push({
+        key: 'effort',
+        label: '推理强度',
+        value: currentEffort() || '默认',
+        options: slashEfforts.map(item => ({ id: item.id, label: item.label || item.id })),
+        current: currentEffort(),
+        apply: id => {
+          if (id) providerEfforts[currentProvider().id] = id;
+          else delete providerEfforts[currentProvider().id];
+          persistProviderEfforts();
+        },
+      });
+    }
+    const modes = currentModeEntries();
+    if (modes.length) {
+      const active = currentModeEntry();
+      sections.push({
+        key: 'mode',
+        label: '模式',
+        value: active ? active.label.split(' · ').pop() : '默认',
+        options: modes.map(entry => ({ id: entry.id, label: entry.label, hint: entry.hint })),
+        current: active?.id || '',
+        writes: Boolean(active?.writes),
+        apply: id => {
+          if (id) providerModes[currentProvider().id] = id;
+          else delete providerModes[currentProvider().id];
+          persistProviderModes();
+        },
+      });
+    }
+    return sections;
+  }
+
+  function closeTuning() {
+    tuningOpen = false;
+    tuningSection = '';
+    if (dom.tuningPanel) dom.tuningPanel.hidden = true;
+    dom.tuningToggle?.setAttribute?.('aria-expanded', 'false');
+  }
+
+  function renderTuning() {
+    const toggle = dom.tuningToggle;
+    const panel = dom.tuningPanel;
+    if (!toggle || !panel) return;
+    const sections = tuningSections();
+    const busy = isRunning();
+    toggle.disabled = !sections.length || busy || !selectedProjectExists();
+    if (toggle.disabled && tuningOpen) closeTuning();
+    const modeSection = sections.find(section => section.key === 'mode');
+    toggle.dataset.writes = modeSection?.writes ? 'true' : 'false';
+    if (dom.tuningSummary) {
+      dom.tuningSummary.textContent = sections.length
+        ? sections.map(section => section.value).join(' · ')
+        : '默认';
+    }
+    toggle.title = sections.length
+      ? sections.map(section => `${section.label}：${section.value}`).join('\n')
+      : '这个助手没有可调的选项';
+    toggle.setAttribute('aria-expanded', tuningOpen ? 'true' : 'false');
+    panel.hidden = !tuningOpen;
+    if (!tuningOpen) {
+      panel.replaceChildren();
       return;
     }
-    entries.forEach(entry => {
-      const option = element(document, 'option', '', entry.label);
-      option.value = entry.id;
-      option.title = `${entry.id} · ${entry.hint}`;
-      select.appendChild(option);
+    panel.replaceChildren();
+    const section = sections.find(item => item.key === tuningSection);
+    if (!section) {
+      tuningSection = '';
+      sections.forEach(item => {
+        const row = element(document, 'button', 'conversation-tuning-row');
+        row.type = 'button';
+        row.dataset.section = item.key;
+        row.append(
+          element(document, 'span', 'conversation-tuning-row-label', item.label),
+          element(document, 'span', 'conversation-tuning-row-value', item.value),
+          element(document, 'span', 'conversation-tuning-row-arrow', '›'),
+        );
+        row.addEventListener('click', () => {
+          tuningSection = item.key;
+          renderTuning();
+        });
+        panel.appendChild(row);
+      });
+      return;
+    }
+    const back = element(document, 'button', 'conversation-tuning-back');
+    back.type = 'button';
+    back.append(
+      element(document, 'span', 'conversation-tuning-row-arrow', '‹'),
+      element(document, 'span', '', section.label),
+    );
+    back.addEventListener('click', () => {
+      tuningSection = '';
+      renderTuning();
     });
-    const chosen = currentModeEntry();
-    select.value = chosen.id;
-    select.title = `${provider.label} · ${chosen.id}：${chosen.hint}`;
-    select.dataset.writes = chosen.writes ? 'true' : 'false';
+    panel.appendChild(back);
+    [{ id: '', label: '默认', hint: '不指定，交给这家 CLI 自己决定' }, ...section.options]
+      .filter(option => option.id !== '' || section.key !== 'mode')
+      .forEach(option => {
+        const item = element(document, 'button', 'conversation-tuning-option');
+        item.type = 'button';
+        item.dataset.optionId = option.id;
+        item.dataset.active = option.id === section.current ? 'true' : 'false';
+        const copy = element(document, 'span', 'conversation-tuning-option-copy');
+        copy.appendChild(element(document, 'strong', '', option.label));
+        if (option.hint) copy.appendChild(element(document, 'small', '', option.hint));
+        item.append(copy, element(document, 'span', 'conversation-tuning-check', option.id === section.current ? '✓' : ''));
+        item.addEventListener('click', () => {
+          section.apply(option.id);
+          closeTuning();
+          renderState();
+          dom.composer?.focus();
+        });
+        panel.appendChild(item);
+      });
+  }
+
+  function renderModePicker() {
+    renderTuning();
   }
 
   function persistProviderModels() {
@@ -1944,7 +2061,7 @@ export function installConversationMode({
       dom.stop.textContent = state.status === 'starting' ? '取消连接' : '停止';
     }
     if (dom.composer) dom.composer.disabled = unavailable;
-    if (dom.modeSelect) dom.modeSelect.disabled = unavailable || busy || !currentModeEntries().length;
+    renderTuning();
     if (dom.handoff) {
       const started = conversationHasOpenSession(state);
       dom.handoff.hidden = !started;
@@ -2989,18 +3106,19 @@ export function installConversationMode({
   dom.assistantOverlay?.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeAssistantPicker();
   });
-  dom.modeSelect?.addEventListener('change', () => {
-    if (dom.modeSelect.disabled) return;
-    const picked = String(dom.modeSelect.value || '').trim();
-    if (picked && currentModeEntries().some(entry => entry.id === picked)) {
-      providerModes[currentProvider().id] = picked;
-    } else {
-      delete providerModes[currentProvider().id];
-    }
-    persistProviderModes();
-    renderModePicker();
-    renderControls();
-    dom.composer?.focus();
+  dom.tuningToggle?.addEventListener('click', () => {
+    if (dom.tuningToggle.disabled) return;
+    tuningOpen = !tuningOpen;
+    tuningSection = '';
+    renderTuning();
+  });
+  // 点面板以外的地方就收起，避免它一直悬在输入框上。
+  document.addEventListener?.('click', event => {
+    if (!tuningOpen) return;
+    const target = event?.target;
+    if (target && (dom.tuningPanel?.contains?.(target) || dom.tuningToggle?.contains?.(target))) return;
+    closeTuning();
+    renderTuning();
   });
   dom.snippetSelect?.addEventListener('change', () => {
     if (dom.snippetSelect.value === MANAGE_SNIPPETS_VALUE) {
