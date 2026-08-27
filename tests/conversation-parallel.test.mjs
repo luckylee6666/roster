@@ -75,6 +75,34 @@ class FakeEl {
     this.options = [];
     nodes.forEach(node => this.appendChild(node));
   }
+  set innerHTML(html) {
+    // 极简解析：只认 <pre>…</pre>，够用来验证代码块复制按钮的接线
+    this.replaceChildren();
+    const text = String(html);
+    const pattern = /<pre>([\s\S]*?)<\/pre>/g;
+    let last = 0;
+    let match = pattern.exec(text);
+    while (match) {
+      const before = text.slice(last, match.index).trim();
+      if (before) {
+        const paragraph = new FakeEl('p');
+        paragraph.textContent = before;
+        this.appendChild(paragraph);
+      }
+      const pre = new FakeEl('pre');
+      pre.textContent = match[1];
+      this.appendChild(pre);
+      last = pattern.lastIndex;
+      match = pattern.exec(text);
+    }
+    const tail = text.slice(last).trim();
+    if (tail) {
+      const paragraph = new FakeEl('p');
+      paragraph.textContent = tail;
+      this.appendChild(paragraph);
+    }
+  }
+  get innerHTML() { return ''; }
   replaceWith(node) {
     const parent = this.parentElement;
     if (!parent) return;
@@ -83,7 +111,16 @@ class FakeEl {
   }
   addEventListener(name, fn) { (this.listeners[name] = this.listeners[name] || []).push(fn); }
   querySelector() { return null; }
-  querySelectorAll() { return []; }
+  querySelectorAll(selector) {
+    if (selector !== 'pre') return [];
+    const found = [];
+    const walk = node => node.childNodes.forEach(child => {
+      if (child.tagName === 'PRE') found.push(child);
+      walk(child);
+    });
+    walk(this);
+    return found;
+  }
   focus() {}
   closest() { return null; }
 }
@@ -121,7 +158,7 @@ function flush(times = 24) {
   });
 }
 
-function fixture({ projects, installed = ['claude'], focused = true, appView } = {}) {
+function fixture({ projects, installed = ['claude'], focused = true, appView, t } = {}) {
   const byId = new Map(IDS.map(id => [id, new FakeEl(id === 'conversation-provider-select' ? 'select' : 'div')]));
   const scroller = new FakeEl();
   scroller.appendChild(byId.get('conversation-messages'));
@@ -165,6 +202,9 @@ function fixture({ projects, installed = ['claude'], focused = true, appView } =
   });
   controller.setProjects(projects);
   controller.setInstalledCliIds(installed);
+  // Registered here so a failing assertion still clears the elapsed-time
+  // interval; a leaked timer would hang the whole test run.
+  t?.after(() => controller.destroy());
 
   return {
     controller,
@@ -210,8 +250,8 @@ function fixture({ projects, installed = ['claude'], focused = true, appView } =
 
 const project = (id, name) => ({ id, name, localPath: `/tmp/${id}`, group: '' });
 
-test('流式增量渲染复用未变化的消息节点', async () => {
-  const fx = fixture({ projects: [project('a', '项目 A')] });
+test('流式增量渲染复用未变化的消息节点', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
   await flush();
   await fx.send('第一个问题');
   const stream = fx.el('conversation-messages');
@@ -229,11 +269,10 @@ test('流式增量渲染复用未变化的消息节点', async () => {
   assert.equal(stream.childNodes[1], assistantRow, '助手消息节点必须复用');
   assert.equal(userRow.childNodes[0].childNodes[1], userContent, '未变化的消息不得重建正文');
   assert.equal(assistantRow.childNodes[0].childNodes[1].textContent, '先后完整回答');
-  fx.controller.destroy();
 });
 
-test('一个项目在跑时可以切到别的项目，两边互不覆盖', async () => {
-  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')] });
+test('一个项目在跑时可以切到别的项目，两边互不覆盖', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
   await flush();
   fx.clickProject('a');
   await flush();
@@ -258,11 +297,10 @@ test('一个项目在跑时可以切到别的项目，两边互不覆盖', async
     .map(row => row.childNodes[0].childNodes[1].textContent);
   assert.deepEqual(texts, ['A 的问题', 'A 的回答']);
   assert.ok(!fx.projectButton('a').classNames.has('is-running'));
-  fx.controller.destroy();
 });
 
-test('后台项目跑完会发桌面通知，当前项目且窗口在前台时不打扰', async () => {
-  const background = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')] });
+test('后台项目跑完会发桌面通知，当前项目且窗口在前台时不打扰', async t => {
+  const background = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
   await flush();
   background.clickProject('a');
   await flush();
@@ -276,9 +314,8 @@ test('后台项目跑完会发桌面通知，当前项目且窗口在前台时�
   assert.equal(notified.length, 1);
   assert.match(notified[0].payload.title, /项目 A/);
   assert.ok(background.toasts.some(toast => /项目 A/.test(toast.message)));
-  background.controller.destroy();
 
-  const foreground = fixture({ projects: [project('a', '项目 A')] });
+  const foreground = fixture({ projects: [project('a', '项目 A')], t });
   await flush();
   await foreground.send('问题');
   const active = foreground.startedRuns()[0];
@@ -286,9 +323,8 @@ test('后台项目跑完会发桌面通知，当前项目且窗口在前台时�
   await flush();
   assert.equal(foreground.invokes.filter(entry => entry.command === 'notify').length, 0);
   assert.match(foreground.el('conversation-status').textContent, /已完成 · 用时/);
-  foreground.controller.destroy();
 
-  const developer = fixture({ projects: [project('a', '项目 A')], appView: 'developer' });
+  const developer = fixture({ projects: [project('a', '项目 A')], appView: 'developer', t });
   await flush();
   await developer.send('问题');
   const hidden = developer.startedRuns()[0];
@@ -299,12 +335,11 @@ test('后台项目跑完会发桌面通知，当前项目且窗口在前台时�
     1,
     '停在开发模式时看不到对话，必须发通知',
   );
-  developer.controller.destroy();
 });
 
-test('同时最多四个项目在跑，第五个被挡下并提示', async () => {
+test('同时最多四个项目在跑，第五个被挡下并提示', async t => {
   const ids = ['a', 'b', 'c', 'd', 'e'];
-  const fx = fixture({ projects: ids.map(id => project(id, `项目 ${id}`)) });
+  const fx = fixture({ projects: ids.map(id => project(id, `项目 ${id}`)), t });
   await flush();
   for (const id of ids) {
     fx.clickProject(id);
@@ -313,11 +348,10 @@ test('同时最多四个项目在跑，第五个被挡下并提示', async () =>
   }
   assert.equal(fx.startedRuns().length, MAX_PARALLEL_CONVERSATION_RUNS);
   assert.ok(fx.toasts.some(toast => toast.message.includes('最多同时处理')));
-  fx.controller.destroy();
 });
 
-test('未发送的草稿按项目保存，切回来还在', async () => {
-  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')] });
+test('未发送的草稿按项目保存，切回来还在', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
   await flush();
   fx.clickProject('a');
   await flush();
@@ -331,11 +365,10 @@ test('未发送的草稿按项目保存，切回来还在', async () => {
   fx.clickProject('b');
   await flush();
   assert.equal(fx.el('conversation-composer').value, 'B 的草稿');
-  fx.controller.destroy();
 });
 
-test('迟到的取消事件仍能覆盖已经完成的同一轮', async () => {
-  const fx = fixture({ projects: [project('a', '项目 A')] });
+test('迟到的取消事件仍能覆盖已经完成的同一轮', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
   await flush();
   await fx.send('问题');
   const run = fx.startedRuns()[0];
@@ -345,5 +378,99 @@ test('迟到的取消事件仍能覆盖已经完成的同一轮', async () => {
   fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'cancelled', data: {} });
   await flush();
   assert.match(fx.el('conversation-status').textContent, /已停止/);
-  fx.controller.destroy();
+});
+
+function useClipboard() {
+  const copied = [];
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { clipboard: { writeText: async value => { copied.push(value); } } },
+    configurable: true,
+    writable: true,
+  });
+  return copied;
+}
+
+test('每条消息可复制，用户消息还能放回输入框重新提问', async t => {
+  const copied = useClipboard();
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('原始问题');
+  const run = fx.startedRuns()[0];
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'assistant_message', data: { text: '助手的回答' } });
+  await flush();
+
+  const [userRow, assistantRow] = fx.el('conversation-messages').childNodes;
+  const userTools = userRow.childNodes[1];
+  const assistantTools = assistantRow.childNodes[1];
+  assert.deepEqual(userTools.childNodes.map(node => node.textContent), ['复制', '重新提问']);
+  assert.deepEqual(assistantTools.childNodes.map(node => node.textContent), ['复制']);
+
+  fire(assistantTools.childNodes[0], 'click');
+  await flush();
+  assert.deepEqual(copied, ['助手的回答']);
+  assert.equal(assistantTools.childNodes[0].textContent, '已复制');
+
+  fx.el('conversation-composer').value = '已经写了一半';
+  fire(userTools.childNodes[1], 'click');
+  assert.equal(fx.el('conversation-composer').value, '已经写了一半\n\n原始问题', '重新提问要追加而不是覆盖草稿');
+});
+
+test('回答里的代码块有独立复制按钮，复制的是代码本身', async t => {
+  const copied = useClipboard();
+  globalThis.window.marked = { parse: source => source.replace(/```([\s\S]*?)```/g, '<pre>$1</pre>') };
+  globalThis.window.DOMPurify = { sanitize: html => html };
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('给我一段代码');
+  const run = fx.startedRuns()[0];
+  fx.emit({
+    runId: run.runId,
+    providerId: run.providerId,
+    kind: 'assistant_delta',
+    data: { text: '看这里\n```\nconst a = 1;\n```' },
+  });
+  await flush();
+  const content = () => fx.el('conversation-messages').childNodes[1].childNodes[0].childNodes[1];
+  assert.equal(
+    content().childNodes.filter(node => node.classNames.has('conversation-code-block')).length,
+    0,
+    '流式过程中不挂复制按钮',
+  );
+
+  fx.emit({
+    runId: run.runId,
+    providerId: run.providerId,
+    kind: 'assistant_message',
+    data: { text: '看这里\n```\nconst a = 1;\n```' },
+  });
+  await flush();
+  const wraps = content().childNodes.filter(node => node.classNames.has('conversation-code-block'));
+  assert.equal(wraps.length, 1);
+  assert.equal(wraps[0].childNodes[0].tagName, 'PRE');
+  const button = wraps[0].childNodes[1];
+  assert.equal(button.textContent, '复制');
+  fire(button, 'click');
+  await flush();
+  assert.deepEqual(copied, ['\nconst a = 1;\n']);
+  delete globalThis.window.marked;
+  delete globalThis.window.DOMPurify;
+});
+
+test('左侧分组第一次出现时是折叠的，用户展开后保持展开', async t => {
+  const fx = fixture({
+    t,
+    projects: [
+      { id: 'a', name: '项目 A', localPath: '/tmp/a', group: '工作' },
+      { id: 'b', name: '项目 B', localPath: '/tmp/b', group: '个人' },
+    ],
+  });
+  await flush();
+  const sections = () => fx.el('conversation-project-list').childNodes
+    .filter(node => node.dataset.group);
+  const personal = () => sections().find(node => node.dataset.group === '个人');
+  assert.ok(personal().classNames.has('is-collapsed'), '没选中的分组默认折叠');
+  fire(personal().childNodes[0], 'click');
+  assert.ok(!personal().classNames.has('is-collapsed'), '点开之后要展开');
+  fx.controller.setSnippets([]);
+  assert.ok(!personal().classNames.has('is-collapsed'), '重绘后保持用户选择');
 });

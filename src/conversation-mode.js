@@ -347,6 +347,7 @@ export function installConversationMode({
   const deleteAfterRun = new Map();
   const lastRunSummary = new Map();
   const collapsedProjectGroups = new Set();
+  const seenProjectGroups = new Set();
   const projectMediaCache = new Map();
   const messageNodes = new Map();
   const runController = createConversationRunController({ invoke });
@@ -783,6 +784,13 @@ export function installConversationMode({
     }
 
     const groups = groupConversationProjects(visible);
+    // A group starts folded the first time it appears; later renders keep
+    // whatever the user opened or closed in this session.
+    groups.forEach(group => {
+      if (seenProjectGroups.has(group.name)) return;
+      seenProjectGroups.add(group.name);
+      collapsedProjectGroups.add(group.name);
+    });
     const onlyUngrouped = groups.length === 1 && groups[0].name === CONVERSATION_UNGROUPED_LABEL;
     if (onlyUngrouped) {
       groups[0].projects.forEach(project => {
@@ -960,8 +968,18 @@ export function installConversationMode({
       const label = element(document, 'div', 'conversation-message-label');
       const content = element(document, 'div', 'conversation-message-content');
       body.append(label, content);
-      row.append(body);
-      entry = { row, label, content, labelText: '', tool: '', text: null, pending: null, attachments: null };
+      row.append(body, messageToolsNode(message, () => entry.text || ''));
+      entry = {
+        row,
+        label,
+        content,
+        labelText: '',
+        tool: '',
+        text: null,
+        pending: null,
+        streaming: null,
+        attachments: null,
+      };
       messageNodes.set(key, entry);
     }
     if (message.role === 'assistant' && entry.tool !== provider.id) {
@@ -975,14 +993,23 @@ export function installConversationMode({
     }
     const text = String(message.text || '');
     const attachments = message.attachments || null;
-    const thinking = Boolean(message.pending) && !text;
-    if (entry.text !== text || entry.pending !== thinking || entry.attachments !== attachments) {
+    const streaming = Boolean(message.pending);
+    const thinking = streaming && !text;
+    if (entry.text !== text
+      || entry.pending !== thinking
+      || entry.streaming !== streaming
+      || entry.attachments !== attachments) {
       entry.text = text;
       entry.pending = thinking;
+      entry.streaming = streaming;
       entry.attachments = attachments;
       entry.content.replaceChildren();
-      if (message.role === 'assistant') renderMarkdown(document, entry.content, text, hydrateLocalMedia);
-      else entry.content.textContent = text;
+      if (message.role === 'assistant') {
+        renderMarkdown(document, entry.content, text, hydrateLocalMedia);
+        // Only a finished reply gets copy buttons; a streaming one rebuilds
+        // its body on every frame.
+        if (!streaming) decorateCodeBlocks(entry.content);
+      } else entry.content.textContent = text;
       renderConversationAttachments(document, entry.content, attachments);
       if (thinking) {
         const dots = element(document, 'span', 'conversation-thinking');
@@ -992,6 +1019,78 @@ export function installConversationMode({
       }
     }
     return entry.row;
+  }
+
+  async function copyConversationText(text, button) {
+    const value = String(text || '');
+    if (!value.trim()) return;
+    try {
+      const clipboard = globalThis.navigator?.clipboard;
+      if (typeof clipboard?.writeText !== 'function') throw new Error('clipboard unavailable');
+      await clipboard.writeText(value);
+    } catch (_) {
+      notify?.('复制失败，请手动选择这段文字', 'error');
+      return;
+    }
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = '已复制';
+    button.classList.add('is-done');
+    setTimeout(() => {
+      if (destroyed) return;
+      button.textContent = original;
+      button.classList.remove('is-done');
+    }, 1400);
+  }
+
+  function reuseConversationText(text) {
+    const value = String(text || '').trim();
+    if (!dom.composer || !value) return;
+    dom.composer.value = [dom.composer.value.trim(), value].filter(Boolean).join('\n\n');
+    dom.composer.focus();
+    syncComposer();
+  }
+
+  // The copy button lives inside <pre>, so the code text has to be read before
+  // it is appended or the label ends up in the clipboard.
+  function decorateCodeBlocks(container) {
+    const blocks = container.querySelectorAll?.('pre') || [];
+    blocks.forEach(block => {
+      const code = block.textContent || '';
+      if (!code.trim()) return;
+      const button = element(document, 'button', 'conversation-code-copy', '复制');
+      button.type = 'button';
+      button.title = '复制这段代码';
+      button.addEventListener('click', event => {
+        event?.stopPropagation?.();
+        void copyConversationText(code, button);
+      });
+      // The button anchors to a wrapper instead of <pre>, which scrolls
+      // horizontally and would carry the button out of view with it.
+      const parent = block.parentElement;
+      if (!parent?.insertBefore) return;
+      const wrap = element(document, 'div', 'conversation-code-block');
+      parent.insertBefore(wrap, block);
+      wrap.appendChild(block);
+      wrap.appendChild(button);
+    });
+  }
+
+  function messageToolsNode(message, readText) {
+    const tools = element(document, 'div', 'conversation-message-tools');
+    const copy = element(document, 'button', 'conversation-message-tool', '复制');
+    copy.type = 'button';
+    copy.title = '复制这条内容';
+    copy.addEventListener('click', () => void copyConversationText(readText(), copy));
+    tools.appendChild(copy);
+    if (message.role === 'user') {
+      const again = element(document, 'button', 'conversation-message-tool', '重新提问');
+      again.type = 'button';
+      again.title = '把这条内容放回输入框';
+      again.addEventListener('click', () => reuseConversationText(readText()));
+      tools.appendChild(again);
+    }
+    return tools;
   }
 
   function inlineAlertNode() {

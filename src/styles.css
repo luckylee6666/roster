@@ -6016,7 +6016,85 @@ html[data-app-view="developer"] #conversation-surface {
 }
 
 .conversation-message {
+  position: relative;
   margin-bottom: 22px;
+}
+
+/* The tool row sits inside the gap below each message so revealing it on
+   hover never reflows the transcript. */
+.conversation-message-tools {
+  position: absolute;
+  bottom: -16px;
+  left: 0;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.conversation-message.is-user .conversation-message-tools {
+  right: 0;
+  left: auto;
+}
+
+.conversation-message:hover .conversation-message-tools,
+.conversation-message:focus-within .conversation-message-tools {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conversation-message-tool,
+.conversation-code-copy {
+  appearance: none;
+  padding: 1px 7px;
+  border: 1px solid var(--chat-line);
+  border-radius: 6px;
+  background: var(--chat-panel);
+  color: var(--chat-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.conversation-message-tool:hover,
+.conversation-code-copy:hover {
+  border-color: #b7c1cf;
+  color: var(--chat-ink);
+}
+
+.conversation-message-tool.is-done,
+.conversation-code-copy.is-done {
+  border-color: rgba(31, 138, 91, 0.4);
+  color: var(--chat-success);
+}
+
+.conversation-code-block {
+  position: relative;
+}
+
+.conversation-code-block:first-child pre { margin-top: 0; }
+.conversation-code-block:last-child pre { margin-bottom: 0; }
+
+.conversation-code-copy {
+  position: absolute;
+  top: 18px;
+  right: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.conversation-code-block:hover .conversation-code-copy,
+.conversation-code-copy:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-message-tools,
+  .conversation-code-copy { transition: none; }
 }
 
 .conversation-message.is-user {
@@ -6078,6 +6156,7 @@ html[data-app-view="developer"] #conversation-surface {
 .conversation-message-content li > p { margin: 0; }
 .conversation-message-content li > p + p { margin-top: 6px; }
 .conversation-message-content pre {
+  position: relative;
   max-width: 100%;
   margin: 12px 0;
   padding: 13px 15px;

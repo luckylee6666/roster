@@ -13,6 +13,9 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Added an explicit Developer mode switch that preserves the existing terminal, file, Git, multi-CLI handoff, collaboration, companion web, and game workflows.
 - The conversation composer accepts pasted images (PNG/JPEG/GIF/WebP, up to 4 per message, 8 MB each) with thumbnail previews and per-image removal. Images are saved to a bounded paste directory under the app data folder and handed to the assistant as local file paths to read; Gemini receives native `@path` references instead. Thumbnails and in-message images open a full-screen preview; Esc or clicking the mask closes it.
 - The conversation workspace can create projects without leaving it: a permanent “+” next to the Projects title opens a lightweight dialog with folder picker, name (auto-filled from the folder), and group input suggested from existing groups; new group names create groups on the fly.
+- Every project keeps its own conversation, draft, and running turn, so a turn started in one project keeps streaming while you read or type in another. The project list marks running projects with a pulse dot, and up to four turns run in parallel, matching the backend cap.
+- The run status shows live elapsed time while a turn runs and the total duration when it ends. A desktop notification arrives when the result lands in a background project, an unfocused window, or while Developer mode is on screen; the foreground conversation stays undisturbed.
+- Each message exposes hover actions — copy for any message, plus “ask again” to drop a user message back into the composer without overwriting a draft — and every fenced code block gets its own copy button.
 
 **Changed**
 - Historical conversations now use a dedicated, bounded transcript reader instead of the 24-message cross-CLI handoff summary. Validated embedded screenshots are restored, and project-local image/video links render with type and path checks.
@@ -23,6 +26,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Slash completion is discovered live from the current project: Grok via `inspect --json`, others by scanning that CLI’s skills/commands directories. The old hardcoded command table was removed.
 - `/model` now opens a live model picker for the current CLI: Grok and agy use their `models` command, Claude uses `--help` aliases, Codex reads `~/.codex/models_cache.json`, and Gemini uses `models list` when installed.
 - `/effort` lists live reasoning levels for Grok, Claude, agy, and Codex, and passes `--effort` or Codex `model_reasoning_effort` on the next turn.
+- The transcript reuses the DOM node of every unchanged message, so streaming re-parses only the message being written; long sessions no longer stutter and local images/videos stop flickering or restarting on each frame.
+- Project groups in the conversation sidebar start collapsed the first time they appear. The group holding the current project stays open, and expand/collapse choices persist for the session.
 
 **Removed**
 - Removed the project-ideas feature from both Conversation and Developer modes; existing `ideas.json` data is left untouched on disk and is no longer read or written.
@@ -33,7 +38,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Gemini stream UUIDs are resolved back to verified project session files before reuse; structured CLI errors stop immediately; long streamed Codex replies are preserved per message item; and Codex resolves only validated executables and closes App Server stdin before graceful cleanup. Conversation deletion resolves a saved project ID in the backend; project media is opened component-by-component without following symlinks on Unix and verified against the actual opened handle on Windows. Bursty metadata rendering is coalesced while terminal events remain immediate, and destructive actions use the application confirmation dialog supported by WKWebView.
 
 **Tests**
-- Frontend suite: 353 tests. Rust suite: 142 tests, including provider routing/command/parser coverage, bounded historical transcript and symlink-safe media validation, current-PATH-first bounded CLI lookup, live slash-command discovery, Grok/Claude/Codex/agy model and effort listing, long-transcript composer containment, project-scoped deletion, process-tree cleanup, Gemini session canonicalization, atomic start reservations, completion/timeout signaling, paste-image validation/saving/pruning with per-provider prompt hints, and a fake Codex App Server contract for start, resume, approvals, long streamed replies, stdin EOF, completion, and cancellation.
+- Frontend suite: 362 tests. Rust suite: 142 tests, including provider routing/command/parser coverage, bounded historical transcript and symlink-safe media validation, current-PATH-first bounded CLI lookup, live slash-command discovery, Grok/Claude/Codex/agy model and effort listing, long-transcript composer containment, project-scoped deletion, process-tree cleanup, Gemini session canonicalization, atomic start reservations, completion/timeout signaling, paste-image validation/saving/pruning with per-provider prompt hints, and a fake Codex App Server contract for start, resume, approvals, long streamed replies, stdin EOF, completion, and cancellation.
 
 ### 中文
 
@@ -44,6 +49,9 @@ All notable changes to this project are documented here. 本项目的更新记�
 - 新增明确的开发模式切换，原有终端、文件、Git、多 CLI 交接、协作、伴生网页和游戏流程完整保留。
 - 对话输入框支持粘贴图片（PNG/JPEG/GIF/WebP，每条消息最多 4 张、单张 8MB），带缩略图预览和逐张移除；图片保存到数据目录下的有界粘贴目录，以本机路径交给助手查看，Gemini 改用原生 `@路径` 引用。缩略图和消息内图片可点击全屏预览，Esc 或点遮罩关闭。
 - 对话工作台可直接新建项目：「项目」标题旁常驻「＋」，轻量弹窗里选文件夹、名称默认用文件夹名、分组可从已有分组建议或填新分组即时创建，不再强制跳去开发模式。
+- 每个项目保留自己的对话、草稿和运行中的轮次：一个项目在跑时可以自由切到别的项目查看或输入，两边互不覆盖。项目列表用脉冲圆点标出正在处理的项目，最多 4 个项目并行，与后端上限一致。
+- 运行中状态条实时显示已用时间，结束后显示本轮用时。结果落在后台项目、窗口失焦或人停在开发模式时会发桌面通知；当前项目且窗口在前台时不打扰。
+- 每条消息 hover 出现操作：任意消息可复制，用户消息还能「重新提问」放回输入框且不覆盖已有草稿；回答里的代码块各自带复制按钮。
 
 **变更**
 - 历史对话改用独立且有边界的正文读取，不再受跨 CLI 交接摘要的 24 条上限影响；可恢复经验证的内联截图，并在路径和文件类型校验后显示项目内图片/视频。
@@ -54,6 +62,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 - 斜杠补全改为按当前项目动态发现：Grok 走 `inspect --json`，其他 CLI 扫描各自 skills/commands 目录。已去掉写死的命令表。
 - `/model` 会打开当前 CLI 的模型选择器：Grok / agy 走 `models`，Claude 解析 `--help` 别名，Codex 读本机 `models_cache.json`，Gemini 在已安装时走 `models list`。
 - `/effort` 覆盖 Grok、Claude、agy、Codex 的实时推理强度，下一轮带上 `--effort` 或 Codex 的 `model_reasoning_effort`。
+- 消息区改为复用未变化消息的 DOM 节点，流式只重新解析正在书写的那一条；长会话不再卡顿，项目内图片/视频也不会每帧重建导致闪烁或重播。
+- 对话左侧的项目分组第一次出现时默认折叠；当前项目所在的分组保持展开，用户自己的展开/收起在本次会话内保留。
 
 **移除**
 - 移除项目想法功能（对话模式与开发模式）；磁盘上已有的 `ideas.json` 数据原样保留，应用不再读写。
@@ -64,7 +74,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Gemini 流式 UUID 会在续接前解析回已验证的项目会话文件；CLI 结构化错误会立即停止；Codex 长流式回复按消息项保留，并且只运行已验证的可执行文件、正常完成时先关闭 App Server stdin 再清理。对话删除由后端解析已保存项目 ID；Unix 下项目媒体逐级安全打开且不跟随符号链接，Windows 下按实际打开句柄复核路径。高频元数据合并渲染但终态仍立即呈现，删除统一使用 WKWebView 可用的应用内确认弹窗。
 
 **测试**
-- 前端 353 项、Rust 142 项；新增多 CLI 路由、命令与结构化解析、有界历史正文与符号链接安全媒体验证、当前 PATH 优先的有界命令定位、Grok/Claude/Codex/agy 模型与推理强度解析、长会话输入区布局边界、项目范围删除、进程树回收、Gemini 会话归一化、启动原子占位及完成/超时信号覆盖、粘贴图片校验/保存/清理与按 CLI 的图片提示，并保留 fake Codex App Server 对新建、续接、审批、长流式回复、stdin EOF、完成与取消协议的验证。
+- 前端 362 项、Rust 142 项；新增多 CLI 路由、命令与结构化解析、有界历史正文与符号链接安全媒体验证、当前 PATH 优先的有界命令定位、Grok/Claude/Codex/agy 模型与推理强度解析、长会话输入区布局边界、项目范围删除、进程树回收、Gemini 会话归一化、启动原子占位及完成/超时信号覆盖、粘贴图片校验/保存/清理与按 CLI 的图片提示，并保留 fake Codex App Server 对新建、续接、审批、长流式回复、stdin EOF、完成与取消协议的验证。
 
 ## v1.2.24
 
