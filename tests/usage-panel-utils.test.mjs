@@ -5,6 +5,8 @@ import {
   usageCommandForAgent,
   windowsFromUsagePayload,
   conversationUsageSummary,
+  conversationUsageState,
+  usageResetLabel,
 } from '../src/usage-panel-utils.js';
 
 test('用量面板只保留 Claude 与 Codex', () => {
@@ -49,4 +51,47 @@ test('对话侧栏的用量只留窗口和百分比，查不到就给空串', ()
   assert.equal(conversationUsageSummary('claude', { ok: false }), '');
   assert.equal(conversationUsageSummary('claude', null), '');
   assert.equal(conversationUsageSummary('claude', { ok: true, fiveHour: {}, sevenDay: {} }), '');
+});
+
+test('额度等级按最紧的那个窗口算，重置时间只在拿得到时给', () => {
+  const now = Date.UTC(2026, 7, 27, 10, 0, 0);
+  const at = new Date(now + 80 * 60000).toISOString();
+
+  const quiet = conversationUsageState('claude', {
+    ok: true,
+    fiveHour: { utilization: 12 },
+    sevenDay: { utilization: 3 },
+  }, now);
+  assert.equal(quiet.level, 'ok');
+  assert.equal(quiet.blocked, false);
+  assert.equal(quiet.reset, '', '没给重置时间就不编一个');
+
+  const warn = conversationUsageState('claude', {
+    ok: true,
+    fiveHour: { utilization: 72, resetsAt: at },
+    sevenDay: { utilization: 5 },
+  }, now);
+  assert.equal(warn.level, 'warn');
+  assert.equal(warn.window, '5 小时', '等级取最紧的那个窗口');
+
+  const blocked = conversationUsageState('claude', {
+    ok: true,
+    fiveHour: { utilization: 100, resetsAt: at },
+    sevenDay: { utilization: 40 },
+  }, now);
+  assert.equal(blocked.level, 'blocked');
+  assert.equal(blocked.blocked, true);
+  assert.equal(blocked.reset, '约 1 小时 20 分后重置');
+
+  assert.equal(conversationUsageState('claude', { ok: false }, now).level, 'ok');
+  assert.equal(conversationUsageState('claude', null, now).text, '');
+});
+
+test('重置时间文案：过期或拿不到都给空串', () => {
+  const now = Date.UTC(2026, 7, 27, 10, 0, 0);
+  assert.equal(usageResetLabel(new Date(now + 25 * 60000).toISOString(), now), '约 25 分钟后重置');
+  assert.equal(usageResetLabel(new Date(now + 120 * 60000).toISOString(), now), '约 2 小时后重置');
+  assert.equal(usageResetLabel(new Date(now - 60000).toISOString(), now), '', '已经过去就不显示');
+  assert.equal(usageResetLabel('', now), '');
+  assert.equal(usageResetLabel('不是时间', now), '');
 });

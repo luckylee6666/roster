@@ -212,6 +212,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
   let changedFiles = [{ status: 'M', path: 'src/a.js' }];
   let pickedImages = [];
   let slashLists = { models: [], efforts: [] };
+  let oauthUsage = { ok: true, fiveHour: { utilization: 32 }, sevenDay: { utilization: 7 } };
   const sessionTitles = {};
   let projectFiles = [
     { path: 'README.md', name: 'README.md', depth: 0 },
@@ -278,9 +279,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
         else delete sessionTitles[`${payload.tool}:${payload.id}`];
         return { ...sessionTitles };
       }
-      if (command === 'oauth_usage') {
-        return { ok: true, fiveHour: { utilization: 32 }, sevenDay: { utilization: 7 } };
-      }
+      if (command === 'oauth_usage') return oauthUsage;
       if (command === 'conversation_project_files') {
         return projectFiles.filter(file => file.path.toLowerCase().includes(String(payload.query || '').toLowerCase()));
       }
@@ -316,6 +315,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
     setChanges: files => { changedFiles = files; },
     setPickedImages: paths => { pickedImages = paths; },
     setSlashLists: lists => { slashLists = { models: [], efforts: [], ...lists }; },
+    setUsage: payload => { oauthUsage = payload; },
     sessionTitles,
     manageOpens,
     fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
@@ -1325,4 +1325,45 @@ test('摘要不跟着异步列表变形状，只反映选过的值', async t => 
   await flush();
   assert.equal(summary.textContent, before, '列表到位不该改变摘要');
   assert.deepEqual(fx.tuningRows(), ['model', 'effort', 'mode'], '但面板里该有这三行');
+});
+
+test('额度接近上限才抢注意力，打满时发送前就说清楚', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude'], t });
+  await flush();
+  const usage = fx.el('conversation-usage');
+
+  fx.pickAssistant('claude');
+  await flush();
+  assert.equal(usage.dataset.level, 'ok');
+  assert.doesNotMatch(usage.textContent, /重置/, '平时不啰嗦重置时间');
+  assert.doesNotMatch(fx.el('conversation-composer-hint').textContent, /额度/);
+
+  // 打满：侧栏转红并带出重置时间，发送区提前说明
+  fx.setUsage({
+    ok: true,
+    fiveHour: { utilization: 100, resetsAt: new Date(Date.now() + 40 * 60000).toISOString() },
+    sevenDay: { utilization: 20 },
+  });
+  await fx.send('先跑一轮');
+  const run = fx.startedRuns().pop();
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  assert.equal(usage.dataset.level, 'blocked');
+  assert.match(usage.textContent, /后重置/);
+  assert.match(
+    fx.el('conversation-composer-hint').textContent,
+    /5 小时额度已用满/,
+    '按下发送之前就该看见',
+  );
+  assert.match(fx.el('conversation-assistant-badge').title, /额度：/, '额度挂在助手身上');
+
+  // 刚查过就聚焦输入框不该再查一次：要新鲜，但不能变成轮询
+  const queries = fx.invokes.filter(entry => entry.command === 'oauth_usage').length;
+  fire(fx.el('conversation-composer'), 'focus');
+  await flush();
+  assert.equal(
+    fx.invokes.filter(entry => entry.command === 'oauth_usage').length,
+    queries,
+    '一分钟内重复聚焦不重复查询',
+  );
 });

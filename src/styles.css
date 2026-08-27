@@ -5682,6 +5682,15 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-usage[hidden] { display: none; }
 
+/* 平时是安静的灰字，只有接近上限才需要抢注意力 */
+.conversation-usage[data-level="warn"] { color: var(--chat-warn-ink); }
+
+.conversation-usage[data-level="danger"],
+.conversation-usage[data-level="blocked"] {
+  color: var(--chat-danger-ink);
+  font-weight: 560;
+}
+
 .conversation-theme-switch {
   display: flex;
   align-items: center;

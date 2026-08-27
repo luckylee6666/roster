@@ -13,7 +13,7 @@ import {
   startConversationTurn,
 } from './conversation-state.js';
 import { createConversationRunController } from './conversation-run-controller.js';
-import { conversationUsageSummary, usageCommandForAgent, USAGE_AGENTS } from './usage-panel-utils.js';
+import { conversationUsageState, usageCommandForAgent, USAGE_AGENTS } from './usage-panel-utils.js';
 import {
   conversationSlashHelpText,
   inspectConversationSlash,
@@ -526,6 +526,7 @@ export function installConversationMode({
   let sessionTitles = {};
   let renamingKey = '';
   let usageText = '';
+  let usage = { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
   let usageFetchedAt = 0;
   let usageRevision = 0;
   let deletingHistory = null;
@@ -1254,11 +1255,15 @@ export function installConversationMode({
     const changeable = Boolean(selectedProject) && !started && !isRunning() && options.length > 0;
     dom.assistantBadge.disabled = !changeable;
     dom.assistantBadge.dataset.locked = started ? 'true' : 'false';
-    dom.assistantBadge.title = started
+    const base = started
       ? `这条对话由 ${provider.label} 负责，开始后不再更换；要换人请用「交接」`
       : changeable
         ? `当前用 ${provider.label}，点击可换一个助手`
         : provider.label;
+    // 额度是这家助手的属性，挂在它身上就不会有"谁的额度"的歧义。
+    dom.assistantBadge.title = usage.text
+      ? `${base}\n额度：${usage.text}${usage.reset ? ` · ${usage.reset}` : ''}`
+      : base;
   }
 
   function providerConnectionLabel() {
@@ -1748,34 +1753,46 @@ export function installConversationMode({
   }
 
   const USAGE_MIN_INTERVAL_MS = 3 * 60 * 1000;
+  // 要在按下发送之前就知道额度，三分钟前的数据不够新，聚焦输入框时用更短的窗口。
+  const USAGE_FRESH_INTERVAL_MS = 60 * 1000;
 
   function renderUsage() {
     if (!dom.usage) return;
     dom.usage.hidden = !usageText;
-    if (usageText) dom.usage.textContent = usageText;
+    if (!usageText) return;
+    // 平时安静；接近上限才需要被看见，这时补上重置时间。
+    dom.usage.dataset.level = usage.level;
+    dom.usage.textContent = usage.reset && (usage.level === 'danger' || usage.blocked)
+      ? `${usageText} · ${usage.reset}`
+      : usageText;
   }
 
   // 只查当前助手自己的限流，且最快三分钟一次；查不到就安静地不显示。
-  async function refreshUsage({ force = false } = {}) {
+  async function refreshUsage({ force = false, maxAge = USAGE_MIN_INTERVAL_MS } = {}) {
     const agent = currentProvider().id;
     if (!USAGE_AGENTS.includes(agent)) {
+      usage = { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
       usageText = '';
       renderUsage();
       return;
     }
-    if (!force && Date.now() - usageFetchedAt < USAGE_MIN_INTERVAL_MS) return;
+    if (!force && Date.now() - usageFetchedAt < maxAge) return;
     const revision = ++usageRevision;
     usageFetchedAt = Date.now();
     try {
       const payload = await invoke(usageCommandForAgent(agent));
       if (destroyed || revision !== usageRevision) return;
-      const summary = conversationUsageSummary(agent, payload);
-      usageText = summary ? `${currentProvider().label} · ${summary}` : '';
+      usage = conversationUsageState(agent, payload);
+      usageText = usage.text ? `${currentProvider().label} · ${usage.text}` : '';
     } catch (_) {
       if (revision !== usageRevision) return;
+      usage = { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
       usageText = '';
     }
     renderUsage();
+    // 额度还决定输入区那句提示和助手徽标的悬停说明，一并刷新。
+    renderControls();
+    renderAssistantBadge();
   }
 
   function messageRowAt(index) {
@@ -2097,7 +2114,10 @@ export function installConversationMode({
     if (dom.composerHint) {
       dom.composerHint.textContent = !selectedProjectExists()
         ? '先选择一个项目'
-        : listenerError
+        : usage.blocked && !busy
+          // 额度打满时先说清楚，免得发出去才被 CLI 拒
+          ? `${currentProvider().label} 的${usage.window || '用量'}额度已用满${usage.reset ? `，${usage.reset}` : ''}`
+          : listenerError
           ? listenerError
           : installedCliIds === null
             ? '正在检查本机 CLI'
@@ -3150,6 +3170,9 @@ export function installConversationMode({
     } catch (error) {
       notify?.(`选择图片失败：${error?.message || error}`, 'error');
     }
+  });
+  dom.composer?.addEventListener('focus', () => {
+    void refreshUsage({ maxAge: USAGE_FRESH_INTERVAL_MS });
   });
   dom.composer?.addEventListener('input', () => {
     slashDismissed = false;
