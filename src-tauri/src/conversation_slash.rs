@@ -58,6 +58,9 @@ pub struct ConversationModel {
     pub id: String,
     pub label: String,
     pub current: bool,
+    /// 这个模型支持的推理强度。各家 CLI 大多问不出来，问得出来的（Codex 的
+    /// models_cache）才填；空表示"不知道"，前端就不按模型过滤。
+    pub efforts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -556,7 +559,12 @@ fn finish_models(ids: Vec<(String, String, bool)>) -> Vec<ConversationModel> {
         if !seen.insert(id.clone()) {
             continue;
         }
-        models.push(ConversationModel { id, label, current });
+        models.push(ConversationModel {
+            id,
+            label,
+            current,
+            efforts: Vec::new(),
+        });
         if models.len() >= MAX_MODELS {
             break;
         }
@@ -623,6 +631,8 @@ pub fn parse_codex_models_cache(raw: &str) -> (Vec<ConversationModel>, Vec<Conve
     let mut models: Vec<(String, String, bool)> = Vec::new();
     let mut effort_ids = Vec::new();
     let mut effort_seen = std::collections::HashSet::new();
+    let mut per_model: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let Some(items) = value.get("models").and_then(serde_json::Value::as_array) else {
         return (Vec::new(), Vec::new());
     };
@@ -653,7 +663,7 @@ pub fn parse_codex_models_cache(raw: &str) -> (Vec<ConversationModel>, Vec<Conve
         } else {
             label.chars().take(80).collect()
         };
-        models.push((id, label, false));
+        let mut mine = Vec::new();
         if let Some(levels) = item
             .get("supported_reasoning_levels")
             .and_then(serde_json::Value::as_array)
@@ -664,17 +674,26 @@ pub fn parse_codex_models_cache(raw: &str) -> (Vec<ConversationModel>, Vec<Conve
                     .and_then(serde_json::Value::as_str)
                     .and_then(normalize_effort_id)
                 {
+                    if !mine.contains(&effort) {
+                        mine.push(effort.clone());
+                    }
                     if effort_seen.insert(effort.clone()) {
                         effort_ids.push(effort);
                     }
                 }
             }
         }
+        per_model.insert(id.clone(), mine);
+        models.push((id, label, false));
     }
     const ORDER: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
     effort_ids.sort_by_key(|id| ORDER.iter().position(|item| *item == id).unwrap_or(100));
+    let mut models = finish_models(models);
+    for model in &mut models {
+        model.efforts = per_model.remove(&model.id).unwrap_or_default();
+    }
     (
-        finish_models(models),
+        models,
         finish_efforts(
             effort_ids
                 .into_iter()

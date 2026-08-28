@@ -768,6 +768,27 @@ fn write_codex_cache(usage: &CodexUsage) {
     cache_write(&cache_file(CODEX_CACHE_NAME), usage);
 }
 
+/// 收下 Codex app-server 在对话过程中主动推来的限流数据（`account/rateLimits/
+/// updated`），直接写进用量缓存。这样每轮结束刷额度时读的就是这份新数据，
+/// 不必再拉起一个 app-server 去问一遍同样的问题。
+///
+/// 参数是协议原样的 `params`，形状与 `account/rateLimits/read` 的结果一致。
+pub fn record_codex_rate_limits(params: &Value) -> bool {
+    let Some(limits) = params.get("rateLimits").filter(|value| !value.is_null()) else {
+        return false;
+    };
+    let payload = serde_json::json!({ "rateLimits": limits.clone() });
+    match parse_codex_usage(&payload) {
+        Ok(mut usage) => {
+            usage.stale = false;
+            usage.age_secs = 0;
+            write_codex_cache(&usage);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn fail_codex(err: String) -> CodexUsage {
     record_failure(CODEX_FAIL_KEY, &err);
     if let Some((mut c, age)) = read_codex_cache_with_age() {
@@ -847,6 +868,43 @@ pub fn fetch_codex_usage() -> CodexUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_pushed_rate_limits_with_only_a_weekly_window() {
+        // 本机实测 `account/rateLimits/updated` 推来的真实形状：secondary 为
+        // null，只有一个 10080 分钟的窗口，resetsAt 是 Unix 秒。
+        let params = serde_json::json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "limitName": null,
+                "primary": { "usedPercent": 16, "windowDurationMins": 10080, "resetsAt": 1_788_401_283u64 },
+                "secondary": null,
+                "planType": "prolite"
+            }
+        });
+        let usage = parse_codex_usage(&params).expect("单个周窗口也该能解析");
+        assert!(usage.ok);
+        assert_eq!(usage.plan.as_deref(), Some("prolite"));
+        assert_eq!(
+            usage.windows.len(),
+            1,
+            "secondary 是 null，不该硬凑出第二个窗口"
+        );
+        assert_eq!(usage.windows[0].label, "7 天窗口");
+        assert_eq!(usage.windows[0].utilization, 16.0);
+        // Unix 秒必须换成 ISO，否则前端 Date.parse 不出来，重置时间会是空的。
+        assert!(
+            usage.windows[0].resets_at.contains('T'),
+            "resetsAt 应转成 ISO 时间，实际是 {}",
+            usage.windows[0].resets_at
+        );
+
+        // 推来的东西不成形状就当没收到，不能把空数据写进缓存。
+        assert!(!record_codex_rate_limits(&serde_json::json!({})));
+        assert!(!record_codex_rate_limits(
+            &serde_json::json!({ "rateLimits": null })
+        ));
+    }
 
     #[test]
     fn failure_cooldown_roundtrip() {

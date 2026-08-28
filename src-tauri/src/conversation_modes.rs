@@ -4,11 +4,21 @@
 //! 等于同行为（Grok 的 `acceptEdits` 在无头下根本无法自我批准）。这里把各家原
 //! 生的档位原样登记下来，前端只传模式 ID，认不认由这份白名单说了算。
 //!
-//! 收录标准有两条：
+//! 收录标准：
 //! 1. 必须在无头（`--print` / `run` / app-server）下实测能跑通，需要 TTY 交互
 //!    才能应答的档不收——没人应答只会变成挂起或 `User cancelled`。
-//! 2. 会完全绕过沙箱或权限检查的档不收：`bypassPermissions`、
-//!    `danger-full-access`、`--dangerously-skip-permissions`、`--yolo`。
+//! 2. 不替各家自造"更宽松"的档。Roster 不会用 `--dangerously-skip-permissions`、
+//!    `--yolo`、OpenCode `--auto` 这类参数去绕开某一档本身的权限检查。
+//! 3. 更宽松的档只登记这家 CLI 自己就摆在用户面前的那些——判据是它出现在该产品
+//!    自己的模式环/档位选择里，而不是藏在一个警告性的启动参数后面。所以：
+//!    - Codex 的「完全访问权限」（`danger-full-access`，`unsandboxed: true`）收，
+//!      它是 Codex 自己的一档；
+//!    - Grok 的 Always-Approve（CLI 拼作 `bypassPermissions`）收，它在 Grok 的
+//!      Shift+Tab 环里；
+//!    - Claude 的 `bypassPermissions` 不收——它不在 Claude 的 Shift+Tab 环里，
+//!      要靠 `--dangerously-skip-permissions` 才能进去。
+//!
+//!    这类档永远不能是默认档：`default_mode` 取第一档，而每家第一档都必须只读。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +29,8 @@ pub struct ConversationMode {
     pub hint: &'static str,
     /// 这一档是否可能改动项目文件。
     pub writes: bool,
+    /// 这一档是否完全不开沙箱。前端据此额外提醒，别和普通写入档混为一谈。
+    pub unsandboxed: bool,
 }
 
 const fn mode(
@@ -32,6 +44,22 @@ const fn mode(
         label,
         hint,
         writes,
+        unsandboxed: false,
+    }
+}
+
+/// 无沙箱档。单独开一个构造器，是为了让"哪些档不受沙箱约束"在代码里一眼可数。
+const fn unsandboxed_mode(
+    id: &'static str,
+    label: &'static str,
+    hint: &'static str,
+) -> ConversationMode {
+    ConversationMode {
+        id,
+        label,
+        hint,
+        writes: true,
+        unsandboxed: true,
     }
 }
 
@@ -54,16 +82,29 @@ const CLAUDE_MODES: &[ConversationMode] = &[
     mode("auto", "auto · 自动", "由 Claude 自行判断该不该动手", true),
 ];
 
-// Grok 的 acceptEdits 在无头下仍会发审批请求且无人应答，故不收录。
+// Grok 自己的 Shift+Tab 环是 Normal → Plan → Auto → Always-Approve。其中
+// Normal（CLI 取值 `default`）和 acceptEdits 都要人逐条点批准，无头下没人可点，
+// 实测整轮直接失败（`subtype: error_during_execution`），所以只收能跑通的三档。
+// Normal 要等审批界面做出来才能放，和 Codex 的「请求批准」卡在同一件事上。
 const GROK_MODES: &[ConversationMode] = &[
     mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
     mode("auto", "自动", "由 Grok 自行判断该不该动手", true),
+    // Grok 环里的 Always-Approve，CLI 的 --permission-mode 拼作 bypassPermissions
+    // （另有等价的 --always-approve 标志）。它只放开审批，不动沙箱：新会话仍在
+    // workspace profile 里，改不到项目以外。
+    mode(
+        "bypassPermissions",
+        "始终批准",
+        "不再逐条确认工具调用；仍限制在项目工作区内，改不到项目外",
+        true,
+    ),
 ];
 
 // Codex 的档位用它自己的说法。「请求批准」(approvalPolicy on-request + reviewer
-// user) 要人应答，无头下没人可问，等审批界面做好再放出来；「完全访问权限」属于
-// 绕过档，不收。「帮我批准」把审批交给 Codex 自己的自动审核，无需人工，已用
-// app-server 协议实测通过。
+// user) 要人应答，无头下没人可问，等审批界面做好再放出来。「帮我批准」把审批交给
+// Codex 自己的自动审核，无需人工，已用 app-server 协议实测通过。
+// 「完全访问权限」就是 Codex 自己的 danger-full-access：不开沙箱，能读写项目以外
+// 的地方、也能联网。由用户明确选中才生效，默认仍是只读。
 const CODEX_MODES: &[ConversationMode] = &[
     mode("read-only", "只读", "只能读项目，写入一律被沙箱挡下", false),
     mode(
@@ -72,11 +113,51 @@ const CODEX_MODES: &[ConversationMode] = &[
         "可改工作区；风险操作交给 Codex 自动审核，不用你逐条点",
         true,
     ),
+    // 实测：这一档并不会为工作区内的正常读写打断你，只在动作要越出沙箱时才问
+    // （联网、写到可写根之外等）。提示语必须照这个说，别写成"每次修改都确认"。
+    mode(
+        "request-approval",
+        "请求批准",
+        "可改工作区；要联网或越出项目时先问你一句",
+        true,
+    ),
+    unsandboxed_mode(
+        "full-access",
+        "完全访问权限",
+        "不开沙箱：可读写项目以外的文件、可联网，请只在信任的任务上用",
+    ),
 ];
 
+// Gemini 与 Qwen 曾经共用一张表，但两边的取值早就分叉了，共用等于两边都错：
+// Gemini 官方枚举是 default / autoEdit / yolo / plan（驼峰），Qwen 是
+// plan / default / auto-edit / auto / yolo（连字符）。我们原来写的 `auto_edit`
+// 下划线两边都不认，所以两家的写入档从来没能启动过（yargs choices 直接拒）。
+//
+// Gemini 本机没装，无法按标准做无头实测，因此只把取值改对（来源是官方
+// packages/core/src/policy/types.ts 的 ApprovalMode 枚举），不新增未验证的档。
 const GEMINI_MODES: &[ConversationMode] = &[
     mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
-    mode("auto_edit", "自动接受修改", "文件改动直接生效", true),
+    mode("autoEdit", "自动接受修改", "文件改动直接生效", true),
+];
+
+// Qwen 自己的 Shift+Tab 环遍历 APPROVAL_MODES 全部五个：
+// plan → default → auto-edit → auto → yolo。实测（--sandbox --safe-mode）：
+//   plan      只读，明确回"当前处于 Plan 模式（禁止任何写入）"
+//   default   没人可问就不注册写工具，干不了活，和 Grok 的 Normal 同源
+//   auto-edit 写入成功
+//   auto      240 秒未返回，再跑一次仍然挂住——挂起比失败更糟，不收
+//   yolo      写入成功
+const QWEN_MODES: &[ConversationMode] = &[
+    mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
+    mode("auto-edit", "自动接受修改", "文件改动直接生效", true),
+    // Qwen 环里的 YOLO。这是它自己的一档，不是我们额外加的 `--yolo` 绕过参数；
+    // 沙箱仍由 `--sandbox` 开着（macOS 上是 seatbelt）。
+    mode(
+        "yolo",
+        "始终批准",
+        "不再逐条确认工具调用；仍在 Qwen 自己的沙箱内执行",
+        true,
+    ),
 ];
 
 const AGY_MODES: &[ConversationMode] = &[
@@ -99,7 +180,8 @@ pub fn modes_for(provider: &str) -> &'static [ConversationMode] {
         "claude" => CLAUDE_MODES,
         "grok" => GROK_MODES,
         "codex" => CODEX_MODES,
-        "gemini" | "qwen" => GEMINI_MODES,
+        "gemini" => GEMINI_MODES,
+        "qwen" => QWEN_MODES,
         "agy" => AGY_MODES,
         "opencode" | "mimo" => AGENT_MODES,
         _ => &[],
@@ -146,31 +228,145 @@ mod tests {
                 modes[0],
                 "{provider} 空模式应落到最保守的一档"
             );
-            assert!(
-                resolve(provider, "bypassPermissions").is_err(),
-                "{provider} 不得接受绕过档"
-            );
+            // 只有 Grok 的环里真有 Always-Approve 这一档；别家一律拒。
+            if provider != "grok" {
+                assert!(
+                    resolve(provider, "bypassPermissions").is_err(),
+                    "{provider} 不得接受绕过档"
+                );
+            }
             assert!(resolve(provider, "随便编的").is_err());
         }
     }
 
     #[test]
-    fn never_exposes_trust_bypassing_modes() {
+    fn never_invents_looser_modes_than_the_cli_itself_offers() {
+        // 判据是"这家 CLI 自己就把它摆在用户面前"：出现在它自己的模式环里算，
+        // 藏在警告性启动参数后面的不算。所以 Grok 的 Always-Approve（在它的
+        // Shift+Tab 环里）收，Claude 的同名档（要 --dangerously-skip-permissions
+        // 才进得去）不收。放宽这张表之前，先确认那一档真在该产品的档位选择里。
+        const ALWAYS_APPROVE: &[(&str, &str)] = &[("grok", "bypassPermissions"), ("qwen", "yolo")];
+
         for provider in [
             "claude", "grok", "codex", "gemini", "qwen", "agy", "opencode", "mimo",
         ] {
             for entry in modes_for(provider) {
+                let allowed = ALWAYS_APPROVE.contains(&(provider, entry.id));
                 assert!(
-                    !matches!(
-                        entry.id,
-                        // dontAsk 不在此列：实测它是"不问且拒绝"，与绕过相反。
-                        "bypassPermissions" | "danger-full-access" | "yolo" | "workspace-write"
-                    ),
-                    "{provider} 暴露了绕过档或裸沙箱值 {}",
+                    allowed
+                        || !matches!(
+                            entry.id,
+                            // 只列真正的"绕过审批"档。dontAsk 不在此列：实测它是
+                            // "不问且拒绝"，与绕过相反；auto-edit / acceptEdits
+                            // 这类"自动接受修改"也不在此列，它们是各家正常的写入
+                            // 档，不是绕过。
+                            "bypassPermissions" | "yolo" | "dangerously-skip-permissions"
+                        ),
+                    "{provider} 登记了靠绕过参数换来的档 {}",
                     entry.id
                 );
             }
         }
+
+        // 名单本身也要锁住：登记了这类档的必须确实有，没登记的不许偷偷冒出来。
+        for (provider, id) in ALWAYS_APPROVE {
+            assert!(
+                modes_for(provider).iter().any(|entry| entry.id == *id),
+                "{provider} 的 {id} 档已从表里消失，名单该跟着改"
+            );
+        }
+        assert!(
+            resolve("claude", "bypassPermissions").is_err(),
+            "Claude 的 bypassPermissions 不在它自己的环里，不能收"
+        );
+    }
+
+    #[test]
+    fn qwen_and_gemini_use_their_own_spelling_and_do_not_share_a_table() {
+        // 两家的官方枚举早就分叉，共用一张表等于两边都错。原来写的 `auto_edit`
+        // 下划线谁都不认，yargs 的 choices 会直接拒，写入档从来没启动过。
+        let qwen = modes_for("qwen")
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(qwen, vec!["plan", "auto-edit", "yolo"]);
+        let gemini = modes_for("gemini")
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(gemini, vec!["plan", "autoEdit"]);
+        assert_ne!(modes_for("qwen"), modes_for("gemini"), "两家不能再共用");
+
+        // 下划线拼法两家都必须拒。
+        assert!(resolve("qwen", "auto_edit").is_err());
+        assert!(resolve("gemini", "auto_edit").is_err());
+        // 各自只认自己那一种拼法。
+        assert!(resolve("qwen", "autoEdit").is_err());
+        assert!(resolve("gemini", "auto-edit").is_err());
+        // 实测挂住（两次都 240s+ 未返回）和无头下干不了活的档都不收。
+        assert!(resolve("qwen", "auto").is_err(), "auto 实测会挂住");
+        assert!(
+            resolve("qwen", "default").is_err(),
+            "default 无头下没有写工具"
+        );
+        // Gemini 本机没装、没法实测，不收未验证的档。
+        assert!(resolve("gemini", "yolo").is_err());
+    }
+
+    #[test]
+    fn grok_lists_the_three_modes_that_actually_run_headless() {
+        // Grok 自己的环是 Normal → Plan → Auto → Always-Approve。实测无头下
+        // Normal（CLI 取值 default）和 acceptEdits 都会整轮失败
+        // （subtype: error_during_execution），因为没人能点批准，所以不收。
+        let ids = modes_for("grok")
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["plan", "auto", "bypassPermissions"]);
+        assert!(resolve("grok", "default").is_err(), "Normal 无头下跑不通");
+        assert!(
+            resolve("grok", "acceptEdits").is_err(),
+            "无头下无法自我批准"
+        );
+        // 只放开审批，不动沙箱——新会话仍在 workspace profile 里。
+        assert!(!resolve("grok", "bypassPermissions").unwrap().unsandboxed);
+    }
+
+    #[test]
+    fn only_codex_has_an_unsandboxed_mode_and_it_is_never_the_default() {
+        // 无沙箱档只登记各家自己就提供的那一个。改这条之前先想清楚：
+        // 这一档下 CLI 能读写项目以外的文件，也能联网。
+        for provider in [
+            "claude", "grok", "gemini", "qwen", "agy", "opencode", "mimo",
+        ] {
+            assert!(
+                modes_for(provider).iter().all(|entry| !entry.unsandboxed),
+                "{provider} 目前不该有无沙箱档"
+            );
+        }
+        let codex: Vec<_> = modes_for("codex")
+            .iter()
+            .filter(|entry| entry.unsandboxed)
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(codex, vec!["full-access"], "Codex 只有这一个无沙箱档");
+
+        for provider in [
+            "claude", "grok", "codex", "gemini", "qwen", "agy", "opencode", "mimo",
+        ] {
+            assert!(
+                !default_mode(provider).unsandboxed,
+                "{provider} 的默认档绝不能是无沙箱的"
+            );
+            // 空模式和不认识的模式都不许落到无沙箱档上。
+            assert!(!resolve(provider, "").unwrap().unsandboxed);
+            assert!(resolve(provider, "随便编的").is_err());
+        }
+        let entry = resolve("codex", "full-access").unwrap();
+        assert!(entry.unsandboxed && entry.writes);
+        assert!(!resolve("codex", "approve-for-me").unwrap().unsandboxed);
+        assert!(!resolve("codex", "read-only").unwrap().unsandboxed);
+        assert!(!resolve("claude", "auto").unwrap().unsandboxed);
     }
 
     #[test]
@@ -208,11 +404,19 @@ mod tests {
             .iter()
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["read-only", "approve-for-me"]);
-        // 「请求批准」要人应答，无头下没人可问，做出审批界面之前不许放出来。
+        assert_eq!(
+            ids,
+            vec![
+                "read-only",
+                "approve-for-me",
+                "request-approval",
+                "full-access"
+            ]
+        );
+        // 前端传的是我们自己的档位 ID，协议取值由后端映射，不能直接当模式传进来。
         assert!(resolve("codex", "on-request").is_err());
+        // 前端只传我们自己的档位 ID，裸沙箱值由后端映射，不能直接当模式传进来。
         assert!(resolve("codex", "danger-full-access").is_err());
-        // 裸沙箱值不是 Codex 面向用户的说法，也不该出现在选择器里。
         assert!(resolve("codex", "workspace-write").is_err());
     }
 

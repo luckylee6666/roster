@@ -920,16 +920,20 @@ fn provider_command_with_slash(
                 // 发审批请求而没人应答，最终变成 User cancelled，只有 `auto` 能自我批准。
                 "--permission-mode",
                 mode.id,
-                "--sandbox",
-                if allow_write {
-                    "workspace"
-                } else {
-                    "read-only"
-                },
                 "--disable-web-search",
                 "--no-subagents",
             ]);
-            if !thread_id.is_empty() {
+            // Grok 的沙箱 profile 是会话级的，创建时钉死：拿另一个 profile 续接会被
+            // 直接拒（"cannot resume this session under sandbox profile ... it was
+            // created with ..."），连 --fork-session 也绕不过，检查发生在分叉之前。
+            //
+            // 所以只在新建会话时给 profile，续接一律省掉 --sandbox 沿用原来的。新会话
+            // 固定用可写的 `workspace`，好让同一条对话之后还能切到写入档；这一轮到底
+            // 能不能改文件，由 --permission-mode 决定——实测 workspace 沙箱下的 plan
+            // 档同样拒绝写入。这与 Claude 的做法一致：只读同样是靠它自己的 plan 档。
+            if thread_id.is_empty() {
+                command.args(["--sandbox", "workspace"]);
+            } else {
                 command.args(["--resume", thread_id]);
             }
             push_model_args(&mut command, spec.id, model);
@@ -1756,6 +1760,10 @@ pub fn start(
     // 模式必须是这家自己有的档，不认就拒，不退回成"给个写入权限算了"。
     let mode = crate::conversation_modes::resolve(&provider_id, &mode)?;
     let allow_write = mode.writes;
+    if mode.unsandboxed {
+        // 不开沙箱的轮次要留痕：出事时得能查出是哪个项目、哪一档跑的。
+        crate::log_warn!("对话以无沙箱模式启动：{provider_id} / {}", mode.id);
+    }
     let prompt = crate::codex_chat::validate_prompt(&prompt)?;
     let model = validate_model(&model)?;
     let effort = validate_effort(&effort)?;
@@ -1850,6 +1858,17 @@ pub fn cancel(state: &ConversationChatState, run_id: &str) -> Result<(), String>
     crate::codex_chat::cancel(state, run_id)
 }
 
+/// 把用户对一条审批请求的答复送回正在等待的那一轮。目前只有 Codex 的
+/// 「请求批准」档会走到这里；其余 CLI 的无头协议还没有双向审批通道。
+pub fn approve(
+    state: &ConversationChatState,
+    run_id: &str,
+    approval_id: &str,
+    decision: &str,
+) -> Result<(), String> {
+    crate::codex_chat::approve(state, run_id, approval_id, decision)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1900,6 +1919,67 @@ mod tests {
             "无头下只有 auto 能自我批准"
         );
 
+        // 新建的只读会话同样拿可写的 workspace profile：这一轮写不写得了由
+        // permission-mode 说了算（实测 workspace + plan 拒绝写入），这样之后在
+        // 同一条对话里切到 auto 才不会被沙箱挡死。
+        let fresh_read_only = provider_command(
+            provider_spec("grok").unwrap(),
+            fake.clone(),
+            "看看就好",
+            "",
+            false,
+            "",
+            "",
+        );
+        let fresh_args = fresh_read_only
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            fresh_args
+                .windows(2)
+                .any(|pair| pair == ["--sandbox", "workspace"]),
+            "新会话固定用 workspace profile"
+        );
+        assert!(
+            fresh_args
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "plan"]),
+            "只读这一轮由 plan 档保证"
+        );
+
+        // 续接：Grok 的沙箱 profile 在会话创建时钉死，换一个 profile 续接会被直接
+        // 拒绝（--fork-session 也绕不过）。所以续接一律不带 --sandbox，沿用原来的；
+        // 这一轮能不能改文件仍由 --permission-mode 决定。
+        for allow_write in [false, true] {
+            let resumed = provider_command(
+                provider_spec("grok").unwrap(),
+                fake.clone(),
+                "接着写",
+                "01a04392-905f-7a71-9d2b-23a9277acd6b",
+                allow_write,
+                "",
+                "",
+            );
+            let args = resumed
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(
+                !args.iter().any(|arg| arg == "--sandbox"),
+                "续接不能再传 --sandbox，否则 Grok 直接拒绝开工"
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--resume", "01a04392-905f-7a71-9d2b-23a9277acd6b"]),
+                "续接要带上会话 ID"
+            );
+            assert!(
+                args.windows(2).any(|pair| pair[0] == "--permission-mode"),
+                "档位仍然每轮都传"
+            );
+        }
+
         // 传下去的永远是模式表里的原生取值，不是 Roster 自己编的词。
         for id in ["claude", "gemini", "qwen", "agy"] {
             let spec = provider_spec(id).unwrap();
@@ -1932,7 +2012,9 @@ mod tests {
         let fake = PathBuf::from("/bin/echo");
         let cases = [
             ("claude", "stream-json", "plan"),
-            ("grok", "streaming-messages-json", "read-only"),
+            // Grok 的只读靠 --permission-mode plan，不再靠 --sandbox：沙箱 profile
+            // 是会话级的，钉死后换不了，会挡住同一条对话里切到写入档。
+            ("grok", "streaming-messages-json", "plan"),
             ("gemini", "stream-json", "plan"),
             ("agy", "stream-json", "plan"),
             ("qwen", "stream-json", "plan"),

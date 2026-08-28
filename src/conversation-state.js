@@ -75,6 +75,9 @@ export function createConversationState({
     plan: [],
     notice: '',
     error: '',
+    // Codex「请求批准」档下、正在等你拍板的那一条。同一时刻只会有一条：
+    // 协议线程在等答复期间不会再发新的请求。
+    approval: null,
   };
 }
 
@@ -274,6 +277,26 @@ export function applyConversationChatEvent(state, envelope) {
       return { ...state, plan: Array.isArray(data.items) ? data.items.slice(0, 32) : [] };
     case 'notice':
       return { ...state, notice: typeof data.message === 'string' ? data.message : '' };
+    case 'approval': {
+      const approvalId = typeof data.approvalId === 'string' ? data.approvalId : '';
+      if (!approvalId) return state;
+      return {
+        ...state,
+        approval: {
+          id: approvalId,
+          kind: data.kind === 'fileChange' ? 'fileChange' : 'command',
+          reason: typeof data.reason === 'string' ? data.reason : '',
+          command: typeof data.command === 'string' ? data.command : '',
+          // 送出决定到后端确认之间按钮要立刻停下，避免连点成两次答复。
+          submitting: false,
+        },
+      };
+    }
+    case 'approval_resolved': {
+      // 只清掉正在等的那一条；迟到的答复事件不能把新的请求抹掉。
+      if (!state.approval || state.approval.id !== data.approvalId) return state;
+      return { ...state, approval: null };
+    }
     case 'completed': {
       const failed = data.status !== 'completed';
       const next = updateAssistant(state, message => ({ ...message, pending: false }));
@@ -281,11 +304,12 @@ export function applyConversationChatEvent(state, envelope) {
         ...next,
         status: failed ? 'failed' : 'completed',
         error: failed && typeof data.error === 'string' ? data.error : '',
+        approval: null,
       };
     }
     case 'cancelled': {
       const next = updateAssistant(state, message => ({ ...message, pending: false }));
-      return { ...next, status: 'cancelled', notice: '已停止这次处理' };
+      return { ...next, status: 'cancelled', notice: '已停止这次处理', approval: null };
     }
     case 'error': {
       const next = updateAssistant(state, message => ({ ...message, pending: false }));
@@ -293,6 +317,7 @@ export function applyConversationChatEvent(state, envelope) {
         ...next,
         status: 'failed',
         error: typeof data.message === 'string' ? data.message : '所选 CLI 运行出现问题',
+        approval: null,
       };
     }
     default:

@@ -170,6 +170,12 @@ const IDS = [
   'conversation-stop',
   'conversation-composer-hint',
   'conversation-handoff-note',
+  'conversation-approval',
+  'conversation-approval-badge',
+  'conversation-approval-reason',
+  'conversation-approval-command',
+  'conversation-approval-allow',
+  'conversation-approval-deny',
   'conversation-changes-list',
   'conversation-changes-count',
   'conversation-scroll-bottom',
@@ -266,12 +272,20 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       if (command === 'conversation_model_list') return { models: slashLists.models };
       if (command === 'conversation_effort_list') return { efforts: slashLists.efforts };
       if (command === 'conversation_mode_list') {
-        return payload.providerId === 'claude'
-          ? [
-              { id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false },
-              { id: 'acceptEdits', label: 'acceptEdits · 自动接受修改', hint: '改动直接生效', writes: true },
-            ]
-          : [{ id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false }];
+        if (payload.providerId === 'claude') {
+          return [
+            { id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false, unsandboxed: false },
+            { id: 'acceptEdits', label: 'acceptEdits · 自动接受修改', hint: '改动直接生效', writes: true, unsandboxed: false },
+          ];
+        }
+        if (payload.providerId === 'codex') {
+          return [
+            { id: 'read-only', label: '只读', hint: '写入被沙箱挡下', writes: false, unsandboxed: false },
+            { id: 'approve-for-me', label: '帮我批准', hint: '可改工作区', writes: true, unsandboxed: false },
+            { id: 'full-access', label: '完全访问权限', hint: '不开沙箱', writes: true, unsandboxed: true },
+          ];
+        }
+        return [{ id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false, unsandboxed: false }];
       }
       if (command === 'list_conversation_session_titles') return { ...sessionTitles };
       if (command === 'set_conversation_session_title') {
@@ -418,6 +432,104 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
 
 const project = (id, name) => ({ id, name, localPath: `/tmp/${id}`, group: '' });
 const conversationLabel = id => ({ claude: 'Claude', grok: 'Grok', codex: 'Codex' }[id] || id);
+
+test('审批请求弹卡片，答复后回传决定，轮次结束自动收掉', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex'], t });
+  await flush();
+  await fx.send('帮我查点东西');
+  const run = fx.startedRuns()[0];
+  const card = fx.el('conversation-approval');
+  assert.equal(card.hidden, true, '平时不该出现');
+
+  fx.emit({
+    runId: run.runId,
+    providerId: run.providerId,
+    kind: 'approval',
+    data: {
+      approvalId: 'exec-1',
+      kind: 'command',
+      reason: '是否允许联网抓取 example.com？',
+      command: 'curl -sS https://example.com',
+    },
+  });
+  await flush();
+  assert.equal(card.hidden, false);
+  assert.equal(fx.el('conversation-approval-reason').textContent, '是否允许联网抓取 example.com？');
+  assert.equal(fx.el('conversation-approval-command').textContent, 'curl -sS https://example.com');
+
+  fire(fx.el('conversation-approval-allow'), 'click');
+  await flush();
+  const sent = fx.invokes.filter(item => item.command === 'conversation_chat_approve');
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].payload, {
+    runId: run.runId,
+    approvalId: 'exec-1',
+    decision: 'accept',
+  });
+
+  // 迟到的、对不上号的答复事件不能把卡片抹掉。
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'approval_resolved', data: { approvalId: '别的' } });
+  await flush();
+  assert.equal(card.hidden, false, '只清正在等的那一条');
+
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'approval_resolved', data: { approvalId: 'exec-1' } });
+  await flush();
+  assert.equal(card.hidden, true);
+
+  // 轮次以任何方式结束，都不能留下一张点不动的卡。
+  fx.emit({
+    runId: run.runId,
+    providerId: run.providerId,
+    kind: 'approval',
+    data: { approvalId: 'exec-2', kind: 'fileChange', reason: '要写到项目外', command: '' },
+  });
+  await flush();
+  assert.equal(card.hidden, false);
+  assert.equal(fx.el('conversation-approval-command').hidden, true, '没有命令就不显示命令块');
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  assert.equal(card.hidden, true, '轮次结束必须收掉挂起的审批');
+});
+
+test('后台项目在等审批时要看得见，并且状态不再说"正在处理"', async t => {
+  const fx = fixture({
+    projects: [project('a', '项目 A'), project('b', '项目 B')],
+    installed: ['codex'],
+    t,
+  });
+  await flush();
+  await fx.send('查点东西');
+  const run = fx.startedRuns()[0];
+
+  // 切到另一个项目，让刚才那轮退到后台
+  fx.clickProject('b');
+  await flush();
+  fx.emit({
+    runId: run.runId,
+    providerId: run.providerId,
+    kind: 'approval',
+    data: { approvalId: 'exec-1', kind: 'command', reason: '要联网', command: 'curl x' },
+  });
+  await flush();
+
+  // 后台项目行要有明确的"等你批准"标记，而不是和"正在处理"混为一谈
+  const rowA = fx.el('conversation-project-list').childNodes
+    .find(node => node.dataset.projectId === 'a');
+  const dots = rowA.childNodes.filter(node => node.className?.includes('await-dot'));
+  assert.equal(dots.length, 1, '等审批要有独立标记');
+  assert.equal(rowA.className.includes('is-awaiting'), true);
+  assert.equal(rowA.className.includes('is-running'), false, '不能同时说它在跑');
+
+  // 不在当前项目时要提示用户回来处理
+  assert.equal(fx.toasts.some(item => /批准/.test(item.message)), true);
+
+  // 回到那个项目，状态栏不能再说"正在处理"
+  fx.clickProject('a');
+  await flush();
+  assert.equal(fx.el('conversation-status').textContent.includes('正在处理'), false);
+  assert.match(fx.el('conversation-status').textContent, /批准/);
+  assert.equal(fx.el('conversation-status').dataset.status, 'awaiting');
+});
 
 test('流式增量渲染复用未变化的消息节点', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], t });
@@ -1152,6 +1264,78 @@ test('历史会话可以改名，改回原名等于清掉别名', async t => {
   await flush();
   assert.equal(titleOf(), '原始标题');
   assert.equal('claude:c1' in fx.sessionTitles, false, '改回原名就不再占一条别名');
+});
+
+test('模型和推理强度带助手归属，换助手时不会把上一家的列表挂过来', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+
+  fx.setSlashLists({ models: [{ id: 'grok-4', label: 'grok-4' }], efforts: [] });
+  fx.pickAssistant('grok');
+  await flush();
+  assert.deepEqual(fx.tuningRows(), ['model', 'mode'], 'Grok 这边有模型可选');
+
+  // 换助手的一瞬间新列表还没回来，这个空档里绝不能列出 grok-4。
+  fx.setSlashLists({ models: [], efforts: [] });
+  fx.pickAssistant('claude');
+  assert.equal(
+    fx.tuningRows().includes('model'),
+    false,
+    '新助手的模型还没查回来时，宁可不列，也不能显示上一家的',
+  );
+  await flush();
+  assert.deepEqual(fx.tuningRows(), ['mode'], 'Claude 这边确实没有模型列表');
+});
+
+test('Codex 的强度按所选模型过滤，换到不支持的模型就丢掉旧强度', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex'], t });
+  await flush();
+  // 本机 models_cache 的真实形状：各模型支持的强度并不一样。
+  fx.setSlashLists({
+    models: [
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
+      { id: 'gpt-5.5', label: 'GPT-5.5', efforts: ['low', 'medium', 'high', 'xhigh'] },
+    ],
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(id => ({ id, label: id })),
+  });
+  fx.pickAssistant('codex');
+  await flush();
+
+  // 没选模型时不知道该按谁过滤，六档全给。
+  const effortIds = () => { fx.openTuning('effort'); return fx.tuningOptions().filter(Boolean); };
+  assert.equal(effortIds().length, 6);
+
+  fx.pickTuning('model', 'gpt-5.6-sol');
+  assert.equal(effortIds().includes('ultra'), true, 'Sol 支持 ultra');
+  fx.pickTuning('effort', 'ultra');
+
+  // gpt-5.5 没有 max / ultra：实测 Codex 会收下再悄悄降级，所以干脆别列。
+  fx.pickTuning('model', 'gpt-5.5');
+  assert.deepEqual(effortIds(), ['low', 'medium', 'high', 'xhigh']);
+  const summary = fx.el('conversation-tuning-toggle').textContent;
+  assert.equal(/ultra/.test(summary), false, '换了模型就不该还挂着 ultra');
+});
+
+test('Codex 的完全访问权限单独标出来，不和普通写入模式混为一谈', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex'], t });
+  await flush();
+  fx.pickAssistant('codex');
+  await flush();
+
+  const toggle = fx.el('conversation-tuning-toggle');
+  assert.equal(toggle.dataset.unsandboxed, 'false', '默认只读，不该带无沙箱标记');
+
+  fx.openTuning('mode');
+  assert.deepEqual(fx.tuningOptions(), ['read-only', 'approve-for-me', 'full-access']);
+
+  // 「帮我批准」会改文件，但仍在沙箱里——两者的视觉重量必须区分开。
+  fx.pickTuning('mode', 'approve-for-me');
+  assert.equal(toggle.dataset.writes, 'true');
+  assert.equal(toggle.dataset.unsandboxed, 'false');
+
+  fx.pickTuning('mode', 'full-access');
+  assert.equal(toggle.dataset.writes, 'true');
+  assert.equal(toggle.dataset.unsandboxed, 'true', '不开沙箱要看得出来');
 });
 
 test('模式只列当前助手有的档，选中后按 provider 记住', async t => {

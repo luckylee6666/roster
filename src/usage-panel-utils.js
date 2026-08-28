@@ -14,11 +14,25 @@ export function windowsFromUsagePayload(agent, payload) {
   ];
 }
 
+/**
+ * 顶栏只有一行的位置。Codex 除了账号总额度，还会按模型各报一份 5 小时和 7 天，
+ * 三段拼起来那一行会被挤成零宽——看起来就是"额度没显示"。所以这里只留账号级的
+ * 窗口（按模型报的那几份标签带「模型名 ·」前缀），详细分档留给开发模式的用量面板。
+ */
+export function conversationUsageWindows(agent, payload) {
+  const windows = (!payload || payload.ok === false)
+    ? []
+    : windowsFromUsagePayload(agent, payload)
+      .filter(entry => Number.isFinite(Number(entry?.utilization)));
+  if (agent !== 'codex') return windows;
+  const account = windows.filter(entry => !String(entry?.label || '').includes('·'));
+  return account.length ? account : windows;
+}
+
 /** 侧栏那一行只要「窗口 + 百分比」，去掉「窗口」二字免得挤。 */
 export function conversationUsageSummary(agent, payload) {
   if (!payload || payload.ok === false) return '';
-  const parts = windowsFromUsagePayload(agent, payload)
-    .filter(entry => Number.isFinite(Number(entry?.utilization)))
+  const parts = conversationUsageWindows(agent, payload)
     .map(entry => {
       const label = String(entry.label || '').replace(/窗口$/, '').trim();
       const percent = Math.max(0, Math.min(100, Math.round(Number(entry.utilization))));
@@ -35,6 +49,8 @@ export function usageResetLabel(resetsAt, now = Date.now()) {
   if (minutes <= 0) return '';
   if (minutes < 60) return `约 ${minutes} 分钟后重置`;
   const hours = Math.floor(minutes / 60);
+  // 周窗口离重置还有好几天，换算成「156 小时 51 分」没人读得出是多久。
+  if (hours >= 48) return `约 ${Math.round(hours / 24)} 天后重置`;
   const rest = minutes % 60;
   return rest ? `约 ${hours} 小时 ${rest} 分后重置` : `约 ${hours} 小时后重置`;
 }
@@ -44,10 +60,7 @@ export function usageResetLabel(resetsAt, now = Date.now()) {
  * level: ok / warn(≥70) / danger(≥90) / blocked(≥100)
  */
 export function conversationUsageState(agent, payload, now = Date.now()) {
-  const windows = (!payload || payload.ok === false)
-    ? []
-    : windowsFromUsagePayload(agent, payload)
-      .filter(entry => Number.isFinite(Number(entry?.utilization)));
+  const windows = conversationUsageWindows(agent, payload);
   if (!windows.length) return { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
   const text = conversationUsageSummary(agent, payload);
   const peakWindow = windows.reduce(

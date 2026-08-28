@@ -12,9 +12,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(windows)]
@@ -128,6 +128,40 @@ pub(crate) struct ActiveRun {
     // this guard on Windows kills every assigned descendant.
     pub(crate) process_tree: Option<ProcessTreeGuard>,
     pub(crate) cancelled: Arc<AtomicBool>,
+    // 「请求批准」这一档才用得上：协议线程正阻塞在读 stdout 上，而 Codex 在等
+    // 我们回话，所以让那个线程自己等决定，比多一处共享 stdin 安全（不必再操心
+    // stdin 的 EOF 时序）。这里只放一个发送端和"当前在等哪一条"。
+    pub(crate) approval_tx: Option<Sender<ApprovalDecision>>,
+    pub(crate) pending_approval: Arc<Mutex<Option<String>>>,
+}
+
+/// 用户对一条审批请求的答复。取值来自 app-server schema 的
+/// CommandExecutionApprovalDecision / FileChangeApprovalDecision。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    Accept,
+    AcceptForSession,
+    Decline,
+}
+
+impl ApprovalDecision {
+    fn as_protocol(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::AcceptForSession => "acceptForSession",
+            Self::Decline => "decline",
+        }
+    }
+
+    /// 前端只能传这三个词，别的一律拒——不认的值绝不能退化成"批准"。
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "accept" => Ok(Self::Accept),
+            "acceptForSession" => Ok(Self::AcceptForSession),
+            "decline" => Ok(Self::Decline),
+            _ => Err("不认识的审批决定".into()),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -557,6 +591,98 @@ fn response_id(message: &Value) -> Option<i64> {
     message.get("id").and_then(Value::as_i64)
 }
 
+fn is_approval_request(message: &Value) -> bool {
+    matches!(
+        message.get("method").and_then(Value::as_str),
+        Some("item/commandExecution/requestApproval") | Some("item/fileChange/requestApproval")
+    )
+}
+
+/// 发给前端的审批卡片所需的一切。只带收敛过的字段，不透传协议对象。
+struct ApprovalContext {
+    event_sink: Arc<dyn ChatEventSink>,
+    run_id: String,
+    cancelled: Arc<AtomicBool>,
+    pending: Arc<Mutex<Option<String>>>,
+    rx: Receiver<ApprovalDecision>,
+}
+
+/// 等用户按下"允许"或"拒绝"。
+///
+/// 每秒醒一次检查取消标志；超过整轮上限就放弃。返回 `Err("")` 表示用户取消，
+/// 不需要再报错。
+fn wait_for_user_decision(
+    message: &Value,
+    context: &ApprovalContext,
+) -> Result<ApprovalDecision, String> {
+    let params = message.get("params").cloned().unwrap_or(Value::Null);
+    let item_id = params
+        .get("itemId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !valid_protocol_id(item_id, 160) {
+        return Err("Codex 发来的审批请求无效".into());
+    }
+    let kind = if message.get("method").and_then(Value::as_str)
+        == Some("item/fileChange/requestApproval")
+    {
+        "fileChange"
+    } else {
+        "command"
+    };
+    let reason = bounded_text(
+        params.get("reason").and_then(Value::as_str).unwrap_or(""),
+        MAX_EVENT_TEXT_CHARS,
+    );
+    let command = bounded_text(
+        params.get("command").and_then(Value::as_str).unwrap_or(""),
+        MAX_EVENT_TEXT_CHARS,
+    );
+    if let Ok(mut pending) = context.pending.lock() {
+        *pending = Some(item_id.to_string());
+    }
+    emit_event(
+        context.event_sink.as_ref(),
+        &context.run_id,
+        "approval",
+        json!({
+            "approvalId": item_id,
+            "kind": kind,
+            "reason": reason,
+            "command": command,
+        }),
+    );
+    let deadline = Instant::now() + TURN_TIMEOUT;
+    let outcome = loop {
+        if context.cancelled.load(Ordering::SeqCst) {
+            break Err(String::new());
+        }
+        if Instant::now() >= deadline {
+            break Err("等待你的批准超时，这一轮已停止".to_string());
+        }
+        match context.rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(decision) => break Ok(decision),
+            Err(RecvTimeoutError::Timeout) => continue,
+            // 发送端随 active run 一起没了，说明这轮已经在收尾。
+            Err(RecvTimeoutError::Disconnected) => break Err(String::new()),
+        }
+    };
+    if let Ok(mut pending) = context.pending.lock() {
+        *pending = None;
+    }
+    // 卡片已经有结论了，让前端把按钮收掉，别留一张永远能点的卡。
+    emit_event(
+        context.event_sink.as_ref(),
+        &context.run_id,
+        "approval_resolved",
+        json!({
+            "approvalId": item_id,
+            "decision": outcome.as_ref().map(|d| d.as_protocol()).unwrap_or("cancelled"),
+        }),
+    );
+    outcome
+}
+
 fn respond_to_server_request(
     stdin: &mut ChildStdin,
     message: &Value,
@@ -782,6 +908,9 @@ struct ProtocolContext {
     allow_write: bool,
     mode: String,
     model: String,
+    // 「请求批准」这一档才有；其余档位仍走原来的自动应答。
+    approval_rx: Option<Receiver<ApprovalDecision>>,
+    pending_approval: Arc<Mutex<Option<String>>>,
 }
 
 fn mark_finished(finished: &AtomicBool, completion: &Arc<(Mutex<bool>, Condvar)>) {
@@ -843,9 +972,59 @@ pub(crate) fn reserve_run(
             process: None,
             process_tree: None,
             cancelled: cancelled.clone(),
+            approval_tx: None,
+            pending_approval: Arc::new(Mutex::new(None)),
         },
     );
     Ok(cancelled)
+}
+
+/// 在协议线程启动前把审批通道登记到 active run 上。
+fn bind_approval_channel(
+    state: &CodexChatState,
+    run_id: &str,
+    tx: Sender<ApprovalDecision>,
+    pending: Arc<Mutex<Option<String>>>,
+) {
+    if let Ok(mut active) = state.active.lock() {
+        if let Some(run) = active.get_mut(run_id) {
+            run.approval_tx = Some(tx);
+            run.pending_approval = pending;
+        }
+    }
+}
+
+/// 把用户的决定送给正在等它的协议线程。
+///
+/// 只接受"当前确实在等的那一条"：ID 对不上就拒，避免前端拿旧卡片或伪造的 ID
+/// 去批准另一个动作。协议线程收到后自己写回 stdin。
+pub fn approve(
+    state: &CodexChatState,
+    run_id: &str,
+    approval_id: &str,
+    decision: &str,
+) -> Result<(), String> {
+    validate_run_id(run_id)?;
+    let decision = ApprovalDecision::parse(decision)?;
+    let run = state
+        .active
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(run_id)
+        .cloned()
+        .ok_or_else(|| "这轮对话已经结束了".to_string())?;
+    let waiting = run
+        .pending_approval
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    if waiting.as_deref() != Some(approval_id) {
+        return Err("这条审批已经处理过了".into());
+    }
+    run.approval_tx
+        .ok_or_else(|| "这轮对话不接受审批".to_string())?
+        .send(decision)
+        .map_err(|_| "这轮对话已经结束了".to_string())
 }
 
 pub(crate) fn release_run(state: &CodexChatState, run_id: &str) {
@@ -930,12 +1109,18 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         allow_write,
         mode,
         model,
+        approval_rx,
+        pending_approval,
     } = context;
 
     // Codex 自己的档位：只读就是纯沙箱只读；「帮我批准」把审批交给它自己的
     // 自动审核（协议里是 approvalsReviewer=auto_review），无头下不需要人应答。
     let approve_for_me = allow_write && mode == "approve-for-me";
-    let approval_policy = if approve_for_me {
+    // 「请求批准」用同样的 on-request，但把审核人换回 user——这时 app-server 会
+    // 把 requestApproval 发给我们，由用户拍板。实测它只在动作要越出沙箱时才问
+    // （联网、写到可写根之外等），工作区内的正常读写不会打断。
+    let ask_user = allow_write && mode == "request-approval";
+    let approval_policy = if approve_for_me || ask_user {
         "on-request"
     } else {
         "never"
@@ -945,11 +1130,16 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
     } else {
         "user"
     };
-    let sandbox_mode = if allow_write {
-        "workspace-write"
-    } else {
-        "read-only"
-    };
+    let context_for_approval = approval_rx.map(|rx| ApprovalContext {
+        event_sink: event_sink.clone(),
+        run_id: run_id.clone(),
+        cancelled: cancelled.clone(),
+        pending: pending_approval.clone(),
+        rx,
+    });
+    // 没有通道就退回自动应答，绝不能变成"没人应答却当成批准"。
+    let ask_user = ask_user && context_for_approval.is_some();
+    let sandbox_mode = codex_sandbox_mode(&mode, allow_write);
 
     let init = json!({
         "method": "initialize",
@@ -1049,6 +1239,46 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
             break;
         }
         if message.get("method").is_some() && message.get("id").is_some() {
+            // 「请求批准」这一档把决定权交回用户：先把请求收敛成一张卡片发给前端，
+            // 再在这里等答复。此刻 Codex 正等着我们回话，不会再有本轮输出，所以
+            // 阻塞在这里是安全的；但仍要按秒轮询取消标志和整轮超时，不能死等。
+            if let (true, Some(approval)) = (
+                ask_user && is_approval_request(&message),
+                context_for_approval.as_ref(),
+            ) {
+                match wait_for_user_decision(&message, approval) {
+                    Ok(decision) => {
+                        let reply = json!({
+                            "id": message.get("id").cloned().unwrap_or(Value::Null),
+                            "result": { "decision": decision.as_protocol() }
+                        });
+                        if let Err(error) = send_json(&mut stdin, &reply) {
+                            emit_event(
+                                event_sink.as_ref(),
+                                &run_id,
+                                "error",
+                                json!({ "message": error }),
+                            );
+                            reported_error = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    // 取消或超时：不替用户做决定，直接结束这一轮。
+                    Err(reason) => {
+                        if !reason.is_empty() {
+                            emit_event(
+                                event_sink.as_ref(),
+                                &run_id,
+                                "error",
+                                json!({ "message": reason }),
+                            );
+                            reported_error = true;
+                        }
+                        break;
+                    }
+                }
+            }
             if let Err(error) = respond_to_server_request(&mut stdin, &message, allow_write) {
                 emit_event(
                     event_sink.as_ref(),
@@ -1157,15 +1387,7 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                     "thread",
                     json!({ "threadId": thread_id }),
                 );
-                let sandbox_policy = if allow_write {
-                    json!({
-                        "type": "workspaceWrite",
-                        "writableRoots": [cwd],
-                        "networkAccess": false
-                    })
-                } else {
-                    json!({ "type": "readOnly" })
-                };
+                let sandbox_policy = codex_sandbox_policy(&mode, allow_write, &cwd);
                 let turn = json!({
                     "method": "turn/start",
                     "id": 3,
@@ -1225,6 +1447,15 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                 );
             }
             _ => {
+                // Codex 每轮都会主动推一次限流数据。收下写进用量缓存，额度
+                // 就不用再另起一个 app-server 去问同样的问题。
+                if message.get("method").and_then(Value::as_str)
+                    == Some("account/rateLimits/updated")
+                {
+                    crate::usage::record_codex_rate_limits(
+                        message.get("params").unwrap_or(&Value::Null),
+                    );
+                }
                 let delta_item_id = agent_message_delta_item_id(&message);
                 if let Some((kind, data)) =
                     normalized_notification(&message, &cwd, &assistant_messages)
@@ -1446,6 +1677,16 @@ fn start_prepared(
         return Err("对话启动已取消".into());
     }
 
+    // 只有「请求批准」这一档需要把决定权交回用户，其余档位不建通道，
+    // 这样即便协议意外发来审批请求也走不到"等人应答"的路径上。
+    let pending_approval = Arc::new(Mutex::new(None));
+    let approval_rx = if allow_write && mode == "request-approval" {
+        let (tx, rx) = mpsc::channel();
+        bind_approval_channel(state, &run_id, tx, pending_approval.clone());
+        Some(rx)
+    } else {
+        None
+    };
     let context = ProtocolContext {
         event_sink,
         active: state.active.clone(),
@@ -1462,8 +1703,10 @@ fn start_prepared(
         requested_thread_id: thread_id,
         prompt,
         allow_write,
-        mode,
+        mode: mode.clone(),
         model,
+        approval_rx,
+        pending_approval: pending_approval.clone(),
     };
     std::thread::spawn(move || run_protocol(stdin, stdout, context));
     let startup_process = process.clone();
@@ -1574,9 +1817,73 @@ pub fn cancel(state: &CodexChatState, run_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// thread/start 的 `sandbox`：Codex 的 SandboxMode 枚举。
+///
+/// 「完全访问权限」是 Codex 自己的 danger-full-access——不开沙箱，能读写项目
+/// 以外的地方，也能联网。只有用户明确选中这一档才会走到这里；档位表的第一档
+/// 永远是只读，空模式也落在只读上。
+fn codex_sandbox_mode(mode: &str, allow_write: bool) -> &'static str {
+    if !allow_write {
+        return "read-only";
+    }
+    match mode {
+        "full-access" => "danger-full-access",
+        _ => "workspace-write",
+    }
+}
+
+/// turn/start 的 `sandboxPolicy`：与上面同一档，形状换成协议里的 SandboxPolicy。
+fn codex_sandbox_policy(mode: &str, allow_write: bool, cwd: &Path) -> Value {
+    match codex_sandbox_mode(mode, allow_write) {
+        "danger-full-access" => json!({ "type": "dangerFullAccess" }),
+        "workspace-write" => json!({
+            "type": "workspaceWrite",
+            "writableRoots": [cwd],
+            "networkAccess": false
+        }),
+        _ => json!({ "type": "readOnly" }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_access_maps_to_codex_own_unsandboxed_values() {
+        // 取值来自 `codex app-server generate-json-schema`：SandboxMode 是
+        // read-only / workspace-write / danger-full-access，SandboxPolicy 的
+        // 无沙箱变体叫 dangerFullAccess。写错一个字 Codex 就拒绝开工。
+        let cwd = Path::new("/tmp/proj");
+        assert_eq!(
+            codex_sandbox_mode("full-access", true),
+            "danger-full-access"
+        );
+        assert_eq!(
+            codex_sandbox_policy("full-access", true, cwd),
+            json!({ "type": "dangerFullAccess" })
+        );
+
+        // 没打开写入开关时，哪怕模式是完全访问也不许脱离沙箱。
+        assert_eq!(codex_sandbox_mode("full-access", false), "read-only");
+        assert_eq!(
+            codex_sandbox_policy("full-access", false, cwd),
+            json!({ "type": "readOnly" })
+        );
+
+        // 其余写入档仍然只给工作区，且不放网。
+        for mode in ["approve-for-me", "", "什么乱七八糟的"] {
+            assert_eq!(codex_sandbox_mode(mode, true), "workspace-write");
+            assert_eq!(
+                codex_sandbox_policy(mode, true, cwd),
+                json!({
+                    "type": "workspaceWrite",
+                    "writableRoots": [cwd],
+                    "networkAccess": false
+                })
+            );
+        }
+    }
 
     #[test]
     fn approve_for_me_routes_approvals_to_codex_auto_review() {
@@ -1773,6 +2080,20 @@ mod tests {
         thread_id: &str,
         allow_write: bool,
     ) -> std::sync::mpsc::Receiver<CodexChatEvent> {
+        contract_start_with_mode(state, cwd, log_path, scenario, thread_id, allow_write, "")
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
+    fn contract_start_with_mode(
+        state: &CodexChatState,
+        cwd: &Path,
+        log_path: &Path,
+        scenario: &str,
+        thread_id: &str,
+        allow_write: bool,
+        mode: &str,
+    ) -> std::sync::mpsc::Receiver<CodexChatEvent> {
         let (event_sender, event_receiver) = std::sync::mpsc::channel();
         let run_id = format!("contract-{scenario}");
         let result = start_prepared(
@@ -1783,7 +2104,7 @@ mod tests {
                 thread_id: thread_id.to_string(),
                 prompt: "检查项目状态".to_string(),
                 allow_write,
-                mode: String::new(),
+                mode: mode.to_string(),
                 model: String::new(),
                 effort: String::new(),
                 cwd: cwd.to_path_buf(),
@@ -1793,6 +2114,69 @@ mod tests {
         .expect("启动 fake Codex app-server");
         assert_eq!(result.run_id, run_id);
         event_receiver
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn request_approval_mode_asks_the_user_and_sends_back_the_decision() {
+        let dir = std::env::temp_dir().join(format!("roster-approval-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let log_path = dir.join("fake.log");
+        let state = CodexChatState::default();
+        let events = contract_start_with_mode(
+            &state,
+            &dir,
+            &log_path,
+            "user-approval",
+            "",
+            true,
+            "request-approval",
+        );
+
+        // 请求要先变成一张收敛过的卡片：只有理由和命令，没有协议原文。
+        let seen = receive_until_kind(&events, "approval");
+        let card = seen.last().expect("应该收到审批事件");
+        assert_eq!(card.kind, "approval");
+        assert_eq!(card.data["approvalId"], json!("exec-approval-1"));
+        assert_eq!(card.data["kind"], json!("command"));
+        assert_eq!(card.data["reason"], json!("是否允许联网抓取 example.com？"));
+        assert_eq!(card.data["command"], json!("curl -sS https://example.com"));
+        assert!(card.data.get("params").is_none(), "不得透传协议对象");
+
+        // 伪造的 ID 和不认识的决定都必须被拒，绝不能退化成"批准"。
+        assert!(approve(&state, "contract-user-approval", "别的ID", "accept").is_err());
+        assert!(approve(&state, "contract-user-approval", "exec-approval-1", "yes").is_err());
+
+        approve(
+            &state,
+            "contract-user-approval",
+            "exec-approval-1",
+            "accept",
+        )
+        .expect("送出用户的决定");
+        let resolved = receive_until_kind(&events, "approval_resolved");
+        let last = resolved.last().unwrap();
+        assert_eq!(last.data["approvalId"], json!("exec-approval-1"));
+        assert_eq!(last.data["decision"], json!("accept"));
+
+        receive_until_kind(&events, "completed");
+        // 决定必须真的按协议格式回给了 app-server。
+        let requests = read_fake_requests(&log_path);
+        let reply = requests
+            .iter()
+            .find(|item| item.get("id") == Some(&json!(101)))
+            .expect("审批答复要回到 app-server");
+        assert_eq!(reply["result"]["decision"], json!("accept"));
+
+        // 答复过一次之后就不再等待，重复提交要被拒。
+        assert!(approve(
+            &state,
+            "contract-user-approval",
+            "exec-approval-1",
+            "accept"
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

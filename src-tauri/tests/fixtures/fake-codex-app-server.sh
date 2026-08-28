@@ -50,6 +50,14 @@ printf '{"id":2,"result":{"thread":{"id":"%s"}}}\n' "$thread_id"
 read_request turn
 printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-contract-1"}}}'
 
+if [ "$scenario" = "user-approval" ]; then
+  # 带完整字段的审批请求：用来验"转给用户 → 等答复 → 回协议"这条路。
+  printf '%s\n' '{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-contract-1","turnId":"turn-contract-1","itemId":"exec-approval-1","startedAtMs":1,"reason":"是否允许联网抓取 example.com？","command":"curl -sS https://example.com"}}'
+  read_request user_approval_response
+  printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-contract-1","turn":{"id":"turn-contract-1","items":[]}}}'
+  exit 0
+fi
+
 printf '%s\n' '{"id":101,"method":"item/commandExecution/requestApproval","params":{}}'
 read_request command_approval_response
 printf '%s\n' '{"id":102,"method":"item/fileChange/requestApproval","params":{}}'

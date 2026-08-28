@@ -94,4 +94,44 @@ test('重置时间文案：过期或拿不到都给空串', () => {
   assert.equal(usageResetLabel(new Date(now - 60000).toISOString(), now), '', '已经过去就不显示');
   assert.equal(usageResetLabel('', now), '');
   assert.equal(usageResetLabel('不是时间', now), '');
+  // 周窗口离重置常有一百多小时，按小时读不出是多久。
+  assert.equal(usageResetLabel(new Date(now + 47 * 3600000).toISOString(), now), '约 47 小时后重置');
+  assert.equal(usageResetLabel(new Date(now + 48 * 3600000).toISOString(), now), '约 2 天后重置');
+  assert.equal(usageResetLabel(new Date(now + 10080 * 60000).toISOString(), now), '约 7 天后重置');
+});
+
+test('Codex 顶栏只留账号级窗口，不把按模型报的分档也拼上去', () => {
+  const now = Date.UTC(2026, 7, 27, 10, 0, 0);
+  // 本机实测：账号总额度之外，Codex 还会按模型各报一份，标签带「模型名 ·」前缀。
+  // 三段拼成一行会把顶栏那格挤成零宽，用户看到的就是"额度没显示"。
+  const codex = {
+    ok: true,
+    windows: [
+      { label: '7 天窗口', utilization: 16, resetsAt: new Date(now + 156 * 3600000).toISOString() },
+      { label: 'GPT-5.3-Codex-Spark · 5 小时窗口', utilization: 0, resetsAt: new Date(now + 8 * 3600000).toISOString() },
+      { label: 'GPT-5.3-Codex-Spark · 7 天窗口', utilization: 0, resetsAt: new Date(now + 167 * 3600000).toISOString() },
+    ],
+  };
+  assert.equal(conversationUsageSummary('codex', codex), '7 天 16%');
+  assert.equal(conversationUsageState('codex', codex, now).peak, 16, '峰值只看账号级的窗口');
+
+  // 开发模式的详细面板还是要看到全部分档，共用的那个函数不能被改窄。
+  assert.equal(windowsFromUsagePayload('codex', codex).length, 3);
+});
+
+test('Codex 只有周窗口时也能给出一行额度', () => {
+  const now = Date.UTC(2026, 7, 27, 10, 0, 0);
+  // 本机实测负载：secondary 为 null，只有 primary 的 10080 分钟窗口。
+  const codex = {
+    ok: true,
+    plan: 'prolite',
+    windows: [
+      { label: '7 天窗口', utilization: 16, resetsAt: new Date(now + 156 * 3600000).toISOString() },
+    ],
+  };
+  const state = conversationUsageState('codex', codex, now);
+  assert.equal(state.text, '7 天 16%');
+  assert.equal(state.level, 'ok');
+  assert.equal(state.peak, 16);
+  assert.equal(state.reset, '约 7 天后重置');
 });

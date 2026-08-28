@@ -466,6 +466,12 @@ export function installConversationMode({
     mentionMenu: document.getElementById('conversation-mention-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
     handoffNote: document.getElementById('conversation-handoff-note'),
+    approval: document.getElementById('conversation-approval'),
+    approvalBadge: document.getElementById('conversation-approval-badge'),
+    approvalReason: document.getElementById('conversation-approval-reason'),
+    approvalCommand: document.getElementById('conversation-approval-command'),
+    approvalAllow: document.getElementById('conversation-approval-allow'),
+    approvalDeny: document.getElementById('conversation-approval-deny'),
     tuningToggle: document.getElementById('conversation-tuning-toggle'),
     tuningSummary: document.getElementById('conversation-tuning-summary'),
     tuningPanel: document.getElementById('conversation-tuning-panel'),
@@ -704,6 +710,9 @@ export function installConversationMode({
   let slashEfforts = [];
   let slashModelsLoading = false;
   let slashRevision = 0;
+  // 这三份列表是"某个助手在某个项目"下发现的，必须带归属。
+  // 模式表和额度都在这上面栽过：切了助手却没触发刷新，旧列表就挂到新助手名下了。
+  let slashOwner = '';
 
   async function refreshSlashCommands() {
     const revision = ++slashRevision;
@@ -713,6 +722,7 @@ export function installConversationMode({
       slashCommands = mergeConversationSlashCommands([]);
       slashModels = [];
       slashEfforts = [];
+      slashOwner = '';
       slashModelsLoading = false;
       renderSlashMenu();
       return;
@@ -721,6 +731,7 @@ export function installConversationMode({
     const includeEffort = provider.supportsEffort;
     slashModels = [];
     slashEfforts = [];
+    slashOwner = provider.id;
     slashModelsLoading = true;
     slashCommands = mergeConversationSlashCommands([], { includeModel, includeEffort });
     renderSlashMenu();
@@ -762,6 +773,7 @@ export function installConversationMode({
       slashModels = [];
       slashEfforts = [];
     }
+    slashOwner = provider.id;
     slashModelsLoading = false;
     renderSlashMenu();
     renderControls();
@@ -817,29 +829,69 @@ export function installConversationMode({
     renderControls();
   }
 
+  // 归属对不上就当没有：宁可少列几项，也不能把上一个助手的模型和命令挂在这家名下。
+  function ownsSlashLists() {
+    return slashOwner === currentProvider().id;
+  }
+
+  function activeSlashModels() {
+    return ownsSlashLists() ? slashModels : [];
+  }
+
+  // Codex 的每个模型支持的强度不一样（比如 gpt-5.5 没有 max / ultra）。
+  // 实测选了不支持的档，Codex 会照单收下再悄悄降级——不报错，用户也不知道
+  // 自己选的没生效。所以模型说得清的时候，只列它真支持的那几档。
+  function activeSlashEfforts() {
+    if (!ownsSlashLists()) return [];
+    const model = currentModel();
+    const supported = model
+      ? activeSlashModels().find(item => item.id === model)?.efforts
+      : null;
+    if (!Array.isArray(supported) || !supported.length) return slashEfforts;
+    return slashEfforts.filter(item => supported.includes(item.id));
+  }
+
+  function activeSlashCommands() {
+    if (ownsSlashLists()) return slashCommands;
+    const provider = currentProvider();
+    return mergeConversationSlashCommands([], {
+      includeModel: provider.supportsModel,
+      includeEffort: provider.supportsEffort,
+    });
+  }
+
   /** 模型、推理强度、模式：都是"这一轮怎么跑"的设置，收进同一个入口。 */
   function tuningSections() {
     const sections = [];
-    if (slashModels.length) {
+    const models = activeSlashModels();
+    if (models.length) {
       sections.push({
         key: 'model',
         label: '模型',
         value: currentModel() || '默认',
-        options: slashModels.map(item => ({ id: item.id, label: item.label || item.id })),
+        options: models.map(item => ({ id: item.id, label: item.label || item.id })),
         current: currentModel(),
         apply: id => {
-          if (id) providerModels[currentProvider().id] = id;
-          else delete providerModels[currentProvider().id];
+          const provider = currentProvider().id;
+          if (id) providerModels[provider] = id;
+          else delete providerModels[provider];
           persistProviderModels();
+          // 换了模型，原来选的强度可能这个模型根本没有；留着只会静默失效。
+          const kept = providerEfforts[provider];
+          if (kept && !activeSlashEfforts().some(item => item.id === kept)) {
+            delete providerEfforts[provider];
+            persistProviderEfforts();
+          }
         },
       });
     }
-    if (slashEfforts.length) {
+    const efforts = activeSlashEfforts();
+    if (efforts.length) {
       sections.push({
         key: 'effort',
         label: '推理强度',
         value: currentEffort() || '默认',
-        options: slashEfforts.map(item => ({ id: item.id, label: item.label || item.id })),
+        options: efforts.map(item => ({ id: item.id, label: item.label || item.id })),
         current: currentEffort(),
         apply: id => {
           if (id) providerEfforts[currentProvider().id] = id;
@@ -855,9 +907,16 @@ export function installConversationMode({
         key: 'mode',
         label: '模式',
         value: active ? active.label.split(' · ').pop() : '默认',
-        options: modes.map(entry => ({ id: entry.id, label: entry.label, hint: entry.hint })),
+        options: modes.map(entry => ({
+          id: entry.id,
+          label: entry.label,
+          hint: entry.hint,
+          unsandboxed: Boolean(entry.unsandboxed),
+        })),
         current: active?.id || '',
         writes: Boolean(active?.writes),
+        // 不开沙箱这件事比"会改文件"重一档，视觉上不能混为一谈。
+        unsandboxed: Boolean(active?.unsandboxed),
         apply: id => {
           if (id) providerModes[currentProvider().id] = id;
           else delete providerModes[currentProvider().id];
@@ -885,6 +944,7 @@ export function installConversationMode({
     if (toggle.disabled && tuningOpen) closeTuning();
     const modeSection = sections.find(section => section.key === 'mode');
     toggle.dataset.writes = modeSection?.writes ? 'true' : 'false';
+    toggle.dataset.unsandboxed = modeSection?.unsandboxed ? 'true' : 'false';
     if (dom.tuningSummary) {
       // 摘要只反映"你真正选过的值"，不跟着异步列表到没到而变形状；
       // 没选过的项不占位——一个「默认」字样什么也没告诉人。
@@ -945,6 +1005,7 @@ export function installConversationMode({
         item.type = 'button';
         item.dataset.optionId = option.id;
         item.dataset.active = option.id === section.current ? 'true' : 'false';
+        if (option.unsandboxed) item.dataset.unsandboxed = 'true';
         const copy = element(document, 'span', 'conversation-tuning-option-copy');
         copy.appendChild(element(document, 'strong', '', option.label));
         if (option.hint) copy.appendChild(element(document, 'small', '', option.hint));
@@ -989,10 +1050,10 @@ export function installConversationMode({
   function slashInspect(value = dom.composer?.value) {
     return inspectConversationSlash(
       value,
-      slashCommands,
-      slashModels,
+      activeSlashCommands(),
+      activeSlashModels(),
       currentModel(),
-      slashEfforts,
+      activeSlashEfforts(),
       currentEffort(),
     );
   }
@@ -1000,11 +1061,11 @@ export function installConversationMode({
   function slashPlan(value, index) {
     return planConversationSlash(
       value,
-      slashCommands,
+      activeSlashCommands(),
       index,
-      slashModels,
+      activeSlashModels(),
       currentModel(),
-      slashEfforts,
+      activeSlashEfforts(),
       currentEffort(),
     );
   }
@@ -1020,7 +1081,7 @@ export function installConversationMode({
       slashDismissed = true;
       state = {
         ...state,
-        notice: conversationSlashHelpText(slashCommands, currentProvider().label),
+        notice: conversationSlashHelpText(activeSlashCommands(), currentProvider().label),
         error: '',
       };
       syncComposer();
@@ -1157,11 +1218,17 @@ export function installConversationMode({
       element(document, 'small', '', subtitle || projectPathLabel(project)),
     );
     button.append(copy);
-    if (projectIsRunning(project.id)) {
-      button.classList.add('is-running');
-      const dot = element(document, 'span', 'conversation-project-run-dot');
-      dot.setAttribute('title', '正在处理');
-      dot.setAttribute('aria-label', '正在处理');
+    // 后台项目卡在等审批时，如果只画一个"正在处理"的点，人会一直干等到超时。
+    // 这里要明确区分：那一轮其实停着，在等你回来拍板。
+    const awaiting = Boolean(stateForProject(project.id)?.approval);
+    if (awaiting || projectIsRunning(project.id)) {
+      button.classList.add(awaiting ? 'is-awaiting' : 'is-running');
+      const dot = element(document, 'span', awaiting
+        ? 'conversation-project-await-dot'
+        : 'conversation-project-run-dot');
+      const label = awaiting ? '等你批准' : '正在处理';
+      dot.setAttribute('title', label);
+      dot.setAttribute('aria-label', label);
       button.append(dot);
     }
     button.addEventListener('click', () => selectProject(project.id));
@@ -1296,14 +1363,17 @@ export function installConversationMode({
     };
     const running = activeRuns.get(state.runId);
     const summary = lastRunSummary.get(selectedProject?.id || '');
-    const base = labels[state.status] || labels.idle;
+    // 等审批时这一轮其实停着不动，别再说"正在处理"——那会让人以为还要再等。
+    const base = state.approval
+      ? '等你批准后继续'
+      : labels[state.status] || labels.idle;
     const suffix = running && conversationRunning(state)
       ? ` · ${elapsedLabel(running.startedAt)}`
       : summary && ['completed', 'failed', 'cancelled'].includes(state.status)
         ? ` · 用时 ${summary.elapsed}`
         : '';
     dom.status.textContent = `${base}${suffix}`;
-    dom.status.dataset.status = state.status;
+    dom.status.dataset.status = state.approval ? 'awaiting' : state.status;
   }
 
   function syncElapsedTimer() {
@@ -2085,6 +2155,67 @@ export function installConversationMode({
     note.appendChild(back);
   }
 
+  /**
+   * Codex 的「请求批准」档下，助手要越出沙箱（联网、写到项目外）时会先问一句。
+   * 这张卡片只在等你拍板时出现，答复或轮次结束后立刻消失。
+   */
+  function renderApproval() {
+    const card = dom.approval;
+    if (!card) return;
+    const pending = state.approval;
+    card.hidden = !pending;
+    if (!pending) return;
+    if (dom.approvalBadge) {
+      dom.approvalBadge.textContent = pending.kind === 'fileChange'
+        ? '需要你批准改动'
+        : '需要你批准操作';
+    }
+    if (dom.approvalReason) {
+      dom.approvalReason.textContent = pending.reason || '助手请求执行一个超出当前权限的操作。';
+    }
+    if (dom.approvalCommand) {
+      dom.approvalCommand.hidden = !pending.command;
+      dom.approvalCommand.textContent = pending.command || '';
+    }
+    [dom.approvalAllow, dom.approvalDeny].forEach(button => {
+      if (button) button.disabled = Boolean(pending.submitting);
+    });
+  }
+
+  /**
+   * 送出决定。按钮先停，避免连点变成两次答复。
+   *
+   * 协议还有一个 `acceptForSession`（"本次会话都允许"），但实测它并没有抑制
+   * 之后另一条命令的审批，作用范围没查清楚，所以先不放这个按钮——权限控件上
+   * 写一句兑现不了的承诺，比少一个选项糟得多。后端仍然接受这个取值。
+   */
+  async function answerApproval(decision) {
+    const pending = state.approval;
+    if (!pending || pending.submitting || !state.runId) return;
+    state = { ...state, approval: { ...pending, submitting: true } };
+    commitState(state.projectId, state);
+    renderApproval();
+    try {
+      await invoke('conversation_chat_approve', {
+        runId: state.runId,
+        approvalId: pending.id,
+        decision,
+      });
+    } catch (error) {
+      // 后端拒了（这轮已结束、或这条已处理过）：把按钮放开，让卡片跟着
+      // 后续事件收掉，不自己猜结果。
+      if (state.approval?.id === pending.id) {
+        state = { ...state, approval: { ...state.approval, submitting: false } };
+        commitState(state.projectId, state);
+        renderApproval();
+      }
+      notify?.(`提交批准失败：${error?.message || error}`, 'error');
+    }
+  }
+
+  dom.approvalAllow?.addEventListener('click', () => { void answerApproval('accept'); });
+  dom.approvalDeny?.addEventListener('click', () => { void answerApproval('decline'); });
+
   function renderControls() {
     const provider = currentProvider();
     const unavailable = !selectedProjectExists() || !providerReady(provider.id) || !listenerReady;
@@ -2174,6 +2305,7 @@ export function installConversationMode({
     renderSlashMenu();
     renderMentionMenu();
     renderHandoffNote();
+    renderApproval();
     renderUsage();
     renderModePicker();
     renderControls();
@@ -3045,6 +3177,32 @@ export function installConversationMode({
       else if (renderMode === 'immediate') renderState();
     }
     if (wasRunning && !stillRunning) finishRun(entry, nextState);
+    // 后台项目的审批只改它自己那份状态，上面的分支不会重画列表；
+    // 不在这里补一次，侧栏就永远不会亮起"等你批准"。
+    if (!active && Boolean(previousState.approval) !== Boolean(nextState.approval)) {
+      renderProjects();
+    }
+    if (envelope.kind === 'approval' && !previousState.approval && nextState.approval) {
+      announceApproval(entry, nextState.approval);
+    }
+  }
+
+  /**
+   * 审批把整轮挡住了，用户不点就一直停着。所以它比"跑完了"更需要被看见：
+   * 不在当前项目就提示，窗口不在前台就发桌面通知。
+   */
+  function announceApproval(entry, approval) {
+    const projectName = entry.project?.name || '项目';
+    const provider = conversationProvider(entry.providerId);
+    const active = isActiveProject(entry.projectId);
+    if (!active) {
+      notify?.(`${projectName} · ${provider.label} 需要你批准才能继续`, 'warn');
+    }
+    if (active && windowFocused() && conversationVisible()) return;
+    invoke('notify', {
+      title: `${projectName} · 需要你批准`,
+      body: approval.reason || '助手请求执行一个超出当前权限的操作',
+    }).catch(() => {});
   }
 
   async function openProjectFolder() {

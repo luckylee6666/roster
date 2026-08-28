@@ -3051,6 +3051,23 @@ async fn conversation_effort_list(
     .map_err(|error| error.to_string())?
 }
 
+/// 答复一条审批请求。前端只能传后端刚发出、且仍在等待的那条 ID 和三个已知
+/// 决定之一；对不上一律拒绝，绝不退化成"批准"。
+#[tauri::command]
+async fn conversation_chat_approve(
+    app: AppHandle,
+    run_id: String,
+    approval_id: String,
+    decision: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let chat_state = app.state::<conversation_chat::ConversationChatState>();
+        conversation_chat::approve(chat_state.inner(), &run_id, &approval_id, &decision)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// 停止指定的对话 turn。后端按进程组回收，避免遗留工具子进程。
 #[tauri::command]
 async fn conversation_chat_cancel(app: AppHandle, run_id: String) -> Result<(), String> {
@@ -3349,6 +3366,7 @@ pub fn run() {
             conversation_model_list,
             conversation_effort_list,
             conversation_chat_cancel,
+            conversation_chat_approve,
             list_installed_clis,
             has_bash,
             open_url,

@@ -5670,7 +5670,11 @@ html[data-app-view="developer"] #conversation-surface {
 .conversation-project-item .conversation-project-copy { flex: 1; }
 
 .conversation-usage {
-  min-width: 0;
+  /* 顶栏是 flex：min-width:0 让这一格能一路压到零宽，那时省略号都没有，
+     整条额度就凭空消失了（Codex 的多档字串长，就这么"没显示"过）。
+     给个下限，放不下也至少留一截带省略号的数字。 */
+  min-width: 4.5em;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--chat-faint);
   font-size: 11px;
@@ -6081,6 +6085,18 @@ html[data-app-view="developer"] #conversation-surface {
 @keyframes conversation-run-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.42; transform: scale(0.78); }
+}
+
+/* 等审批不是"在跑"：换成不闪的实心警示点，一眼能和处理中区分开 */
+.conversation-project-await-dot {
+  flex: none;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--chat-warn-line);
+  box-shadow: 0 0 0 3px var(--chat-warn-bg);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6968,6 +6984,90 @@ html[data-app-view="developer"] #conversation-surface {
   color: var(--chat-warn-ink);
   background: var(--chat-warn-bg);
 }
+
+/* 完全不开沙箱比"会改文件"再重一档，别让它看起来像普通写入模式 */
+.conversation-tuning-toggle[data-unsandboxed="true"] {
+  border-color: var(--chat-danger-line);
+  color: var(--chat-danger-ink);
+  background: var(--chat-danger-bg);
+}
+
+.conversation-tuning-option[data-unsandboxed="true"] strong { color: var(--chat-danger-ink); }
+
+.conversation-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--chat-warn-line);
+  border-radius: 12px;
+  background: var(--chat-warn-bg);
+}
+
+.conversation-approval[hidden] { display: none; }
+
+.conversation-approval-head { display: flex; flex-direction: column; gap: 4px; }
+
+.conversation-approval-badge {
+  align-self: flex-start;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--chat-warn-line);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.conversation-approval-reason {
+  margin: 0;
+  color: var(--chat-ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 命令可能很长：自己横向滚，别把整页撑宽 */
+.conversation-approval-command {
+  margin: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--chat-code-bg);
+  color: var(--chat-code-ink);
+  font-family: "JetBrains Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.conversation-approval-command[hidden] { display: none; }
+
+.conversation-approval-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.conversation-approval-actions button {
+  padding: 5px 12px;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 8px;
+  background: var(--chat-panel);
+  color: var(--chat-ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.conversation-approval-actions button:hover:not(:disabled) {
+  border-color: var(--chat-control-line-hover);
+}
+
+.conversation-approval-actions button:disabled { opacity: 0.55; cursor: default; }
+
+.conversation-approval-allow {
+  border-color: transparent !important;
+  background: var(--chat-accent) !important;
+  color: #fff !important;
+}
+
+.conversation-approval-deny { color: var(--chat-danger-ink) !important; }
 
 .conversation-tuning-panel {
   position: absolute;
