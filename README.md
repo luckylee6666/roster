@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.3.1** — one assistant per conversation with an explicit handoff, each CLI's own permission modes replacing the write toggle, model/effort/mode as one visible control, and rate-limit usage that speaks up before the quota runs out. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.3.2** — every registered CLI was run headless one permission tier at a time, and all seven turned out to have a real fault: Qwen and Gemini could never write, agy failed on every turn and wrote into its own scratch directory, and OpenCode ran in Roster's own directory rather than the selected project. Also adds Codex 「请求批准」 with an approval prompt. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 

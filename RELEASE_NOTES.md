@@ -1,26 +1,32 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.3.1 / 本版更新
+## What's new in v1.3.2 / 本版更新
+
+This release comes out of running every registered CLI headless, one permission tier at a time, instead of trusting their documentation. Each of the seven turned out to have a real fault; four of them meant that assistant could not do useful work in the conversation workspace at all.
 
 **English**
-- **A conversation belongs to one assistant.** Starting a new conversation asks which installed assistant to use; once it has begun the assistant is locked and shown as a badge in the header. Switching mid-thread was never really a switch — a session's ID, sandbox binding and history file belong to one CLI — so bringing in another one is now an explicit **Handoff** that opens a new conversation over there and leaves the original untouched.
-- **The "allow writing" checkbox is gone.** Each assistant now offers its own permission modes (Claude: `plan` / `acceptEdits` / `auto`; Codex: 只读 / 帮我批准), validated against a per-provider allowlist on start. Modes that need a person to answer a prompt are excluded because the workspace runs headless, and modes that bypass the sandbox entirely are never offered.
-- **Model, reasoning effort and mode are visible controls**, gathered into one button next to Send that reads out the current setup and opens a two-level menu. They used to be reachable only through `/model` and `/effort`, which is no use to the people this workspace is for.
-- **Rate-limit usage moved to the header** beside the assistant it belongs to, stays a quiet grey until it matters, and turns amber past 70% and red past 90% with the reset time. When the quota is spent the composer says so **before** you press Send.
-- **Fixed: Grok could not write at all.** Its `--sandbox` takes a profile name from `~/.grok/sandbox.toml`, not Codex's fixed enum, so the value Roster passed made Grok refuse to start; and headless `acceptEdits` emitted approval requests nobody could answer. Write turns now use `auto` with the built-in `workspace` profile, verified end to end.
-- **Fixed: Claude history could not be resumed in projects whose path contains non-ASCII characters** — Roster's own project-memory directory was shadowing the one that actually holds the sessions.
-- **Fixed: state that belonged to one assistant could show up under another** — the mode list and the quota now carry the assistant they came from and are dropped the moment it no longer matches.
+- **Fixed: Qwen and Gemini could never write.** Their write mode was registered as `auto_edit`, but the real value is `auto-edit` (Qwen) and `autoEdit` (Gemini) — rejected by the argument parser, so every write turn failed before the model ran. The two also shared one mode table, so both were wrong at once; they are now separate, and each mode Qwen offers was verified headless.
+- **Fixed: agy failed on every turn**, and wrote into its own scratch directory. The prompt form it is given was one it refuses outright, and it was never bound to the project — agy binds registered projects, not the process working directory, so its writes landed in `~/.gemini/antigravity-cli/scratch/`.
+- **Fixed: OpenCode ran in Roster's own directory.** Asked for its working directory it named the parent process's, not the selected project, and during testing it wrote a file into the Roster repository. It is now given `--dir` explicitly.
+- **Fixed: Grok could not resume after switching modes.** A sandbox profile is fixed at session creation and resuming under another is refused; new sessions now pin the writable profile and resumes leave `--sandbox` off entirely.
+- **Fixed: the Codex quota was missing from the header** — its per-model windows made the line long enough to collapse the cell to zero width.
+- **New: Codex 「请求批准」 with an approval prompt.** It does not confirm every edit; ordinary work in the workspace is never interrupted, and it asks only when an action needs to leave the sandbox. A project waiting on approval is marked in the sidebar and raises a desktop notification, since an unanswered request blocks the whole turn.
+- **New: Codex 「完全访问权限」 and Grok 「始终批准」**, each taken from that CLI's own tiers. The default stays read-only everywhere.
+- Reasoning effort is filtered by the selected model, because Codex silently downgrades a level the model does not support.
 - macOS builds remain **ad-hoc signed**.
 
 **中文**
-- **一条对话固定属于一个助手。** 开新对话时先问用哪个已安装的助手；一旦开始，助手就锁定并显示在顶栏。中途"换助手"从来不是换——会话 ID、沙箱绑定和历史文件都属于某一家 CLI，所以请别人接手改成明确的**交接**：在那边新开一条，原会话保持不动。
-- **去掉「允许修改项目」复选框。** 每个助手改用自己的权限模式（Claude：`plan` / `acceptEdits` / `auto`；Codex：只读 / 帮我批准），启动时按各自白名单复核。需要人应答的档不收（工作台是无头的），完全绕过沙箱的档一律不提供。
-- **模型、推理强度、模式变成看得见的控件**，收进发送按钮旁的同一个入口：收起显示当前配置，点开分两层选。以前只有 `/model`、`/effort` 能进，而这个工作台的用户根本不会去打命令。
-- **限流用量移到顶栏**、紧跟它所属的助手，平时是安静的灰字，超过 70% 转暖色、超过 90% 转红并带出重置时间；额度打满时**在按下发送之前**就说清楚。
-- **修复：Grok 其实一直写不了。** 它的 `--sandbox` 收的是 `~/.grok/sandbox.toml` 里的 profile 名而不是固定枚举，Roster 传的值会让它拒绝启动；而且无头下 `acceptEdits` 会发出没人能应答的审批请求。写入轮改用 `auto` 配内建 `workspace` profile，已端到端验证。
-- **修复：项目路径含中文时 Claude 历史无法续接**——Roster 自己的项目记忆目录遮蔽了真正存放会话的那个目录。
-- **修复：属于某一家助手的状态可能显示在另一家名下**——模式表和额度现在都带上它们的归属，一旦对不上立刻作废。
+本版是把每一家已登记的 CLI 按权限档逐档拉起来实测的结果，而不是照着文档写。七家**每一家都查出了真问题**，其中四家的问题意味着那个助手在对话工作台里根本干不了活。
+
+- **修复：Qwen 与 Gemini 的写入档从来没能用过。** 档位表写的是 `auto_edit`，而实际取值是 `auto-edit`（Qwen）和 `autoEdit`（Gemini），会被参数解析直接拒——每一次写入轮在模型开跑前就失败了。两家此前还共用一张表，等于两边都错；现已拆开，Qwen 的每一档都经过无头实测。
+- **修复：agy 每一轮都失败**，而且文件写进了它自己的 scratch 目录。我们传 prompt 的写法是它明确拒绝的，而且从未绑定项目——agy 绑的是注册过的项目而不是进程工作目录，所以写入都落在 `~/.gemini/antigravity-cli/scratch/`。
+- **修复：OpenCode 跑在 Roster 自己的目录里。** 问它工作目录，它报的是父进程的而不是所选项目；测试中它真的往 Roster 仓库里写了文件。现在显式传 `--dir`。
+- **修复：Grok 换档后无法续接。** 沙箱 profile 在会话创建时固定，换一个续接会被拒；新会话现在固定使用可写 profile，续接一律不传 `--sandbox`。
+- **修复：Codex 额度在顶栏不显示**——它按模型另报的窗口让那一行长到把格子挤成零宽。
+- **新增：Codex「请求批准」及配套审批提示。** 它并不逐条确认修改，工作区内的正常读写不会打断你，只有动作要越出沙箱时才问。等待审批的项目会在侧栏标记并发桌面通知——没人回答就会挡住整轮。
+- **新增：Codex「完全访问权限」与 Grok「始终批准」**，都取自各家自己的档位。所有助手的默认档仍是只读。
+- 推理强度按所选模型过滤，因为 Codex 对模型不支持的档会静默降级。
 - macOS 包仍使用 **adhoc 签名**。
 
 ## Install / 安装

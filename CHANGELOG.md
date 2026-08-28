@@ -2,6 +2,42 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.3.2
+
+### English
+
+**Fixed**
+- **Qwen and Gemini could never write at all.** Their write mode was registered as `auto_edit`, but the actual enum value is `auto-edit` in Qwen Code and `autoEdit` in Gemini CLI — an invalid value that the argument parser rejects outright, so every write turn failed before the model ran. The two also shared one mode table, which meant both were wrong at once; they are now separate. Qwen offers plan / auto-edit / yolo, each verified headless: `default` registers no write tools when there is nobody to approve, and `auto` hung past four minutes on two separate runs, so neither is offered. Gemini is not installed here, so only the value was corrected from its official source and no unverified mode was added.
+- **agy failed on every single turn.** The prompt was passed as `-- <text>`, which agy refuses outright ("Attach the prompt to the flag"), so the process exited during argument parsing every time. It also never received `--add-dir`: agy binds to registered projects rather than the process working directory, so its file writes landed in `~/.gemini/antigravity-cli/scratch/` and never touched the user's project. Both are fixed and verified end to end.
+- **OpenCode ran in Roster's own directory.** Asked to print its working directory, it answered with the parent process's — Roster's — rather than the selected project, and it wrote a file into the Roster repository during testing. Every OpenCode conversation was therefore reading and writing in whatever directory Roster was launched from. It is now given `--dir` explicitly. MiMo honours the process working directory, but is passed the same flag rather than relying on the two staying alike.
+- **Grok could not resume a conversation after switching modes.** A sandbox profile is fixed when the session is created, and resuming under a different one is refused outright — `--fork-session` does not get around it, as the check runs before the fork. New sessions now pin the writable `workspace` profile and resumes omit `--sandbox` entirely, leaving `--permission-mode` to decide whether a given turn may write.
+- **Codex quota did not appear in the header.** Codex reports per-model windows in addition to the account total, and the three segments together collapsed that flex cell to zero width. The header now shows only account-level windows, the detailed breakdown stays in the developer usage panel, and the cell has a width floor so an overlong value degrades to an ellipsis instead of vanishing.
+- Reasoning effort is now filtered by the selected model. Codex accepts an unsupported level silently and downgrades it, so a level the current model does not have was simply ignored without saying so.
+- Reset times beyond two days are given in days; a weekly window previously read as "about 156 hours 51 minutes".
+
+**Added**
+- **Codex 「请求批准」 with an approval prompt.** Verification showed this mode does not confirm each edit — ordinary work inside the workspace is never interrupted; it asks only when an action needs to leave the sandbox, such as reaching the network. The request appears above the composer with the reason and the exact command, and Allow once / Deny answer it. Because an approval blocks the whole turn, a project waiting on one is marked in the sidebar, raises a notice, and sends a desktop notification when the window is not in front; the run status says it is waiting on you rather than still working. The protocol's `acceptForSession` is not offered: its scope could not be pinned down in testing, and a permission control should not make a promise that cannot be verified.
+- **Codex 「完全访问权限」**, its own `danger-full-access` tier. The default remains read-only, the mode is marked apart from ordinary write modes, and starting a turn in it is recorded in the log.
+- **Grok 「始终批准」**, the Always-Approve entry from Grok's own Shift+Tab ring. It relaxes approvals only; the sandbox profile is unchanged, so it still cannot reach outside the project.
+- Codex rate-limit figures pushed during a turn are stored, so refreshing the quota after a turn no longer starts a second `codex app-server`.
+
+### 中文
+
+**修复**
+- **Qwen 与 Gemini 的写入档从来没能用过。** 档位表写的是 `auto_edit`，而实际取值在 Qwen Code 是 `auto-edit`、在 Gemini CLI 是 `autoEdit`——非法值会被参数解析直接拒，于是每一次写入轮在模型开跑之前就失败了。两家此前还共用同一张表，等于两边都错，现已拆开。Qwen 收 plan / auto-edit / yolo，每一档都无头实测过：`default` 在没人可批准时根本不注册写工具，`auto` 两次实测都四分钟以上不返回，均不收录。Gemini 本机未安装，只按官方源码把取值改对，不新增未经验证的档。
+- **agy 每一轮都失败。** prompt 用 `-- <文本>` 传，而 agy 明确拒绝这种写法（"Attach the prompt to the flag"），进程在参数解析阶段就退出。它也从未收到 `--add-dir`：agy 绑定的是注册过的项目而不是进程工作目录，所以文件都写进了 `~/.gemini/antigravity-cli/scratch/`，碰不到用户项目。两处均已修复并端到端验证。
+- **OpenCode 跑在 Roster 自己的目录里。** 让它打印工作目录，回答是父进程（Roster）的目录而不是所选项目，测试期间它还真往 Roster 仓库里写了文件。也就是说每一次 OpenCode 对话都在"Roster 被启动的那个目录"里读写。现在显式传 `--dir`。MiMo 实测认进程工作目录，但同样传这个参数，不把正确性押在两家行为保持一致上。
+- **Grok 换档后无法续接。** 沙箱 profile 在会话创建时就固定，用另一个 profile 续接会被直接拒绝——`--fork-session` 也绕不过，因为检查发生在分叉之前。现在新会话固定使用可写的 `workspace` profile，续接一律不传 `--sandbox`，这一轮能不能写由 `--permission-mode` 决定。
+- **Codex 额度在顶栏不显示。** Codex 除账号总额度外还按模型各报一份，三段拼在一起会把顶栏那一格挤成零宽。现在只显示账号级窗口，详细分档仍留在开发模式的用量面板；那一格另加了宽度下限，值过长时退化成省略号而不是整条消失。
+- 推理强度按所选模型过滤。Codex 对不支持的档会静默收下并降级，此前选了当前模型没有的档，等于什么也没发生却毫无提示。
+- 超过两天的重置时间改按天显示；周窗口此前会写成"约 156 小时 51 分后重置"。
+
+**新增**
+- **Codex「请求批准」及配套审批提示。** 实测这一档并不逐条确认修改——工作区内的正常读写不会打断你，只有动作需要越出沙箱（例如联网）时才问。请求会出现在输入框上方，带上理由和完整命令，由「允许一次 / 拒绝」答复。因为审批会挡住整轮，等待中的项目会在侧栏标记、弹出提示，窗口不在前台时还会发桌面通知，运行状态也会显示成在等你而不是仍在处理。协议里的 `acceptForSession` 没有放出来：测试中没能确定它的作用范围，而权限控件不该做一个无法验证的承诺。
+- **Codex「完全访问权限」**，即它自己的 `danger-full-access` 档。默认档仍是只读，该档在界面上与普通写入档区分开，以该档启动的轮次会记入日志。
+- **Grok「始终批准」**，取自 Grok 自己 Shift+Tab 环里的 Always-Approve。它只放开审批，不改动沙箱 profile，因此仍然改不到项目以外。
+- Codex 在轮次中主动推送的限流数据会被留存，轮次结束刷新额度时不再另起一个 `codex app-server`。
+
 ## v1.3.1
 
 ### English
