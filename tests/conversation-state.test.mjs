@@ -205,7 +205,7 @@ test('新 CLI 建立线程后接管后续会话，并清除旧交接来源', () 
     runId: 'chat-grok', projectId: 'p1', providerId: 'grok', prompt: '继续完成',
   });
   assert.equal(state.messages.at(-1).tool, 'grok');
-  assert.equal(selectConversationProvider(state, 'gemini'), state, '运行中禁止切换 CLI');
+  assert.equal(selectConversationProvider(state, 'agy'), state, '运行中禁止切换 CLI');
 
   const wrongProvider = applyConversationChatEvent(state, {
     runId: 'chat-grok', providerId: 'claude', kind: 'assistant_delta', data: { text: '污染' },

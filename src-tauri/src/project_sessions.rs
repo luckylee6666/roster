@@ -3,7 +3,7 @@ use crate::project_memory::encode_claude_project_dir;
 use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_SESSIONS_PER_TOOL: usize = 12;
@@ -12,7 +12,6 @@ const PREVIEW_LIST_LIMIT: usize = 80;
 const PREVIEW_BODY_LIMIT: usize = 2400;
 const PREVIEW_FILE_READ_LIMIT: u64 = 128 * 1024;
 const HANDOFF_FILE_READ_LIMIT: u64 = 512 * 1024;
-const GEMINI_SESSION_READ_LIMIT: u64 = 8 * 1024 * 1024;
 const HANDOFF_MESSAGE_LIMIT: usize = 24;
 const HANDOFF_TEXT_LIMIT: usize = 18_000;
 const TRANSCRIPT_FILE_READ_LIMIT: u64 = 32 * 1024 * 1024;
@@ -761,128 +760,6 @@ fn list_mimo_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     Vec::new()
 }
 
-fn gemini_first_user_text(value: &serde_json::Value) -> String {
-    for message in value
-        .get("messages")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-    {
-        if message.get("type").and_then(|value| value.as_str()) != Some("user") {
-            continue;
-        }
-        let content = message.get("content");
-        if let Some(text) = content.and_then(|value| value.as_str()) {
-            if !text.trim().is_empty() {
-                return text.to_string();
-            }
-        }
-        for item in content
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-        {
-            if let Some(text) = item.get("text").and_then(|value| value.as_str()) {
-                if !text.trim().is_empty() {
-                    return text.to_string();
-                }
-            }
-        }
-    }
-    String::new()
-}
-
-fn gemini_session_from_file(path: &Path) -> Option<ProjectHistorySession> {
-    let raw = read_utf8_file_bounded(path, GEMINI_SESSION_READ_LIMIT, "Gemini 会话").ok()?;
-    let value = serde_json::from_str::<serde_json::Value>(raw.trim())
-        .ok()
-        .or_else(|| {
-            raw.lines()
-                .next()
-                .and_then(|line| serde_json::from_str(line).ok())
-        })?;
-    let at_ms = ["lastUpdated", "startTime"]
-        .iter()
-        .find_map(|key| {
-            value
-                .get(*key)
-                .and_then(|item| item.as_str())
-                .and_then(parse_rfc3339_ms)
-        })
-        .or_else(|| {
-            path.metadata()
-                .and_then(|meta| meta.modified())
-                .ok()
-                .map(millis)
-        })
-        .unwrap_or(0);
-    Some(history_session(
-        path.to_string_lossy().into_owned(),
-        "gemini",
-        &gemini_first_user_text(&value),
-        at_ms,
-    ))
-}
-
-fn gemini_project_chat_dirs(home: &Path, cwd: &str) -> Vec<PathBuf> {
-    let tmp = home.join(".gemini").join("tmp");
-    let mut dirs = Vec::new();
-    if let Ok(text) = fs::read_to_string(home.join(".gemini").join("projects.json")) {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(slug) = value
-                .get("projects")
-                .and_then(|projects| projects.get(cwd))
-                .and_then(|item| item.as_str())
-            {
-                let chats = tmp.join(slug).join("chats");
-                if chats.is_dir() {
-                    dirs.push(chats);
-                }
-            }
-        }
-    }
-    if let Ok(entries) = fs::read_dir(&tmp) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let root = fs::read_to_string(path.join(".project_root")).unwrap_or_default();
-            if !same_project_cwd(root.trim(), cwd) {
-                continue;
-            }
-            let chats = path.join("chats");
-            if chats.is_dir() && !dirs.iter().any(|existing| existing == &chats) {
-                dirs.push(chats);
-            }
-        }
-    }
-    dirs
-}
-
-fn list_gemini_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
-    let mut sessions = Vec::new();
-    for chats in gemini_project_chat_dirs(home, cwd) {
-        let Ok(entries) = fs::read_dir(chats) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if !name.starts_with("session-") {
-                continue;
-            }
-            if let Some(session) = gemini_session_from_file(&path) {
-                sessions.push(session);
-            }
-        }
-    }
-    finalize_sessions(sessions)
-}
-
 fn qwen_first_user_text(value: &serde_json::Value) -> String {
     value
         .get("message")
@@ -1124,12 +1001,6 @@ pub fn list_project_history_with_home(project_path: &str, home: &Path) -> Projec
         "OpenCode",
         list_opencode_sessions(home, &cwd),
     );
-    push_group(
-        &mut groups,
-        "gemini",
-        "Gemini",
-        list_gemini_sessions(home, &cwd),
-    );
     push_group(&mut groups, "agy", "agy", list_agy_sessions(home, &cwd));
     push_group(&mut groups, "qwen", "Qwen", list_qwen_sessions(home, &cwd));
     push_group(
@@ -1163,11 +1034,6 @@ fn is_safe_component(id: &str) -> bool {
         && !id.contains('\\')
         && id != "."
         && id != ".."
-}
-
-fn has_parent_dir(path: &Path) -> bool {
-    path.components()
-        .any(|component| matches!(component, Component::ParentDir))
 }
 
 fn is_within_dir(parent: &Path, child: &Path) -> bool {
@@ -1386,33 +1252,6 @@ fn qwen_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessa
     })
 }
 
-fn gemini_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessage> {
-    let role = match value.get("type").and_then(|item| item.as_str())? {
-        "user" => "user",
-        "assistant" | "model" | "gemini" => "assistant",
-        _ => return None,
-    };
-    let content = value.get("content")?;
-    let raw = if let Some(text) = content.as_str() {
-        text.to_string()
-    } else {
-        content
-            .as_array()?
-            .iter()
-            .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let text = sanitize_handoff_text(&raw);
-    if text.is_empty() {
-        return None;
-    }
-    Some(SessionHandoffMessage {
-        role: role.to_string(),
-        text,
-    })
-}
-
 fn transcript_role<'a>(tool: &str, value: &'a serde_json::Value) -> Option<&'a str> {
     match tool {
         "claude" => {
@@ -1453,11 +1292,6 @@ fn transcript_role<'a>(tool: &str, value: &'a serde_json::Value) -> Option<&'a s
         "qwen" => match value.get("type").and_then(|item| item.as_str())? {
             "user" => Some("user"),
             "assistant" => Some("assistant"),
-            _ => None,
-        },
-        "gemini" => match value.get("type").and_then(|item| item.as_str())? {
-            "user" => Some("user"),
-            "assistant" | "model" | "gemini" => Some("assistant"),
             _ => None,
         },
         _ => None,
@@ -1519,7 +1353,7 @@ fn transcript_content_items<'a>(
         "codex" => value
             .get("payload")
             .and_then(|payload| payload.get("content")),
-        "grok" | "gemini" => value.get("content"),
+        "grok" => value.get("content"),
         "qwen" => value
             .get("message")
             .and_then(|message| message.get("parts")),
@@ -1543,7 +1377,6 @@ fn transcript_message_from_value(
         "codex" => codex_handoff_message(value),
         "grok" => grok_handoff_message(value),
         "qwen" => qwen_handoff_message(value),
-        "gemini" => gemini_handoff_message(value),
         _ => None,
     };
     let mut attachments = Vec::new();
@@ -1745,42 +1578,6 @@ fn collect_codex_preview_parts(buf: &str) -> Vec<String> {
     parts
 }
 
-fn collect_gemini_preview_parts(value: &serde_json::Value) -> Vec<String> {
-    let mut parts = Vec::new();
-    for message in value
-        .get("messages")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-    {
-        if message.get("type").and_then(|value| value.as_str()) != Some("user") {
-            continue;
-        }
-        let content = message.get("content");
-        if let Some(text) = content.and_then(|value| value.as_str()) {
-            if !text.trim().is_empty() {
-                parts.push(text.to_string());
-            }
-        } else {
-            for item in content
-                .and_then(|value| value.as_array())
-                .into_iter()
-                .flatten()
-            {
-                if let Some(text) = item.get("text").and_then(|value| value.as_str()) {
-                    if !text.trim().is_empty() {
-                        parts.push(text.to_string());
-                    }
-                }
-            }
-        }
-        if parts.len() >= 8 {
-            break;
-        }
-    }
-    parts
-}
-
 fn grok_user_text(value: &serde_json::Value) -> Option<String> {
     if value.get("type").and_then(|item| item.as_str()) != Some("user") {
         return None;
@@ -1938,50 +1735,6 @@ fn find_codex_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<P
         }
     }
     Err("找不到这个 Codex 会话".into())
-}
-
-fn resolve_gemini_session_file(
-    home: &Path,
-    cwd: &str,
-    session_id: &str,
-) -> Result<PathBuf, String> {
-    let raw = session_id.trim();
-    if raw.is_empty() || raw.len() > 1024 || raw.contains('\0') {
-        return Err("非法会话 ID".into());
-    }
-    let candidate = PathBuf::from(raw);
-    if has_parent_dir(&candidate) {
-        return Err("非法会话路径".into());
-    }
-    let allowed = gemini_project_chat_dirs(home, cwd);
-    if allowed.is_empty() {
-        return Err("找不到这个 Gemini 会话".into());
-    }
-    let files = if candidate.is_absolute() {
-        vec![candidate]
-    } else {
-        let name = candidate
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| "非法会话 ID".to_string())?;
-        if !name.starts_with("session-") || !is_safe_component(name) {
-            return Err("非法会话 ID".into());
-        }
-        allowed.iter().map(|dir| dir.join(name)).collect()
-    };
-    for file in files {
-        let name = file
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        if !name.starts_with("session-") || !file.is_file() {
-            continue;
-        }
-        if allowed.iter().any(|dir| is_within_dir(dir, &file)) {
-            return Ok(file);
-        }
-    }
-    Err("找不到这个 Gemini 会话".into())
 }
 
 fn find_opencode_db(home: &Path) -> Option<PathBuf> {
@@ -2374,7 +2127,6 @@ fn handoff_tool_label(tool: &str) -> &str {
         "grok" => "Grok",
         "codex" => "Codex",
         "opencode" => "OpenCode",
-        "gemini" => "Gemini",
         "agy" => "agy",
         "qwen" => "Qwen",
         "mimo" => "MiMo Code",
@@ -2594,26 +2346,6 @@ fn source_handoff_messages(
                 truncated,
             )
         }
-        "gemini" => {
-            let path = resolve_gemini_session_file(home, cwd, session_id)?;
-            let raw = read_utf8_file_bounded(&path, HANDOFF_FILE_READ_LIMIT, "Gemini 交接会话")?;
-            let value = serde_json::from_str::<serde_json::Value>(raw.trim())
-                .ok()
-                .or_else(|| {
-                    raw.lines()
-                        .next()
-                        .and_then(|line| serde_json::from_str(line).ok())
-                })
-                .unwrap_or(serde_json::Value::Null);
-            let candidates = value
-                .get("messages")
-                .and_then(|messages| messages.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(gemini_handoff_message)
-                .collect::<Vec<_>>();
-            (candidates, false)
-        }
         "agy" => {
             require_component_id(session_id)?;
             let history = home.join(".gemini/antigravity-cli/history.jsonl");
@@ -2726,38 +2458,6 @@ fn source_transcript_messages(
             let path = qwen_session_path(home, cwd, session_id)?;
             let (buf, truncated) = read_lossy_tail(&path, TRANSCRIPT_FILE_READ_LIMIT)?;
             (jsonl_transcript_candidates(&buf, "qwen"), truncated)
-        }
-        "gemini" => {
-            let path = resolve_gemini_session_file(home, cwd, session_id)?;
-            let raw = read_utf8_file_bounded(&path, TRANSCRIPT_FILE_READ_LIMIT, "Gemini 历史会话")?;
-            let value = serde_json::from_str::<serde_json::Value>(raw.trim())
-                .ok()
-                .or_else(|| {
-                    raw.lines()
-                        .next()
-                        .and_then(|line| serde_json::from_str(line).ok())
-                })
-                .unwrap_or(serde_json::Value::Null);
-            let mut remaining_image_bytes = TRANSCRIPT_INLINE_IMAGE_LIMIT;
-            let mut attachment_count = 0;
-            let mut candidates = value
-                .get("messages")
-                .and_then(|messages| messages.as_array())
-                .into_iter()
-                .flatten()
-                .rev()
-                .filter_map(|message| {
-                    transcript_message_from_value(
-                        "gemini",
-                        message,
-                        &mut remaining_image_bytes,
-                        &mut attachment_count,
-                    )
-                })
-                .take(TRANSCRIPT_MESSAGE_LIMIT + 1)
-                .collect::<Vec<_>>();
-            candidates.reverse();
-            (candidates, false)
         }
         "agy" => {
             require_component_id(session_id)?;
@@ -2902,24 +2602,6 @@ pub fn preview_project_session_with_home(
         }
         "opencode" => preview_opencode(home, &cwd, session_id),
         "mimo" => preview_mimo(home, &cwd, session_id),
-        "gemini" => {
-            let path = resolve_gemini_session_file(home, &cwd, session_id)?;
-            let session = gemini_session_from_file(&path)
-                .ok_or_else(|| "找不到这个 Gemini 会话".to_string())?;
-            let raw = read_utf8_file_bounded(&path, GEMINI_SESSION_READ_LIMIT, "Gemini 会话")?;
-            let value = serde_json::from_str::<serde_json::Value>(raw.trim())
-                .ok()
-                .or_else(|| {
-                    raw.lines()
-                        .next()
-                        .and_then(|line| serde_json::from_str(line).ok())
-                })
-                .unwrap_or(serde_json::Value::Null);
-            Ok(preview_result(
-                session,
-                preview_body(&collect_gemini_preview_parts(&value)),
-            ))
-        }
         "agy" => preview_agy(home, &cwd, session_id),
         "qwen" => {
             let path = qwen_session_path(home, &cwd, session_id)?;
@@ -2958,10 +2640,6 @@ pub fn delete_project_session_with_home(
         }
         "opencode" => delete_opencode(home, &cwd, session_id),
         "mimo" => delete_mimo(home, &cwd, session_id),
-        "gemini" => {
-            let path = resolve_gemini_session_file(home, &cwd, session_id)?;
-            fs::remove_file(path).map_err(|error| error.to_string())
-        }
         "agy" => delete_agy(home, &cwd, session_id),
         "qwen" => {
             let path = qwen_session_path(home, &cwd, session_id)?;
@@ -3752,9 +3430,10 @@ mod tests {
     }
 
     #[test]
-    fn lists_gemini_and_agy_sessions_for_project_cwd() {
+    fn lists_agy_sessions_for_project_cwd_and_no_longer_lists_gemini() {
         let (_root, home) = temp_home();
         let cwd = "/Users/lucky/git/app";
+        // Gemini CLI 自己的会话目录：即便留在磁盘上，也不该再出现在历史里。
         let chats = home.join(".gemini/tmp/app/chats");
         fs::create_dir_all(&chats).unwrap();
         fs::write(
@@ -3764,10 +3443,11 @@ mod tests {
         .unwrap();
         fs::write(
             chats.join("session-2026-03-30T05-40-3fff92c9.json"),
-            r#"{"sessionId":"3fff92c9-d623-4845-befd-8ff6a3d55272","lastUpdated":"2026-03-30T05:51:05.919Z","messages":[{"type":"user","content":[{"text":"你是哪个模型"}]}]}"#,
+            r#"{"sessionId":"3fff92c9","lastUpdated":"2026-03-30T05:51:05.919Z","messages":[{"type":"user","content":[{"text":"你是哪个模型"}]}]}"#,
         )
         .unwrap();
-        fs::create_dir_all(home.join(".gemini/antigravity-cli/cache")).unwrap();
+        // agy 用的是 ~/.gemini/antigravity-cli/，同一个父目录但完全另一家，必须继续可用。
+        fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
         fs::write(
             home.join(".gemini/antigravity-cli/history.jsonl"),
             format!(
@@ -3779,16 +3459,10 @@ mod tests {
         .unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
-        let gemini = history
-            .groups
-            .iter()
-            .find(|group| group.tool == "gemini")
-            .unwrap();
-        assert_eq!(gemini.sessions.len(), 1);
-        assert!(gemini.sessions[0]
-            .id
-            .ends_with("session-2026-03-30T05-40-3fff92c9.json"));
-        assert_eq!(gemini.sessions[0].title, "你是哪个模型");
+        assert!(
+            history.groups.iter().all(|group| group.tool != "gemini"),
+            "Gemini 已整体移除，不该再出现在历史分组里"
+        );
         let agy = history
             .groups
             .iter()
@@ -3892,13 +3566,6 @@ mod tests {
         delete_project_session_with_home(cwd, "claude", claude_id, &home).unwrap();
         delete_project_session_with_home(cwd, "grok", "sess-main", &home).unwrap();
         delete_project_session_with_home(cwd, "codex", "drop-codex", &home).unwrap();
-        delete_project_session_with_home(
-            cwd,
-            "gemini",
-            chats.join("session-drop.json").to_str().unwrap(),
-            &home,
-        )
-        .unwrap();
         delete_project_session_with_home(cwd, "agy", "conv-1", &home).unwrap();
 
         let history = list_project_history_with_home(cwd, &home);
@@ -3916,13 +3583,10 @@ mod tests {
             .unwrap();
         assert_eq!(codex.sessions.len(), 1);
         assert_eq!(codex.sessions[0].id, "keep-codex");
-        let gemini = history
-            .groups
-            .iter()
-            .find(|group| group.tool == "gemini")
-            .unwrap();
-        assert_eq!(gemini.sessions.len(), 1);
-        assert!(gemini.sessions[0].id.ends_with("session-keep.json"));
+        assert!(
+            tools.iter().all(|tool| *tool != "gemini"),
+            "Gemini 已移除，磁盘上留着会话也不该再列出来"
+        );
         assert!(history.groups.iter().all(|group| group.tool != "agy"));
         let remaining_agy =
             fs::read_to_string(home.join(".gemini/antigravity-cli/history.jsonl")).unwrap();
@@ -3931,12 +3595,10 @@ mod tests {
 
         assert!(delete_project_session_with_home(other, "claude", claude_id, &home).is_err());
         assert!(delete_project_session_with_home(cwd, "claude", "../secret", &home).is_err());
+        // 已移除的 provider 不接受任何删除请求。
         assert!(
             delete_project_session_with_home(cwd, "gemini", "/tmp/session-drop.json", &home)
                 .is_err()
-        );
-        assert!(
-            delete_project_session_with_home(cwd, "gemini", "../../../.ssh/id_rsa", &home).is_err()
         );
     }
 
@@ -4065,19 +3727,9 @@ mod tests {
     }
 
     #[test]
-    fn handoff_rejects_oversized_gemini_and_grok_json_before_parsing() {
+    fn handoff_rejects_oversized_grok_json_before_parsing() {
         let (_root, home) = temp_home();
         let cwd = "/Users/lucky/git/bounded-handoff";
-
-        let gemini = home.join(".gemini/tmp/bounded/chats/session-large.json");
-        fs::create_dir_all(gemini.parent().unwrap()).unwrap();
-        fs::write(home.join(".gemini/tmp/bounded/.project_root"), cwd).unwrap();
-        fs::write(&gemini, vec![b'x'; HANDOFF_FILE_READ_LIMIT as usize + 1]).unwrap();
-        let gemini_error =
-            preview_session_handoff_with_home(cwd, "gemini", gemini.to_str().unwrap(), &home)
-                .err()
-                .unwrap();
-        assert!(gemini_error.contains("512 KiB"));
 
         let grok = home
             .join(".grok/sessions")
@@ -4168,15 +3820,6 @@ mod tests {
         )
         .unwrap();
 
-        let gemini_file = home.join(".gemini/tmp/handoff/chats/session-gemini.json");
-        fs::create_dir_all(gemini_file.parent().unwrap()).unwrap();
-        fs::write(home.join(".gemini/tmp/handoff/.project_root"), cwd).unwrap();
-        fs::write(
-            &gemini_file,
-            r#"{"messages":[{"type":"user","content":[{"text":"检查搜索"}]},{"type":"gemini","content":"搜索还缺少空态。"}]}"#,
-        )
-        .unwrap();
-
         fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
         fs::write(
             home.join(".gemini/antigravity-cli/history.jsonl"),
@@ -4211,12 +3854,6 @@ mod tests {
             ("grok", grok_id, "检查登录功能", "登录校验还需要收紧。"),
             ("codex", codex_id, "继续修登录", "我会先检查现有改动。"),
             ("qwen", qwen_id, "检查部署", "还要核对服务状态。"),
-            (
-                "gemini",
-                gemini_file.to_str().unwrap(),
-                "检查搜索",
-                "搜索还缺少空态。",
-            ),
             ("agy", "agy-main", "检查移动端布局", "继续修窄屏"),
             (
                 "opencode",

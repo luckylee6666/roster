@@ -43,18 +43,13 @@ test('历史会话按工具生成指定 ID 的续接命令', () => {
   assert.equal(resumeCliCommand('grok', '019ff9ad'), 'grok --resume 019ff9ad');
   assert.equal(resumeCliCommand('codex', 'abc-1'), 'codex resume abc-1');
   assert.equal(resumeCliCommand('opencode', 'ses_1'), 'opencode --session ses_1');
-  assert.equal(
-    resumeCliCommand('gemini', '/tmp/session-1.json'),
-    'gemini --session-file /tmp/session-1.json',
-  );
   assert.equal(resumeCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
-  assert.match(resumeCliCommand('gemini', "/tmp/it's.json"), /session-file '/);
+  assert.equal(resumeCliCommand('gemini', 'x'), '', 'Gemini 已移除，不再生成续接命令');
   assert.equal(resumeCliCommand('claude', ''), '');
   assert.equal(launchCliCommand('grok', '019ff9ad'), 'grok --resume 019ff9ad');
   assert.equal(launchCliCommand('claude', 'abc-1'), 'claude --resume abc-1');
   assert.equal(launchCliCommand('codex', 'x-1'), 'codex resume x-1');
   assert.equal(launchCliCommand('opencode', 'ses_1'), 'opencode --session ses_1');
-  assert.equal(launchCliCommand('gemini', '/tmp/session-1.json'), 'gemini --session-file /tmp/session-1.json');
   assert.equal(launchCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
   assert.equal(launchCliCommand('grok', ''), 'grok');
   assert.equal(launchCliCommand('codex', ''), 'codex');
@@ -68,7 +63,6 @@ test('历史会话按工具生成指定 ID 的续接命令', () => {
 test('Claude 延续旧行为，其他终端命令保持不变', () => {
   assert.equal(restoredCliCommand('claude'), 'claude --continue');
   assert.equal(restoredCliCommand('claude --continue'), 'claude --continue');
-  assert.equal(restoredCliCommand('gemini'), 'gemini');
   assert.equal(restoredCliCommand(''), '');
 });
 

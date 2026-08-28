@@ -6,7 +6,6 @@ export const CLI_TOOLS = Object.freeze([
   Object.freeze({ id: 'grok', label: 'Grok', keywords: Object.freeze(['xai']) }),
   Object.freeze({ id: 'codex', label: 'Codex', keywords: Object.freeze(['openai']) }),
   Object.freeze({ id: 'opencode', label: 'OpenCode', keywords: Object.freeze(['sst']) }),
-  Object.freeze({ id: 'gemini', label: 'Gemini', keywords: Object.freeze(['google']) }),
   Object.freeze({ id: 'agy', label: 'agy', keywords: Object.freeze(['antigravity']) }),
   Object.freeze({ id: 'qwen', label: 'Qwen', keywords: Object.freeze(['alibaba', 'qianwen', 'tongyi']) }),
   Object.freeze({ id: 'mimo', label: 'MiMo Code', keywords: Object.freeze(['mimocode', 'xiaomi']) }),

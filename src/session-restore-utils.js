@@ -63,7 +63,6 @@ export function resumeCliCommand(tool, sessionId) {
   if (name === 'grok') return `grok --resume ${quoteCliArg(id)}`;
   if (name === 'codex') return `codex resume ${quoteCliArg(id)}`;
   if (name === 'opencode') return `opencode --session ${quoteCliArg(id)}`;
-  if (name === 'gemini') return `gemini --session-file ${quoteCliArg(id)}`;
   if (name === 'agy') return `agy --conversation ${quoteCliArg(id)}`;
   if (name === 'qwen') return `qwen --resume ${quoteCliArg(id)}`;
   if (name === 'mimo') return `mimo --session ${quoteCliArg(id)}`;
@@ -105,7 +104,6 @@ export function extractResumedSessionId(command) {
     return next;
   }
   if (tool === 'opencode') return takeFlagValue(args, new Set(['--session', '-s']));
-  if (tool === 'gemini') return takeFlagValue(args, new Set(['--session-file']));
   if (tool === 'agy') return takeFlagValue(args, new Set(['--conversation']));
   if (tool === 'qwen') return takeFlagValue(args, new Set(['--resume', '-r']));
   if (tool === 'mimo') return takeFlagValue(args, new Set(['--session', '-s']));

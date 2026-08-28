@@ -128,18 +128,8 @@ const CODEX_MODES: &[ConversationMode] = &[
     ),
 ];
 
-// Gemini 与 Qwen 曾经共用一张表，但两边的取值早就分叉了，共用等于两边都错：
-// Gemini 官方枚举是 default / autoEdit / yolo / plan（驼峰），Qwen 是
-// plan / default / auto-edit / auto / yolo（连字符）。我们原来写的 `auto_edit`
-// 下划线两边都不认，所以两家的写入档从来没能启动过（yargs choices 直接拒）。
-//
-// Gemini 本机没装，无法按标准做无头实测，因此只把取值改对（来源是官方
-// packages/core/src/policy/types.ts 的 ApprovalMode 枚举），不新增未验证的档。
-const GEMINI_MODES: &[ConversationMode] = &[
-    mode("plan", "只读计划", "读项目、给方案，不动任何文件", false),
-    mode("autoEdit", "自动接受修改", "文件改动直接生效", true),
-];
-
+// Qwen 曾与 Gemini 共用一张表，但两家取值早就分叉（Qwen 是 auto-edit 连字符，
+// Gemini 是 autoEdit 驼峰），共用等于两边都错。Gemini 已整体移除。
 // Qwen 自己的 Shift+Tab 环遍历 APPROVAL_MODES 全部五个：
 // plan → default → auto-edit → auto → yolo。实测（--sandbox --safe-mode）：
 //   plan      只读，明确回"当前处于 Plan 模式（禁止任何写入）"
@@ -180,7 +170,6 @@ pub fn modes_for(provider: &str) -> &'static [ConversationMode] {
         "claude" => CLAUDE_MODES,
         "grok" => GROK_MODES,
         "codex" => CODEX_MODES,
-        "gemini" => GEMINI_MODES,
         "qwen" => QWEN_MODES,
         "agy" => AGY_MODES,
         "opencode" | "mimo" => AGENT_MODES,
@@ -217,9 +206,7 @@ mod tests {
 
     #[test]
     fn every_provider_starts_read_only_and_rejects_unknown_modes() {
-        for provider in [
-            "claude", "grok", "codex", "gemini", "qwen", "agy", "opencode", "mimo",
-        ] {
+        for provider in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
             let modes = modes_for(provider);
             assert!(!modes.is_empty(), "{provider} 应该有模式表");
             assert!(!modes[0].writes, "{provider} 的第一档必须是只读");
@@ -247,9 +234,7 @@ mod tests {
         // 才进得去）不收。放宽这张表之前，先确认那一档真在该产品的档位选择里。
         const ALWAYS_APPROVE: &[(&str, &str)] = &[("grok", "bypassPermissions"), ("qwen", "yolo")];
 
-        for provider in [
-            "claude", "grok", "codex", "gemini", "qwen", "agy", "opencode", "mimo",
-        ] {
+        for provider in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
             for entry in modes_for(provider) {
                 let allowed = ALWAYS_APPROVE.contains(&(provider, entry.id));
                 assert!(
@@ -282,35 +267,25 @@ mod tests {
     }
 
     #[test]
-    fn qwen_and_gemini_use_their_own_spelling_and_do_not_share_a_table() {
-        // 两家的官方枚举早就分叉，共用一张表等于两边都错。原来写的 `auto_edit`
-        // 下划线谁都不认，yargs 的 choices 会直接拒，写入档从来没启动过。
+    fn qwen_uses_its_own_hyphenated_spelling() {
+        // 曾经写成 `auto_edit`（下划线），yargs 的 choices 直接拒，写入档从来没能用过。
+        // 官方枚举是 plan / default / auto-edit / auto / yolo。
         let qwen = modes_for("qwen")
             .iter()
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
         assert_eq!(qwen, vec!["plan", "auto-edit", "yolo"]);
-        let gemini = modes_for("gemini")
-            .iter()
-            .map(|entry| entry.id)
-            .collect::<Vec<_>>();
-        assert_eq!(gemini, vec!["plan", "autoEdit"]);
-        assert_ne!(modes_for("qwen"), modes_for("gemini"), "两家不能再共用");
-
-        // 下划线拼法两家都必须拒。
         assert!(resolve("qwen", "auto_edit").is_err());
-        assert!(resolve("gemini", "auto_edit").is_err());
-        // 各自只认自己那一种拼法。
+        // Gemini 的驼峰拼法也不该被 Qwen 接受（两家取值本就不同，Gemini 已移除）。
         assert!(resolve("qwen", "autoEdit").is_err());
-        assert!(resolve("gemini", "auto-edit").is_err());
         // 实测挂住（两次都 240s+ 未返回）和无头下干不了活的档都不收。
         assert!(resolve("qwen", "auto").is_err(), "auto 实测会挂住");
         assert!(
             resolve("qwen", "default").is_err(),
             "default 无头下没有写工具"
         );
-        // Gemini 本机没装、没法实测，不收未验证的档。
-        assert!(resolve("gemini", "yolo").is_err());
+        // 已移除的 provider 不再有任何档位。
+        assert!(modes_for("gemini").is_empty(), "Gemini 已整体移除");
     }
 
     #[test]
@@ -336,9 +311,7 @@ mod tests {
     fn only_codex_has_an_unsandboxed_mode_and_it_is_never_the_default() {
         // 无沙箱档只登记各家自己就提供的那一个。改这条之前先想清楚：
         // 这一档下 CLI 能读写项目以外的文件，也能联网。
-        for provider in [
-            "claude", "grok", "gemini", "qwen", "agy", "opencode", "mimo",
-        ] {
+        for provider in ["claude", "grok", "qwen", "agy", "opencode", "mimo"] {
             assert!(
                 modes_for(provider).iter().all(|entry| !entry.unsandboxed),
                 "{provider} 目前不该有无沙箱档"
@@ -351,9 +324,7 @@ mod tests {
             .collect();
         assert_eq!(codex, vec!["full-access"], "Codex 只有这一个无沙箱档");
 
-        for provider in [
-            "claude", "grok", "codex", "gemini", "qwen", "agy", "opencode", "mimo",
-        ] {
+        for provider in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
             assert!(
                 !default_mode(provider).unsandboxed,
                 "{provider} 的默认档绝不能是无沙箱的"

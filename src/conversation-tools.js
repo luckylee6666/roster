@@ -4,16 +4,15 @@ const RUNNABLE_PROVIDER_IDS = new Set(CLI_TOOLS.map(tool => tool.id));
 
 /**
  * 对话工作台负责把选择结果作为安全参数交给后端；并不把 CLI 原生 `/...`
- * 命令伪装成统一能力。模型可在当前八家对话入口中指定；推理强度只给已有
+ * 命令伪装成统一能力。模型可在当前七家对话入口中指定；推理强度只给已有
  * 明确后端映射的 CLI 展示。OpenCode 与 MiMo Code 使用 `--variant`，Qwen
- * 与 Gemini 没有对应的稳定推理强度参数。
+ * 没有对应的稳定推理强度参数。
  */
 export const CONVERSATION_PROVIDER_CAPABILITIES = Object.freeze({
   claude: Object.freeze({ model: true, effort: true }),
   grok: Object.freeze({ model: true, effort: true }),
   codex: Object.freeze({ model: true, effort: true }),
   opencode: Object.freeze({ model: true, effort: true }),
-  gemini: Object.freeze({ model: true, effort: false }),
   agy: Object.freeze({ model: true, effort: true }),
   qwen: Object.freeze({ model: true, effort: false }),
   mimo: Object.freeze({ model: true, effort: true }),
@@ -24,7 +23,6 @@ const PROVIDER_MARKS = Object.freeze({
   grok: 'Gr',
   codex: 'Cx',
   opencode: 'OC',
-  gemini: 'Ge',
   agy: 'Ag',
   qwen: 'Qw',
   mimo: 'Mi',

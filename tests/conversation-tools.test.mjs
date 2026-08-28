@@ -14,11 +14,11 @@ import {
 test('对话 Provider 基于统一 CLI 登记并为未知工具提供只读回退', () => {
   assert.deepEqual(
     CONVERSATION_PROVIDERS.map(provider => provider.id),
-    ['claude', 'grok', 'codex', 'opencode', 'gemini', 'agy', 'qwen', 'mimo'],
+    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo'],
   );
   assert.deepEqual(
     CONVERSATION_PROVIDERS.filter(provider => provider.runnable).map(provider => provider.id),
-    ['claude', 'grok', 'codex', 'opencode', 'gemini', 'agy', 'qwen', 'mimo'],
+    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo'],
   );
   const unknown = conversationProvider(' FutureCLI ', '未来模型');
   assert.deepEqual(
@@ -44,7 +44,7 @@ test('八家已安装 CLI 都可进入对话模式，模型与推理强度按能
   assert.equal(qwen.supportsEffort, false);
   assert.equal(mimo.supportsEffort, true);
   assert.equal(CONVERSATION_PROVIDER_CAPABILITIES.codex.effort, true);
-  assert.equal(CONVERSATION_PROVIDER_CAPABILITIES.gemini.effort, false);
+  assert.equal(CONVERSATION_PROVIDER_CAPABILITIES.gemini, undefined, 'Gemini 已整体移除');
 });
 
 test('历史键同时包含工具和 id，相同会话 id 不会跨 CLI 冲突', () => {

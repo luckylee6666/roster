@@ -77,9 +77,6 @@
   --tool-opencode-ink: #477637;
   --tool-opencode-bg: #eef6e9;
   --tool-opencode-line: #d8e9cf;
-  --tool-gemini-ink: #6552a5;
-  --tool-gemini-bg: #f0edfb;
-  --tool-gemini-line: #ded8f3;
   --tool-agy-ink: #1b7b92;
   --tool-agy-bg: #e8f7fa;
   --tool-agy-line: #ccebef;
@@ -2592,11 +2589,6 @@ body {
 .term-tab-tool.tool-opencode {
   color: #98c379;
   background: rgba(152, 195, 121, 0.16);
-}
-
-.term-tab-tool.tool-gemini {
-  color: #a78bfa;
-  background: rgba(167, 139, 250, 0.16);
 }
 
 .term-tab-tool.tool-agy {
@@ -6170,7 +6162,6 @@ html[data-app-view="developer"] #conversation-surface {
 .conversation-history-tool[data-tool="grok"] { color: var(--tool-grok-ink) !important; background: var(--tool-grok-bg); border-color: var(--tool-grok-line); }
 .conversation-history-tool[data-tool="codex"] { color: var(--tool-codex-ink) !important; background: var(--tool-codex-bg); border-color: var(--tool-codex-line); }
 .conversation-history-tool[data-tool="opencode"] { color: var(--tool-opencode-ink) !important; background: var(--tool-opencode-bg); border-color: var(--tool-opencode-line); }
-.conversation-history-tool[data-tool="gemini"] { color: var(--tool-gemini-ink) !important; background: var(--tool-gemini-bg); border-color: var(--tool-gemini-line); }
 .conversation-history-tool[data-tool="agy"] { color: var(--tool-agy-ink) !important; background: var(--tool-agy-bg); border-color: var(--tool-agy-line); }
 .conversation-history-tool[data-tool="qwen"] { color: var(--tool-qwen-ink) !important; background: var(--tool-qwen-bg); border-color: var(--tool-qwen-line); }
 .conversation-history-tool[data-tool="mimo"] { color: var(--tool-mimo-ink) !important; background: var(--tool-mimo-bg); border-color: var(--tool-mimo-line); }
@@ -7618,9 +7609,6 @@ html[data-app-view="developer"] #conversation-surface {
   --tool-opencode-ink: #a8cf95;
   --tool-opencode-bg: #1e2a1b;
   --tool-opencode-line: #35492f;
-  --tool-gemini-ink: #bdb0e8;
-  --tool-gemini-bg: #24203a;
-  --tool-gemini-line: #3d3660;
   --tool-agy-ink: #8bd3e2;
   --tool-agy-bg: #17282d;
   --tool-agy-line: #294850;
@@ -7709,9 +7697,6 @@ html[data-app-view="conversation"][data-theme="dark"] {
   --tool-opencode-ink: #a8cf95;
   --tool-opencode-bg: #1e2a1b;
   --tool-opencode-line: #35492f;
-  --tool-gemini-ink: #bdb0e8;
-  --tool-gemini-bg: #24203a;
-  --tool-gemini-line: #3d3660;
   --tool-agy-ink: #8bd3e2;
   --tool-agy-bg: #17282d;
   --tool-agy-line: #294850;

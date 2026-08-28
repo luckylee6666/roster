@@ -38,19 +38,19 @@ test('应用视图和选中项目以一个版本化记录原子保存', () => {
   assert.equal(writeAppShellPreference(storage, {
     appView: 'developer',
     projectId: 'project-1',
-    providerId: 'gemini',
+    providerId: 'agy',
   }), true);
   assert.deepEqual(JSON.parse(storage.value(APP_VIEW_STORAGE_KEY)), {
     version: 1,
     appView: 'developer',
     projectId: 'project-1',
-    providerId: 'gemini',
+    providerId: 'agy',
   });
   assert.deepEqual(readAppShellPreference(storage), {
     version: 1,
     appView: 'developer',
     projectId: 'project-1',
-    providerId: 'gemini',
+    providerId: 'agy',
   });
 });
 

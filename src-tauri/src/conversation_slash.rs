@@ -138,7 +138,6 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
 fn model_list_args(provider: &str) -> Option<&'static [&'static str]> {
     match provider {
         "grok" | "agy" | "opencode" | "mimo" => Some(&["models"]),
-        "gemini" => Some(&["models", "list"]),
         _ => None,
     }
 }
@@ -276,7 +275,6 @@ fn normalize_provider(id: &str) -> Result<&'static str, String> {
         "claude" => Ok("claude"),
         "grok" => Ok("grok"),
         "codex" => Ok("codex"),
-        "gemini" => Ok("gemini"),
         "agy" => Ok("agy"),
         "opencode" => Ok("opencode"),
         "qwen" => Ok("qwen"),
@@ -983,12 +981,6 @@ fn skill_roots(provider: &str, project: &Path, home: &Path) -> Vec<PathBuf> {
             home.join(".agents/skills"),
             home.join(".codex/skills"),
         ],
-        "gemini" => vec![
-            project.join(".gemini/commands"),
-            project.join(".gemini/skills"),
-            home.join(".gemini/commands"),
-            home.join(".gemini/skills"),
-        ],
         "opencode" => vec![
             project.join(".opencode/commands"),
             project.join(".opencode/skills"),
@@ -1438,7 +1430,6 @@ mod tests {
     fn only_safe_models_subcommands_are_invoked() {
         assert_eq!(model_list_args("grok"), Some(&["models"][..]));
         assert_eq!(model_list_args("agy"), Some(&["models"][..]));
-        assert_eq!(model_list_args("gemini"), Some(&["models", "list"][..]));
         assert_eq!(model_list_args("opencode"), Some(&["models"][..]));
         assert_eq!(model_list_args("mimo"), Some(&["models"][..]));
         assert_eq!(model_list_args("qwen"), None);
@@ -1448,9 +1439,7 @@ mod tests {
 
     #[test]
     fn all_conversation_providers_accept_dynamic_slash_discovery() {
-        for provider in [
-            "claude", "grok", "codex", "opencode", "gemini", "agy", "qwen", "mimo",
-        ] {
+        for provider in ["claude", "grok", "codex", "opencode", "agy", "qwen", "mimo"] {
             assert_eq!(normalize_provider(provider).unwrap(), provider);
         }
         assert!(normalize_provider("../../bin/sh").is_err());

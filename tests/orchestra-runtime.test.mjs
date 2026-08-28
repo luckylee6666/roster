@@ -98,6 +98,6 @@ test('协作文件只写在项目 \.vibe/orchestra 且不进 Git', () => {
   assert.match(rust, /read_orchestra_file/);
   assert.match(orchestraRust, /fn valid_inbox_id/);
   assert.match(orchestraRust, /fn allowed_relative[\s\S]*?strip_prefix\("inbox\/"\)[\s\S]*?strip_suffix\("\.md"\)/);
-  assert.doesNotMatch(orchestraRust, /"inbox\/(?:claude|grok|codex|opencode|gemini|agy|qwen|mimo)\.md"/);
+  assert.doesNotMatch(orchestraRust, /"inbox\/(?:claude|grok|codex|opencode|agy|qwen|mimo)\.md"/);
   assert.match(ignore, /^\.vibe\/$/m);
 });

@@ -32,7 +32,6 @@ pub type ConversationChatState = CodexChatState;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeadlessProtocol {
     AnthropicMessages,
-    GeminiStream,
     OpenCodeJson,
     QwenStream,
 }
@@ -45,7 +44,7 @@ struct ProviderSpec {
     protocol: HeadlessProtocol,
 }
 
-const HEADLESS_PROVIDERS: [ProviderSpec; 7] = [
+const HEADLESS_PROVIDERS: [ProviderSpec; 6] = [
     ProviderSpec {
         id: "claude",
         label: "Claude",
@@ -57,12 +56,6 @@ const HEADLESS_PROVIDERS: [ProviderSpec; 7] = [
         label: "Grok",
         binary: "grok",
         protocol: HeadlessProtocol::AnthropicMessages,
-    },
-    ProviderSpec {
-        id: "gemini",
-        label: "Gemini",
-        binary: "gemini",
-        protocol: HeadlessProtocol::GeminiStream,
     },
     ProviderSpec {
         id: "agy",
@@ -148,7 +141,6 @@ fn provider_label(id: &str) -> &'static str {
         "grok" => "Grok",
         "codex" => "Codex",
         "opencode" => "OpenCode",
-        "gemini" => "Gemini",
         "agy" => "agy",
         "qwen" => "Qwen",
         "mimo" => "MiMo Code",
@@ -401,65 +393,6 @@ fn parse_anthropic_line(value: &Value) -> ParsedLine {
     parsed
 }
 
-fn parse_gemini_line(value: &Value) -> ParsedLine {
-    let mut parsed = ParsedLine {
-        session_id: value
-            .get("session_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        ..ParsedLine::default()
-    };
-    match value.get("type").and_then(Value::as_str).unwrap_or("") {
-        "message" if value.get("role").and_then(Value::as_str) == Some("assistant") => {
-            let text = extract_text_content(value.get("content").unwrap_or(&Value::Null));
-            if !text.is_empty() {
-                parsed.assistant_delta = Some(text);
-            }
-        }
-        "tool_use" => {
-            let id = value
-                .get("tool_id")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
-            let name = value
-                .get("tool_name")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
-            parsed
-                .activities
-                .push(tool_activity(id, name, "inProgress"));
-        }
-        "tool_result" => {
-            let id = value
-                .get("tool_id")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
-            let status = if value.get("status").and_then(Value::as_str) == Some("success") {
-                "completed"
-            } else {
-                "failed"
-            };
-            parsed.activities.push(tool_activity(id, "tool", status));
-        }
-        "error" => {
-            let message = value
-                .get("message")
-                .and_then(Value::as_str)
-                .map(|text| bounded_utf8(text, 2_000));
-            if value.get("severity").and_then(Value::as_str) == Some("warning") {
-                parsed.notice = message;
-            } else {
-                parsed.error = message;
-            }
-        }
-        "result" if value.get("status").and_then(Value::as_str) == Some("error") => {
-            parsed.error = Some("Gemini 处理失败".to_string());
-        }
-        _ => {}
-    }
-    parsed
-}
-
 fn first_string<'a>(value: &'a Value, pointers: &[&str]) -> Option<&'a str> {
     pointers
         .iter()
@@ -543,33 +476,40 @@ fn parse_qwen_line(value: &Value) -> ParsedLine {
             ..ParsedLine::default()
         };
     }
+    // Qwen 的流实测只有 stream_event / assistant / user / system / result，全是
+    // Anthropic 形状，`parse_anthropic_line` 已覆盖（含 result 的 is_error 与
+    // subtype=error）。这里不再借用别家 CLI 的解析器兜底——曾经挂着 Gemini 与
+    // OpenCode 两个 fallback，实测对 Qwen 一次都不会触发（字段名根本对不上），
+    // 其中 Gemini 那条真触发的话还会给用户报"Gemini 处理失败"。
     let mut parsed = parse_anthropic_line(value);
-    let is_full_assistant = value.get("type").and_then(Value::as_str) == Some("assistant");
-    if is_full_assistant {
-        if let Some(text) = parsed.assistant_delta.take() {
-            parsed.fallback_answer = Some(text);
+    match value.get("type").and_then(Value::as_str).unwrap_or("") {
+        "assistant" => {
+            // `--include-partial-messages` 会在增量之后再发一份完整回复，
+            // 只把它当兜底，避免同一个答案显示两遍。
+            if let Some(text) = parsed.assistant_delta.take() {
+                parsed.fallback_answer = Some(text);
+            }
         }
+        // Qwen 是 Gemini CLI 的分叉，历史上出现过这种单条 message 形状。本机实测
+        // 的流里没有它（只有 stream_event / assistant / user / system / result），
+        // 但支持它只要几行，留着比赌一次采样稳妥——注意这是 Qwen 自己的解析分支，
+        // 不是再去借别家 CLI 的解析器。
+        "message"
+            if value.get("role").and_then(Value::as_str) == Some("assistant")
+                && parsed.assistant_delta.is_none() =>
+        {
+            let text = extract_text_content(value.get("content").unwrap_or(&Value::Null));
+            if !text.is_empty() {
+                parsed.assistant_delta = Some(text);
+            }
+        }
+        _ => {}
     }
-    let gemini = parse_gemini_line(value);
-    let opencode = parse_opencode_line(value);
     if parsed.session_id.is_none() {
-        parsed.session_id = gemini.session_id.or(opencode.session_id);
-    }
-    if parsed.assistant_delta.is_none() && !is_full_assistant {
-        parsed.assistant_delta = gemini.assistant_delta.or(opencode.assistant_delta);
-    }
-    if parsed.activities.is_empty() {
-        parsed.activities = if gemini.activities.is_empty() {
-            opencode.activities
-        } else {
-            gemini.activities
-        };
-    }
-    if parsed.notice.is_none() {
-        parsed.notice = gemini.notice;
-    }
-    if parsed.error.is_none() {
-        parsed.error = gemini.error.or(opencode.error);
+        parsed.session_id = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
     }
     parsed
 }
@@ -577,7 +517,6 @@ fn parse_qwen_line(value: &Value) -> ParsedLine {
 fn parse_line(protocol: HeadlessProtocol, value: &Value) -> ParsedLine {
     match protocol {
         HeadlessProtocol::AnthropicMessages => parse_anthropic_line(value),
-        HeadlessProtocol::GeminiStream => parse_gemini_line(value),
         HeadlessProtocol::OpenCodeJson => parse_opencode_line(value),
         HeadlessProtocol::QwenStream => parse_qwen_line(value),
     }
@@ -724,22 +663,9 @@ fn prune_paste_files(dir: &std::path::Path, keep: usize) {
     }
 }
 
-fn prompt_with_attachments(
-    prompt: &str,
-    paths: &[std::path::PathBuf],
-    provider_id: &str,
-) -> String {
+fn prompt_with_attachments(prompt: &str, paths: &[std::path::PathBuf]) -> String {
     if paths.is_empty() {
         return prompt.to_string();
-    }
-    if provider_id == "gemini" {
-        // Gemini CLI 原生支持 @路径 引用图片。
-        let refs = paths
-            .iter()
-            .map(|path| format!("@{}", path.display()))
-            .collect::<Vec<_>>()
-            .join(" ");
-        return format!("{prompt}\n\n{refs}");
     }
     let list = paths
         .iter()
@@ -771,7 +697,7 @@ fn push_model_args(command: &mut Command, spec_id: &str, model: &str) {
         return;
     }
     match spec_id {
-        "grok" | "gemini" => {
+        "grok" => {
             command.args(["-m", model]);
         }
         _ => {
@@ -946,20 +872,6 @@ fn provider_command_with_slash(
             push_effort_args(&mut command, spec.id, effort);
             command.args(["--single", prompt]);
         }
-        "gemini" => {
-            command.args([
-                "--output-format",
-                "stream-json",
-                "--approval-mode",
-                mode.id,
-                "--sandbox",
-            ]);
-            if !thread_id.is_empty() {
-                command.args(["--session-file", thread_id]);
-            }
-            push_model_args(&mut command, spec.id, model);
-            command.args(["--prompt", prompt]);
-        }
         "agy" => {
             // 实测两处一定会踩的坑：
             // 1. prompt 必须附在 --print 上。写成 `--print ... -- <prompt>` 会被
@@ -1068,35 +980,6 @@ fn validate_session_for_project(
     validate_session_for_project_with_home(project_path, provider_id, session_id, &home)
 }
 
-fn gemini_file_session_id(path: &Path) -> Option<String> {
-    const GEMINI_SESSION_METADATA_READ_BYTES: u64 = 128 * 1024;
-    let metadata = std::fs::metadata(path).ok()?;
-    if !metadata.is_file() {
-        return None;
-    }
-    let mut raw = String::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(GEMINI_SESSION_METADATA_READ_BYTES)
-        .read_to_string(&mut raw)
-        .ok()?;
-    let mut values = serde_json::from_str::<Value>(raw.trim())
-        .ok()
-        .into_iter()
-        .chain(
-            raw.lines()
-                .filter_map(|line| serde_json::from_str(line).ok()),
-        );
-    values.find_map(|value| {
-        value
-            .get("sessionId")
-            .or_else(|| value.get("session_id"))
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty() && id.len() <= 1_024)
-            .map(str::to_string)
-    })
-}
-
 fn validate_session_for_project_with_home(
     project_path: &str,
     provider_id: &str,
@@ -1106,55 +989,19 @@ fn validate_session_for_project_with_home(
     if session_id.is_empty() {
         return Ok(String::new());
     }
-    if provider_id == "gemini" && !Path::new(session_id).is_absolute() {
-        let history = crate::project_sessions::list_project_history_with_home(project_path, home);
-        let matching_path = history
-            .groups
-            .iter()
-            .find(|group| group.tool == "gemini")
-            .into_iter()
-            .flat_map(|group| &group.sessions)
-            .find(|session| {
-                gemini_file_session_id(Path::new(&session.id)).as_deref() == Some(session_id)
-            })
-            .map(|session| session.id.clone())
-            .ok_or_else(|| "这个 Gemini 会话不属于当前项目，无法续接".to_string())?;
-        crate::project_sessions::preview_project_session_with_home(
-            project_path,
-            provider_id,
-            &matching_path,
-            home,
+    crate::project_sessions::preview_project_session_with_home(
+        project_path,
+        provider_id,
+        session_id,
+        home,
+    )
+    .map_err(|_| {
+        format!(
+            "这个 {} 会话不属于当前项目，无法续接",
+            provider_label(provider_id)
         )
-        .map_err(|_| "这个 Gemini 会话不属于当前项目，无法续接".to_string())?;
-        std::fs::canonicalize(matching_path)
-            .map_err(|_| "这个 Gemini 会话文件不可访问，无法续接".to_string())
-            .map(|path| path.to_string_lossy().into_owned())
-    } else if provider_id == "gemini" {
-        crate::project_sessions::preview_project_session_with_home(
-            project_path,
-            provider_id,
-            session_id,
-            home,
-        )
-        .map_err(|_| "这个 Gemini 会话不属于当前项目，无法续接".to_string())?;
-        std::fs::canonicalize(session_id)
-            .map_err(|_| "这个 Gemini 会话文件不可访问，无法续接".to_string())
-            .map(|path| path.to_string_lossy().into_owned())
-    } else {
-        crate::project_sessions::preview_project_session_with_home(
-            project_path,
-            provider_id,
-            session_id,
-            home,
-        )
-        .map_err(|_| {
-            format!(
-                "这个 {} 会话不属于当前项目，无法续接",
-                provider_label(provider_id)
-            )
-        })?;
-        Ok(session_id.to_string())
-    }
+    })?;
+    Ok(session_id.to_string())
 }
 
 fn handoff_prompt(
@@ -1230,7 +1077,6 @@ struct HeadlessContext {
     stderr_done: Arc<AtomicBool>,
     run_id: String,
     provider_id: String,
-    project_path: String,
     protocol: HeadlessProtocol,
 }
 
@@ -1272,7 +1118,6 @@ fn run_headless(stdout: std::process::ChildStdout, context: HeadlessContext) {
         stderr_done,
         run_id,
         provider_id,
-        project_path,
         protocol,
     } = context;
     let mut reader = BufReader::new(stdout);
@@ -1496,26 +1341,6 @@ fn run_headless(stdout: std::process::ChildStdout, context: HeadlessContext) {
             json!({ "message": message }),
         );
     } else {
-        // Gemini stream-json reports a UUID while the history UI identifies a
-        // session by its canonical file path.  Once the process has exited the
-        // file is expected to be durable, so safely resolve it again and give
-        // the UI the canonical identity for selection and deletion state.
-        if provider_id == "gemini" && !last_thread_id.is_empty() {
-            if let Ok(session_file) =
-                validate_session_for_project(&project_path, &provider_id, &last_thread_id)
-            {
-                let session_file = bounded_utf8(&session_file, 1_024);
-                if session_file != last_thread_id && normalized_events < MAX_NORMALIZED_EVENTS {
-                    emit(
-                        &app,
-                        &run_id,
-                        &provider_id,
-                        "thread",
-                        json!({ "threadId": session_file }),
-                    );
-                }
-            }
-        }
         if assistant_bytes == 0 && !fallback_answer.is_empty() {
             emit(
                 &app,
@@ -1723,7 +1548,6 @@ fn start_headless(
         stderr_done,
         run_id: run_id.clone(),
         provider_id: spec.id.to_string(),
-        project_path: cwd.to_string_lossy().into_owned(),
         protocol: spec.protocol,
     };
     std::thread::spawn(move || run_headless_guarded(stdout, context));
@@ -1829,7 +1653,7 @@ pub fn start(
     if !attachment_paths.is_empty() && slash.is_some() {
         return Err("执行 / 命令时暂不支持图片附件；请去掉图片直接发送，或先执行命令".into());
     }
-    let prompt = prompt_with_attachments(&prompt, &attachment_paths, &provider_id);
+    let prompt = prompt_with_attachments(&prompt, &attachment_paths);
     crate::codex_chat::validate_prompt(&prompt)?;
 
     if provider_id == "codex" {
@@ -1895,12 +1719,12 @@ pub fn approve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn provider_registry_only_accepts_registered_headless_clis() {
         assert!(provider_spec("claude").is_some());
-        assert!(provider_spec("gemini").is_some());
+        // Gemini 已整体移除：不再登记，也不该被任何路径解析出来。
+        assert!(provider_spec("gemini").is_none());
         assert!(provider_spec("qwen").is_some());
         assert!(provider_spec("opencode").is_some());
         assert!(provider_spec("mimo").is_some());
@@ -2007,7 +1831,7 @@ mod tests {
         }
 
         // 传下去的永远是模式表里的原生取值，不是 Roster 自己编的词。
-        for id in ["claude", "gemini", "qwen", "agy"] {
+        for id in ["claude", "qwen", "agy"] {
             let spec = provider_spec(id).unwrap();
             for mode in crate::conversation_modes::modes_for(id) {
                 let command = provider_command_with_slash(
@@ -2122,7 +1946,6 @@ mod tests {
             // Grok 的只读靠 --permission-mode plan，不再靠 --sandbox：沙箱 profile
             // 是会话级的，钉死后换不了，会挡住同一条对话里切到写入档。
             ("grok", "streaming-messages-json", "plan"),
-            ("gemini", "stream-json", "plan"),
             ("agy", "stream-json", "plan"),
             ("qwen", "stream-json", "plan"),
             ("opencode", "json", "plan"),
@@ -2176,20 +1999,6 @@ mod tests {
         ] {
             assert!(claude_args.iter().any(|arg| arg == flag));
         }
-
-        let gemini = provider_command(
-            provider_spec("gemini").unwrap(),
-            fake.clone(),
-            Path::new("/tmp/proj"),
-            "检查项目",
-            "",
-            false,
-            "",
-            "",
-        );
-        assert!(gemini
-            .get_args()
-            .any(|arg| arg.to_string_lossy() == "--sandbox"));
 
         let qwen = provider_command(
             provider_spec("qwen").unwrap(),
@@ -2486,24 +2295,6 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--approval-mode", "plan"]));
 
-        let gemini = provider_command_with_slash(
-            provider_spec("gemini").unwrap(),
-            PathBuf::from("/bin/echo"),
-            Path::new("/tmp/proj"),
-            "/review 检查暂存区",
-            "",
-            crate::conversation_modes::default_mode("gemini"),
-            "",
-            "",
-            Some(&skill_invocation),
-        );
-        let gemini_args = gemini
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert!(gemini_args
-            .windows(2)
-            .any(|pair| pair == ["--prompt", "/review 检查暂存区"]));
         assert_eq!(
             codex_prompt_for_slash("原消息".into(), Some(&skill_invocation)),
             "$review 检查暂存区"
@@ -2636,19 +2427,6 @@ mod tests {
         }));
         assert_eq!(claude.session_id.as_deref(), Some("abc"));
         assert_eq!(claude.assistant_delta.as_deref(), Some("公开回答"));
-
-        let gemini = parse_gemini_line(&json!({
-            "type": "tool_use",
-            "tool_id": "tool-1",
-            "tool_name": "write_file",
-            "parameters": { "path": "/secret", "content": "private" }
-        }));
-        let activity = gemini.activities.first().unwrap();
-        assert_eq!(
-            activity.get("title").and_then(Value::as_str),
-            Some("更新项目文件")
-        );
-        assert!(activity.get("parameters").is_none());
 
         let opencode = parse_opencode_line(&json!({
             "type": "tool_use",
@@ -2805,68 +2583,9 @@ mod tests {
     }
 
     #[test]
-    fn gemini_history_uses_verified_session_file_not_resume_uuid() {
-        let spec = provider_spec("gemini").unwrap();
-        let command = provider_command(
-            spec,
-            PathBuf::from("/bin/echo"),
-            Path::new("/tmp/proj"),
-            "继续",
-            "/tmp/session-a1b2-c3.json",
-            false,
-            "",
-            "",
-        );
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert!(args
-            .windows(2)
-            .any(|pair| { pair == ["--session-file", "/tmp/session-a1b2-c3.json"] }));
-        assert!(!args.iter().any(|arg| arg == "--resume"));
-    }
-
-    #[test]
     fn completion_wait_returns_immediately_after_finish_signal() {
         let completion = Arc::new((Mutex::new(true), Condvar::new()));
         assert!(wait_for_completion(&completion, Duration::from_secs(60)));
-    }
-
-    #[test]
-    fn gemini_uuid_resolves_to_real_session_file_name_after_stream_json_upgrade() {
-        let home = tempfile::tempdir().unwrap();
-        let project = "/work/roster";
-        let chats = home.path().join(".gemini/tmp/project-1/chats");
-        std::fs::create_dir_all(&chats).unwrap();
-        std::fs::write(
-            home.path().join(".gemini/projects.json"),
-            format!(r#"{{"projects":{{"{project}":"project-1"}}}}"#),
-        )
-        .unwrap();
-        let file = chats.join("session-2026-08-24-0d9e8f7a.jsonl");
-        std::fs::write(
-            &file,
-            r#"{"event":"start","sessionId":"0d9e8f7a-1111-2222-3333-444455556666"}
-{"messages":[{"type":"user","content":"继续"}]}"#,
-        )
-        .unwrap();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&file)
-            .unwrap()
-            .write_all(&vec![b'x'; 1024 * 1024])
-            .unwrap();
-        assert_eq!(
-            validate_session_for_project_with_home(
-                project,
-                "gemini",
-                "0d9e8f7a-1111-2222-3333-444455556666",
-                home.path(),
-            )
-            .unwrap(),
-            std::fs::canonicalize(file).unwrap().to_string_lossy(),
-        );
     }
 
     fn attachment_input(id: &str, mime: &str, bytes: &[u8]) -> ConversationAttachmentInput {
@@ -2926,14 +2645,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_hint_lists_paths_and_gemini_uses_at_refs() {
+    fn prompt_hint_lists_attachment_paths() {
         let paths = vec![std::path::PathBuf::from("/tmp/paste-1.png")];
-        let hint = prompt_with_attachments("看看这个", &paths, "claude");
+        let hint = prompt_with_attachments("看看这个", &paths);
         assert!(hint.contains("看看这个"));
         assert!(hint.contains("/tmp/paste-1.png"));
         assert!(hint.contains("[图片附件]"));
-        let gemini = prompt_with_attachments("看看这个", &paths, "gemini");
-        assert!(gemini.ends_with("@/tmp/paste-1.png"));
-        assert_eq!(prompt_with_attachments("纯文本", &[], "claude"), "纯文本");
+        assert_eq!(prompt_with_attachments("纯文本", &[]), "纯文本");
     }
 }

@@ -57,18 +57,15 @@ export function isLiveTerminalSession(session) {
   return Boolean(session && status && status !== 'exited' && status !== 'failed');
 }
 
+/**
+ * 会话 ID 是否指同一条。以前 Gemini 用文件路径当 ID、需要按文件名兜底比较，
+ * Gemini 已整体移除，剩下各家的 ID 都是直接可比的字符串。
+ */
 export function sameHistorySessionId(tool, left, right) {
   const a = String(left || '').trim();
   const b = String(right || '').trim();
   if (!a || !b) return false;
-  if (a === b) return true;
-  if (tool !== 'gemini') return false;
-  const na = normalizeProjectMemoryCwd(a);
-  const nb = normalizeProjectMemoryCwd(b);
-  if (na === nb) return true;
-  const fileA = na.split(/[\\/]/).pop();
-  const fileB = nb.split(/[\\/]/).pop();
-  return Boolean(fileA && fileA === fileB && fileA.startsWith('session-'));
+  return a === b;
 }
 
 export function filterHistoryGroups(groups, query) {

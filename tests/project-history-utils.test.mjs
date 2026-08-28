@@ -31,11 +31,6 @@ const groups = [
     label: 'Codex',
     sessions: [{ id: 'x-1', title: '打tag吧', preview: '给当前版本打 tag' }],
   },
-  {
-    tool: 'gemini',
-    label: 'Gemini',
-    sessions: [{ id: '/Users/lucky/.gemini/tmp/app/chats/session-1.json', title: '你是哪个模型' }],
-  },
 ];
 
 test('历史会话按标题、预览和工具名过滤，并丢掉空组', () => {
@@ -45,7 +40,7 @@ test('历史会话按标题、预览和工具名过滤，并丢掉空组', () =>
   assert.equal(filtered[0].sessions[0].id, 'c-new');
   assert.equal(filterHistoryGroups(groups, 'codex')[0].tool, 'codex');
   assert.equal(filterHistoryGroups(groups, '没有这个').length, 0);
-  assert.equal(filterHistoryGroups(groups, '  ').length, 3);
+  assert.equal(filterHistoryGroups(groups, '  ').length, 2);
 });
 
 test('从运行中的续接命令解析指定会话 ID', () => {
@@ -54,7 +49,6 @@ test('从运行中的续接命令解析指定会话 ID', () => {
   assert.equal(extractResumedSessionId('codex resume session-2'), 'session-2');
   assert.equal(extractResumedSessionId('codex resume --last'), '');
   assert.equal(extractResumedSessionId('opencode --session ses_1'), 'ses_1');
-  assert.equal(extractResumedSessionId(resumeCliCommand('gemini', "/tmp/it's.json")), "/tmp/it's.json");
   assert.equal(extractResumedSessionId('agy --conversation conv-1'), 'conv-1');
   assert.equal(extractResumedSessionId('claude --continue'), '');
 });
@@ -80,11 +74,10 @@ test('运行中标签按续接 ID 对齐历史行，泛化续接只标该工具�
   assert.equal(runningTerminalIdForHistory(kitOnly, 'claude', 'c-new'), '');
 });
 
-test('Gemini 历史 ID 可用完整路径或文件名对齐', () => {
-  assert.equal(
-    sameHistorySessionId('gemini', '/Users/lucky/.gemini/tmp/app/chats/session-1.json', 'session-1.json'),
-    true,
-  );
+test('会话 ID 直接按字符串比对，项目路径末尾斜杠不影响判定', () => {
+  // Gemini 曾用文件路径当 ID、需要按文件名兜底；它已整体移除，不再有这种特例。
+  assert.equal(sameHistorySessionId('claude', 'abc-1', 'abc-1'), true);
+  assert.equal(sameHistorySessionId('claude', '/tmp/a/session-1.json', 'session-1.json'), false);
   assert.equal(sameProjectCwd('/Users/lucky/git/app/', '/Users/lucky/git/app'), true);
 });
 
