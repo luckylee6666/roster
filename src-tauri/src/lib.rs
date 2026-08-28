@@ -3141,28 +3141,6 @@ async fn oauth_usage() -> Result<usage::OAuthUsage, String> {
 }
 
 /// 刷新菜单栏托盘标题为「5h X% · 周 Y%」（OAuth 限流用量，走 60s 缓存）。
-fn update_tray_usage(app: &AppHandle) {
-    let u = usage::fetch_oauth_usage();
-    let title = if u.ok {
-        let base = format!(
-            "5h {}% · 周 {}%",
-            u.five_hour.utilization.round() as i64,
-            u.seven_day.utilization.round() as i64
-        );
-        // 过期回退（实时刷新失败）：加感叹号提示，别把旧值伪装成现值
-        if u.stale {
-            format!("⚠ {base}")
-        } else {
-            base
-        }
-    } else {
-        "用量 —".to_string()
-    };
-    if let Some(tray) = app.tray_by_id("usage-tray") {
-        let _ = tray.set_title(Some(&title));
-    }
-}
-
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -3245,14 +3223,12 @@ pub fn run() {
             }
             // 菜单栏托盘：常驻显示 5h / 周限流用量，菜单可打开主窗/刷新/退出
             let show_i = MenuItem::with_id(app, "tray_show", "打开 Roster", true, None::<&str>)?;
-            let refresh_i = MenuItem::with_id(app, "tray_refresh", "刷新用量", true, None::<&str>)?;
             let log_i = MenuItem::with_id(app, "tray_log", "打开日志", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
             let tray_menu = Menu::with_items(
                 app,
                 &[
                     &show_i as &dyn tauri::menu::IsMenuItem<_>,
-                    &refresh_i,
                     &log_i,
                     &quit_i,
                 ],
@@ -3260,7 +3236,6 @@ pub fn run() {
             let mut tray_builder = TrayIconBuilder::with_id("usage-tray")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(true)
-                .title("用量…")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "tray_show" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -3269,7 +3244,6 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
-                    "tray_refresh" => update_tray_usage(app),
                     "tray_log" => {
                         if let Err(e) = open_log() {
                             log_warn!("打开日志失败：{e}");
@@ -3284,12 +3258,6 @@ pub fn run() {
                 tray_builder = tray_builder.icon(icon);
             }
             tray_builder.build(app)?;
-            // 后台每 60s 刷新托盘标题（首次会触发钥匙串授权）
-            let tray_app = app.handle().clone();
-            std::thread::spawn(move || loop {
-                update_tray_usage(&tray_app);
-                std::thread::sleep(std::time::Duration::from_secs(60));
-            });
             // 手机端服务不在启动时常驻：PIN 随机化 + 端口监听都推迟到用户首次打开
             // 「手机远程」面板（terminal_remote_info → ensure_remote_started）。
             // 不用该功能就永远不对外暴露端口。
