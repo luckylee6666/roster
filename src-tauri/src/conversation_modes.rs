@@ -155,8 +155,23 @@ const AGY_MODES: &[ConversationMode] = &[
     mode("accept-edits", "自动接受修改", "文件改动直接生效", true),
 ];
 
+// OpenCode 与 MiMo 的 plan / build 都是真实存在的 primary agent（`<cli> agent list`
+// 可列出），且 plan 的只读是**权限层**的硬禁令而非提示词：源码里
+// `edit: { "*": "deny" }`，描述就叫 "Plan mode. Disallows all edit tools."。
+//
+// 两家在这一点上有分叉，记下来免得以后误以为等价：
+// - MiMo 在 user 配置合并**之后**重新追加 edit 禁令，用户配置无法放松；
+// - OpenCode 是 user 最后合并，所以用户自己的 opencode 配置**可以**覆盖它。
+// 另外两家都刻意没把 `bash` 纳入禁令（源码注释明说"留给模型自己的只读自觉"），
+// 所以理论上能用 shell 绕过——实测两家都拒绝了这么做。
+// 因此提示语只承诺能担保的那部分：编辑工具被禁用。
 const AGENT_MODES: &[ConversationMode] = &[
-    mode("plan", "只读计划", "用内置 plan agent，只读不写", false),
+    mode(
+        "plan",
+        "只读计划",
+        "用内置 plan agent，编辑工具被禁用",
+        false,
+    ),
     mode(
         "build",
         "可改工作区",
