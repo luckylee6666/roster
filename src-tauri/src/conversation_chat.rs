@@ -858,9 +858,11 @@ fn spawn_stderr_tail_drain(
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn provider_command(
     spec: &ProviderSpec,
     binary: PathBuf,
+    cwd: &Path,
     prompt: &str,
     thread_id: &str,
     allow_write: bool,
@@ -874,13 +876,17 @@ fn provider_command(
         .find(|entry| entry.writes == allow_write)
         .copied()
         .unwrap_or_else(|| crate::conversation_modes::default_mode(spec.id));
-    provider_command_with_slash(spec, binary, prompt, thread_id, mode, model, effort, None)
+    provider_command_with_slash(
+        spec, binary, cwd, prompt, thread_id, mode, model, effort, None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn provider_command_with_slash(
     spec: &ProviderSpec,
     binary: PathBuf,
+    // agy 是项目注册制的，不认进程 cwd，必须显式 --add-dir 绑定，所以这里要拿到它。
+    cwd: &Path,
     prompt: &str,
     thread_id: &str,
     mode: crate::conversation_modes::ConversationMode,
@@ -955,14 +961,25 @@ fn provider_command_with_slash(
             command.args(["--prompt", prompt]);
         }
         "agy" => {
+            // 实测两处一定会踩的坑：
+            // 1. prompt 必须附在 --print 上。写成 `--print ... -- <prompt>` 会被
+            //    直接拒（exit 2，"Attach the prompt to the flag"），一轮都跑不起来。
+            // 2. 必须用 --add-dir 绑定项目目录。agy 是项目注册制的，不认进程 cwd；
+            //    不绑就在 ~/.gemini/antigravity-cli/scratch/ 里干活，碰不到用户项目。
+            //
+            // 另外：--disable-slash-commands 会让 `--mode plan` 不生效（agy 自己会
+            // warning）。目前安全属性仍然成立——实测 agy 默认档同样不写文件——但这
+            // 是巧合不是保证，改这里前先重测只读档到底写不写。
+            command.arg(format!("--print={prompt}"));
             command.args([
-                "--print",
                 "--output-format",
                 "stream-json",
                 "--mode",
                 mode.id,
                 "--sandbox",
+                "--add-dir",
             ]);
+            command.arg(cwd);
             if slash.is_none() {
                 command.arg("--disable-slash-commands");
             }
@@ -971,7 +988,6 @@ fn provider_command_with_slash(
             }
             push_model_args(&mut command, spec.id, model);
             push_effort_args(&mut command, spec.id, effort);
-            command.args(["--", prompt]);
         }
         "opencode" | "mimo" => {
             // `--pure` disables third-party plugins. Do not use the dangerous
@@ -1606,6 +1622,7 @@ fn start_headless(
     let mut command = provider_command_with_slash(
         spec,
         binary,
+        &cwd,
         &prompt,
         &thread_id,
         mode,
@@ -1892,6 +1909,7 @@ mod tests {
         let grok = provider_command(
             provider_spec("grok").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "写点东西",
             "",
             true,
@@ -1925,6 +1943,7 @@ mod tests {
         let fresh_read_only = provider_command(
             provider_spec("grok").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "看看就好",
             "",
             false,
@@ -1955,6 +1974,7 @@ mod tests {
             let resumed = provider_command(
                 provider_spec("grok").unwrap(),
                 fake.clone(),
+                Path::new("/tmp/proj"),
                 "接着写",
                 "01a04392-905f-7a71-9d2b-23a9277acd6b",
                 allow_write,
@@ -1987,6 +2007,7 @@ mod tests {
                 let command = provider_command_with_slash(
                     spec,
                     fake.clone(),
+                    Path::new("/tmp/proj"),
                     "你好",
                     "",
                     *mode,
@@ -2008,6 +2029,47 @@ mod tests {
     }
 
     #[test]
+    fn agy_attaches_the_prompt_and_binds_the_project_directory() {
+        // 两处都是实测踩出来的，不是照文档写的：
+        // 1. prompt 必须附在 --print 上，写成 `-- <prompt>` 会 exit 2，一轮都跑不起来。
+        // 2. agy 不认进程 cwd，不用 --add-dir 绑定就会在
+        //    ~/.gemini/antigravity-cli/scratch/ 里写文件，碰不到用户项目。
+        let command = provider_command(
+            provider_spec("agy").unwrap(),
+            PathBuf::from("/bin/echo"),
+            Path::new("/tmp/my-project"),
+            "创建 a.txt",
+            "",
+            true,
+            "",
+            "",
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            args.iter().any(|arg| arg == "--print=创建 a.txt"),
+            "prompt 必须附在 --print 上，实际参数：{args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--"),
+            "不能再用 `--` 传 prompt，agy 会直接拒"
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--add-dir", "/tmp/my-project"]),
+            "必须绑定项目目录，否则写到 agy 自己的 scratch 里"
+        );
+        // 写入档仍然用 agy 自己的取值，不自造。
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--mode", "accept-edits"]),
+            "写入档用 agy 自己的 accept-edits"
+        );
+    }
+
+    #[test]
     fn provider_commands_use_structured_output_and_explicit_permission_modes() {
         let fake = PathBuf::from("/bin/echo");
         let cases = [
@@ -2023,22 +2085,35 @@ mod tests {
         ];
         for (id, format, permission) in cases {
             let spec = provider_spec(id).unwrap();
-            let command = provider_command(spec, fake.clone(), "你好 ; $()", "", false, "", "");
+            let command = provider_command(
+                spec,
+                fake.clone(),
+                Path::new("/tmp/proj"),
+                "你好 ; $()",
+                "",
+                false,
+                "",
+                "",
+            );
             let args = command
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             assert!(args.iter().any(|arg| arg == format), "{id} 缺结构化输出");
             assert!(args.iter().any(|arg| arg == permission), "{id} 缺只读模式");
-            assert!(
-                args.iter().any(|arg| arg == "你好 ; $()"),
-                "{id} prompt 未按参数传递"
-            );
+            // agy 的 prompt 附在 --print 上（它拒绝 `-- <prompt>`），其余按独立参数传。
+            let prompt_passed = if id == "agy" {
+                args.iter().any(|arg| arg == "--print=你好 ; $()")
+            } else {
+                args.iter().any(|arg| arg == "你好 ; $()")
+            };
+            assert!(prompt_passed, "{id} prompt 未按参数传递");
         }
 
         let claude = provider_command(
             provider_spec("claude").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "检查项目",
             "",
             false,
@@ -2060,6 +2135,7 @@ mod tests {
         let gemini = provider_command(
             provider_spec("gemini").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "检查项目",
             "",
             false,
@@ -2073,6 +2149,7 @@ mod tests {
         let qwen = provider_command(
             provider_spec("qwen").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "检查项目",
             "qwen-session",
             false,
@@ -2098,6 +2175,7 @@ mod tests {
             let command = provider_command(
                 provider_spec(id).unwrap(),
                 fake.clone(),
+                Path::new("/tmp/proj"),
                 "检查项目",
                 "session-1",
                 true,
@@ -2133,6 +2211,7 @@ mod tests {
         let grok = provider_command(
             provider_spec("grok").unwrap(),
             fake,
+            Path::new("/tmp/proj"),
             "检查项目",
             "",
             false,
@@ -2150,6 +2229,7 @@ mod tests {
         let claude_effort = provider_command(
             provider_spec("claude").unwrap(),
             PathBuf::from("/bin/echo"),
+            Path::new("/tmp/proj"),
             "检查项目",
             "",
             false,
@@ -2182,6 +2262,7 @@ mod tests {
             let command = provider_command(
                 provider_spec(id).unwrap(),
                 PathBuf::from("/bin/echo"),
+                Path::new("/tmp/proj"),
                 "--help 只是用户文本",
                 "",
                 false,
@@ -2192,11 +2273,25 @@ mod tests {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
-            assert!(
-                args.windows(2)
-                    .any(|pair| pair == ["--", "--help 只是用户文本"]),
-                "{id} 必须用 -- 保护位置 prompt"
-            );
+            // 要守的性质是"用户文本永远不会被当成选项解析"。多数 CLI 用 `--`
+            // 终结符达成；agy 达不成——它明确拒绝 `-- <prompt>` 这种写法，改用
+            // `--print=<prompt>` 把文本附在选项上，同样不可能被解析成独立选项。
+            if id == "agy" {
+                assert!(
+                    args.iter().any(|arg| arg == "--print=--help 只是用户文本"),
+                    "agy 必须把 prompt 附在 --print 上"
+                );
+                assert!(
+                    !args.iter().any(|arg| arg == "--help 只是用户文本"),
+                    "agy 不能让用户文本成为独立参数"
+                );
+            } else {
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--", "--help 只是用户文本"]),
+                    "{id} 必须用 -- 保护位置 prompt"
+                );
+            }
         }
     }
 
@@ -2217,6 +2312,7 @@ mod tests {
         let opencode = provider_command_with_slash(
             provider_spec("opencode").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "/team/review 检查暂存区",
             "",
             crate::conversation_modes::default_mode("opencode"),
@@ -2244,6 +2340,7 @@ mod tests {
         let opencode_skill = provider_command_with_slash(
             provider_spec("opencode").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "/review 检查暂存区",
             "",
             crate::conversation_modes::default_mode("opencode"),
@@ -2263,6 +2360,7 @@ mod tests {
         let mimo = provider_command_with_slash(
             provider_spec("mimo").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "/review 检查暂存区",
             "",
             crate::conversation_modes::default_mode("mimo"),
@@ -2285,6 +2383,7 @@ mod tests {
         let mimo_command = provider_command_with_slash(
             provider_spec("mimo").unwrap(),
             fake.clone(),
+            Path::new("/tmp/proj"),
             "/team/review --model 不应成为进程参数",
             "",
             crate::conversation_modes::default_mode("mimo"),
@@ -2307,6 +2406,7 @@ mod tests {
             let command = provider_command_with_slash(
                 provider_spec(id).unwrap(),
                 fake.clone(),
+                Path::new("/tmp/proj"),
                 "/review 检查暂存区",
                 "",
                 crate::conversation_modes::default_mode(id),
@@ -2324,6 +2424,7 @@ mod tests {
         let qwen = provider_command_with_slash(
             provider_spec("qwen").unwrap(),
             fake,
+            Path::new("/tmp/proj"),
             "/review 检查暂存区",
             "",
             crate::conversation_modes::default_mode("qwen"),
@@ -2343,6 +2444,7 @@ mod tests {
         let gemini = provider_command_with_slash(
             provider_spec("gemini").unwrap(),
             PathBuf::from("/bin/echo"),
+            Path::new("/tmp/proj"),
             "/review 检查暂存区",
             "",
             crate::conversation_modes::default_mode("gemini"),
@@ -2663,6 +2765,7 @@ mod tests {
         let command = provider_command(
             spec,
             PathBuf::from("/bin/echo"),
+            Path::new("/tmp/proj"),
             "继续",
             "/tmp/session-a1b2-c3.json",
             false,
