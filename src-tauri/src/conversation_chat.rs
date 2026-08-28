@@ -995,6 +995,12 @@ fn provider_command_with_slash(
             // read-only policy; an explicitly writable turn keeps the default
             // build agent without bypassing its permission rules.
             command.args(["run", "--format", "json", "--pure"]);
+            // 必须显式 --dir 绑定项目。实测 OpenCode 不认我们给子进程设的 cwd：
+            // 它会用父进程（也就是 Roster 自己）的工作目录，于是助手跑在
+            // "Roster 被启动的那个目录"里读写别人的项目。MiMo 实测认 cwd，但
+            // 同样显式传，别把正确性押在两家行为一致上。
+            command.arg("--dir");
+            command.arg(cwd);
             if !allow_write {
                 command.args(["--agent", "plan"]);
             }
@@ -2025,6 +2031,45 @@ mod tests {
                     mode.id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn opencode_and_mimo_bind_the_project_directory_explicitly() {
+        // 实测 OpenCode 不认我们给子进程设的 cwd，会用父进程（Roster 自己）的
+        // 工作目录——助手于是在别的项目里读写。MiMo 认 cwd，但也一并显式传，
+        // 不把正确性押在两家行为一致上。
+        for id in ["opencode", "mimo"] {
+            let command = provider_command(
+                provider_spec(id).unwrap(),
+                PathBuf::from("/bin/echo"),
+                Path::new("/tmp/my-project"),
+                "看看这个项目",
+                "",
+                false,
+                "",
+                "",
+            );
+            let args = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--dir", "/tmp/my-project"]),
+                "{id} 必须显式绑定项目目录，实际参数：{args:?}"
+            );
+            // 只读轮仍然用内置 plan agent，不靠 --auto / --yolo 这类绕过参数。
+            assert!(
+                args.windows(2).any(|pair| pair == ["--agent", "plan"]),
+                "{id} 只读轮要用 plan agent"
+            );
+            assert!(
+                !args.iter().any(|arg| arg == "--auto"
+                    || arg == "--yolo"
+                    || arg == "--dangerously-skip-permissions"),
+                "{id} 不得使用信任绕过参数"
+            );
         }
     }
 
