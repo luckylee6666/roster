@@ -892,7 +892,15 @@ fn provider_command_with_slash(
                 "--add-dir",
             ]);
             command.arg(cwd);
-            if slash.is_none() {
+            // `--disable-slash-commands` 的唯一职责，是拦住以 `/` 开头的用户文本被
+            // agy 当成自己的命令执行（Roster 认不出来的 `/xxx` 会照常作为普通 prompt
+            // 发下来，所以这个风险是真的）。但它有个副作用：实测会让 `--mode` 静默
+            // 失效——agy 自己会 warning，问它"你在什么模式"也答不上来，只有允许展开
+            // 时才回"规划模式"。
+            //
+            // 所以只在 prompt 真可能被读成命令时才加：不以 `/` 开头的普通消息，这个
+            // 标志什么也挡不住，却会让我们声称的只读档变成"其实是默认档，恰好不写"。
+            if slash.is_none() && prompt.trim_start().starts_with('/') {
                 command.arg("--disable-slash-commands");
             }
             if !thread_id.is_empty() {
@@ -1855,6 +1863,45 @@ mod tests {
                     mode.id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn agy_only_disables_slash_expansion_when_the_prompt_could_be_a_command() {
+        // 实测：带 --disable-slash-commands 时 agy 会 warning "--mode plan has no
+        // effect"，问它在什么模式也答不上来；允许展开时才回"规划模式"。这个标志
+        // 只用来拦以 `/` 开头的用户文本，普通消息加它等于白白让档位失效。
+        let args_for = |prompt: &str| {
+            provider_command(
+                provider_spec("agy").unwrap(),
+                PathBuf::from("/bin/echo"),
+                Path::new("/tmp/proj"),
+                prompt,
+                "",
+                false,
+                "",
+                "",
+            )
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+        };
+
+        let plain = args_for("看看这个项目");
+        assert!(
+            !plain.iter().any(|arg| arg == "--disable-slash-commands"),
+            "普通消息不该关掉展开，否则 --mode 会静默失效"
+        );
+        assert!(plain.windows(2).any(|pair| pair == ["--mode", "plan"]));
+
+        // 认不出来的 `/xxx` 会照常作为普通 prompt 发下来，这时必须拦住。
+        for prompt in ["/unknown-command 做点什么", "  /还是命令"] {
+            assert!(
+                args_for(prompt)
+                    .iter()
+                    .any(|arg| arg == "--disable-slash-commands"),
+                "以 / 开头的文本必须挡住命令展开：{prompt}"
+            );
         }
     }
 

@@ -3227,11 +3227,7 @@ pub fn run() {
             let quit_i = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
             let tray_menu = Menu::with_items(
                 app,
-                &[
-                    &show_i as &dyn tauri::menu::IsMenuItem<_>,
-                    &log_i,
-                    &quit_i,
-                ],
+                &[&show_i as &dyn tauri::menu::IsMenuItem<_>, &log_i, &quit_i],
             )?;
             let mut tray_builder = TrayIconBuilder::with_id("usage-tray")
                 .menu(&tray_menu)
