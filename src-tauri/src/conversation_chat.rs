@@ -1854,6 +1854,39 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "人工核对用：cargo test dump_shipped_argv -- --ignored --nocapture"]
+    fn dump_shipped_argv() {
+        // 把应用实际拼出的命令行打出来，和实测探针用的手写 argv 逐条对照。
+        for id in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
+            let Some(spec) = provider_spec(id) else {
+                println!("{id:10} （codex 走 app-server，不经这里）");
+                continue;
+            };
+            for writes in [false, true] {
+                let command = provider_command(
+                    spec,
+                    PathBuf::from(format!("/usr/local/bin/{id}")),
+                    Path::new("/Users/me/proj"),
+                    "创建 a.txt",
+                    "",
+                    writes,
+                    "",
+                    "",
+                );
+                let args = command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                println!(
+                    "{id:10} {:11} {}",
+                    if writes { "写入档" } else { "只读档" },
+                    args.join(" ")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn agy_only_disables_slash_expansion_when_the_prompt_could_be_a_command() {
         // 实测：带 --disable-slash-commands 时 agy 会 warning "--mode plan has no
         // effect"，问它在什么模式也答不上来；允许展开时才回"规划模式"。这个标志
