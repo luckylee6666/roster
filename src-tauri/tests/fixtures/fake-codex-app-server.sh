@@ -50,6 +50,12 @@ printf '{"id":2,"result":{"thread":{"id":"%s"}}}\n' "$thread_id"
 read_request turn
 printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-contract-1"}}}'
 
+if [ "$scenario" = "approval-then-die" ]; then
+  # 发出审批请求后立刻退出：用来验证"等审批时进程死了"不会把这一轮挂住。
+  printf '%s\n' '{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-contract-1","turnId":"turn-contract-1","itemId":"exec-approval-1","startedAtMs":1,"reason":"要联网","command":"curl x"}}'
+  exit 0
+fi
+
 if [ "$scenario" = "user-approval" ]; then
   # 带完整字段的审批请求：用来验"转给用户 → 等答复 → 回协议"这条路。
   printf '%s\n' '{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-contract-1","turnId":"turn-contract-1","itemId":"exec-approval-1","startedAtMs":1,"reason":"是否允许联网抓取 example.com？","command":"curl -sS https://example.com"}}'

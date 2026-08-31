@@ -603,6 +603,10 @@ struct ApprovalContext {
     event_sink: Arc<dyn ChatEventSink>,
     run_id: String,
     cancelled: Arc<AtomicBool>,
+    // 等审批期间我们不读 stdout，所以进程死了不会有任何动静。没有这两个，
+    // Codex 一旦在这时崩掉，界面会挂着「等你批准后继续」空等到整轮超时。
+    process: Arc<Mutex<Child>>,
+    turn_timed_out: Arc<AtomicBool>,
     pending: Arc<Mutex<Option<String>>>,
     rx: Receiver<ApprovalDecision>,
 }
@@ -656,6 +660,21 @@ fn wait_for_user_decision(
     let outcome = loop {
         if context.cancelled.load(Ordering::SeqCst) {
             break Err(String::new());
+        }
+        // 整轮超时的看门狗只设 turn_timed_out、不设 cancelled，这里要单独认。
+        if context.turn_timed_out.load(Ordering::SeqCst) {
+            break Err("等待你的批准时这一轮已超时".to_string());
+        }
+        // 进程已经退出就别再等人批准了——它已经没人接这个答复。
+        if context
+            .process
+            .lock()
+            .ok()
+            .and_then(|mut child| child.try_wait().ok())
+            .flatten()
+            .is_some()
+        {
+            break Err("Codex 在等待批准时退出了，这一轮已结束".to_string());
         }
         if Instant::now() >= deadline {
             break Err("等待你的批准超时，这一轮已停止".to_string());
@@ -1134,6 +1153,8 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         event_sink: event_sink.clone(),
         run_id: run_id.clone(),
         cancelled: cancelled.clone(),
+        process: process.clone(),
+        turn_timed_out: turn_timed_out.clone(),
         pending: pending_approval.clone(),
         rx,
     });
@@ -2114,6 +2135,57 @@ mod tests {
         .expect("启动 fake Codex app-server");
         assert_eq!(result.run_id, run_id);
         event_receiver
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_process_ends_the_turn_instead_of_waiting_for_an_answer() {
+        // 等审批时我们不读 stdout，进程死了不会有任何动静；没有失活检查的话，
+        // 界面会挂着「等你批准后继续」一直空等到整轮超时（一小时）。
+        let dir = std::env::temp_dir().join(format!("roster-approval-die-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let log_path = dir.join("fake.log");
+        let state = CodexChatState::default();
+        let events = contract_start_with_mode(
+            &state,
+            &dir,
+            &log_path,
+            "approval-then-die",
+            "",
+            true,
+            "request-approval",
+        );
+
+        receive_until_kind(&events, "approval");
+
+        // 必须很快收尾。整轮超时是一小时，所以这里卡住就意味着界面会挂着
+        // 「等你批准后继续」空等一小时；10 秒的上限足以把那种情况判成失败。
+        let mut settled = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while let Ok(event) =
+            events.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            settled.push(event);
+        }
+
+        let resolved = settled
+            .iter()
+            .find(|event| event.kind == "approval_resolved")
+            .expect("卡片要被收掉，不能留一张永远能点的");
+        assert_eq!(resolved.data["decision"], json!("cancelled"));
+        let error = settled
+            .iter()
+            .find(|event| event.kind == "error")
+            .expect("要告诉用户这一轮为什么结束了");
+        assert!(
+            error.data["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("退出"),
+            "错误信息要说清是进程退出，实际：{}",
+            error.data["message"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
