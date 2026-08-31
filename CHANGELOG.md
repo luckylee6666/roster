@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.3.3
+
+### English
+
+**Changed**
+- **Gemini has been removed.** It was the one CLI of the seven that could not be verified here — not installed, so no headless test of any tier was possible — and it was no longer needed in developer mode either. Its provider registration, permission tiers, `/model` and skill directories, history listing/preview/deletion/handoff, session parsing and resume command, registry entry and colour token are all gone. `~/.gemini/antigravity-cli/` belongs to agy, not Gemini, and is untouched; a regression test now pins that a Gemini session directory left on disk no longer appears in history while agy's history under the same parent keeps working.
+- Qwen's parser no longer borrows other CLIs'. It used to fall back to the Gemini and OpenCode parsers; testing showed neither ever fires for Qwen — its stream carries only Anthropic-shaped events, has no OpenCode `part` field, and its `result` uses `subtype`/`is_error` rather than the `status` the Gemini branch checked. Had that branch ever fired it would have told a Qwen user "Gemini 处理失败".
+- **The menu-bar tray no longer shows usage.** It reported only Claude's quota, which does not represent the state of someone switching between several CLIs, and a system-level menu bar is the wrong place for it. The "refresh usage" menu item and the 60-second background refresh (whose first run also triggered a keychain prompt) are gone with it. The header quota in the conversation workspace stays — it sits beside the assistant badge and belongs to that assistant.
+
+**Fixed**
+- **agy's read-only tier was never actually plan mode.** With `--disable-slash-commands` agy warns that `--mode` has no effect, and asked what mode it is in it cannot answer; without the flag it answers "规划模式". Read-only held only because agy's default tier happens not to write — a coincidence, not a guarantee. That flag exists solely to stop user text beginning with `/` from being executed as an agy command (Roster passes an unrecognised `/xxx` through as an ordinary prompt, so the risk is real), so it is now applied only when the prompt could actually be read as a command.
+- Changing the model through `/model` did not drop a reasoning level the new model lacks, unlike the tuning panel. Codex accepts an unsupported level silently and downgrades it, so the setting looked applied and did nothing.
+- A Codex process that died while an approval was pending left the turn hanging for up to an hour: the wait loop polled only the cancellation flag while the turn watchdog sets a different one, and no one reads stdout while waiting. It now also watches the turn timeout and the child process, and ends the turn with an explanation.
+- An assistant that no longer exists could persist in local preferences — only the format of the stored id was checked, not whether it is still registered — so after Gemini's removal its last user reopened the app to a badge for an assistant that is gone.
+- When all conversation slots are busy, the message no longer says "try again later" if the slots are held by turns waiting for your approval: waiting will not help, the approvals need answering.
+
+### 中文
+
+**变更**
+- **移除 Gemini。** 它是七家里唯一无法在本机验证的一家——没有安装，任何档位都做不了无头实测——开发模式也不再需要它。provider 登记、权限档、`/model` 与 skill 目录、历史列表/预览/删除/交接、会话解析与续接命令、登记表条目与色标全部移除。`~/.gemini/antigravity-cli/` 属于 agy 而非 Gemini，未受影响；新增回归测试钉住：Gemini 的会话目录即便留在磁盘上也不再出现在历史里，而同一父目录下的 agy 历史必须继续可用。
+- Qwen 的解析器不再借用别家。它此前会回退到 Gemini 与 OpenCode 两个解析器，实测这两条对 Qwen 一次都不会触发——它的流只有 Anthropic 形状的事件，没有 OpenCode 的 `part` 字段，`result` 用的是 `subtype`/`is_error` 而不是 Gemini 分支检查的 `status`。那条分支一旦真触发，还会给 Qwen 的用户报「Gemini 处理失败」。
+- **菜单栏托盘不再显示用量。** 它只报 Claude 一家的额度，代表不了在多家 CLI 之间切换的实际状态，挂在系统级菜单栏里也不合适。菜单里的「刷新用量」和每 60 秒刷新的后台线程（首次运行还会触发钥匙串授权）一并去掉。会话工作台顶栏的额度保留——它紧挨着助手徽标，显示的就是那位助手自己的额度。
+
+**修复**
+- **agy 的只读档此前并不是 plan 模式。** 带 `--disable-slash-commands` 时 agy 会 warning 说 `--mode` 无效，问它处于什么模式也答不上来；不带该标志它才回答「规划模式」。只读之所以成立，只是因为 agy 默认档恰好不写文件——巧合，不是保证。该标志的唯一职责是拦住以 `/` 开头的用户文本被当成 agy 命令执行（Roster 认不出的 `/xxx` 会照常作为普通 prompt 发下去，所以风险是真的），因此现在只在 prompt 真可能被读成命令时才加。
+- 通过 `/model` 换模型时没有像调音面板那样丢掉新模型不支持的推理强度。Codex 对不支持的档是静默收下再降级，于是设置看着生效、实际什么也没做。
+- 等待审批期间 Codex 进程死掉，会把这一轮挂住最多一小时：等待循环只轮询取消标志，而整轮超时的看门狗设的是另一个标志，且等待期间没有人读 stdout。现在同时盯整轮超时和子进程，进程退出就结束这一轮并说明原因。
+- 已不存在的助手会留在本地偏好里——存下来的 ID 只校验格式，不校验它还在不在登记表——于是 Gemini 移除后，上次用它的用户重开应用会看到一个已经没有的助手。
+- 对话名额占满时，如果占着名额的是等待你批准的轮次，不再提示「稍后再试」：再等也不会好，那些审批需要你去处理。
+
 ## v1.3.2
 
 ### English

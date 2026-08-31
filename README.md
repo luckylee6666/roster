@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.3.2** — every registered CLI was run headless one permission tier at a time, and all seven turned out to have a real fault: Qwen and Gemini could never write, agy failed on every turn and wrote into its own scratch directory, and OpenCode ran in Roster's own directory rather than the selected project. Also adds Codex 「请求批准」 with an approval prompt. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.3.3** — Gemini is removed (the one CLI that could not be verified here), agy's read-only tier now actually runs plan mode instead of relying on its default happening not to write, a Codex process that died while an approval was pending no longer hangs the turn, and the menu-bar tray no longer shows a Claude-only quota. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
