@@ -208,6 +208,16 @@ function flush(times = 24) {
   });
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function fixture({ projects, installed = ['claude'], focused = true, appView, history, t } = {}) {
   const byId = new Map(IDS.map(id => [id, new FakeEl(id.endsWith('-select') ? 'select' : 'div')]));
   const scroller = new FakeEl();
@@ -228,6 +238,9 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
   const tauriListeners = {};
   const chatEvents = [];
   const values = new Map();
+  let startGate = null;
+  let startError = '';
+  let attachmentGate = null;
   const document = {
     hidden: false,
     hasFocus: () => focused,
@@ -265,7 +278,11 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       if (command === 'project_context') {
         return { context: { exists: true, isRepo: true, filesMore: 0, files: changedFiles.map(file => ({ ...file })) } };
       }
-      if (command === 'conversation_chat_start') return null;
+      if (command === 'conversation_chat_start') {
+        if (startError) return Promise.reject(new Error(startError));
+        if (startGate) return startGate.promise;
+        return null;
+      }
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
       if (command === 'pick_attachment_images') return pickedImages;
@@ -299,7 +316,8 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
       }
       if (command === 'read_conversation_attachment_image') {
         if (!/\.(png|jpe?g|gif|webp)$/i.test(payload.path)) throw new Error('只支持 PNG、JPEG、GIF、WebP 图片');
-        return { kind: 'image', mimeType: 'image/png', dataUrl: `data:image/png;base64,AAAA${payload.path.length}` };
+        const media = { kind: 'image', mimeType: 'image/png', dataUrl: `data:image/png;base64,AAAA${payload.path.length}` };
+        return attachmentGate ? attachmentGate.promise.then(() => media) : media;
       }
       return null;
     },
@@ -332,6 +350,21 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
     setPickedImages: paths => { pickedImages = paths; },
     setSlashLists: lists => { slashLists = { models: [], efforts: [], ...lists }; },
     setUsage: payload => { oauthUsage = payload; },
+    setStartError: message => { startError = message; },
+    holdStart: () => { startGate = deferred(); },
+    releaseStart: (errorMessage = '') => {
+      const gate = startGate;
+      startGate = null;
+      if (!gate) return;
+      if (errorMessage) gate.reject(new Error(errorMessage));
+      else gate.resolve();
+    },
+    holdAttachmentReads: () => { attachmentGate = deferred(); },
+    releaseAttachmentReads: () => {
+      const gate = attachmentGate;
+      attachmentGate = null;
+      gate?.resolve();
+    },
     sessionTitles,
     manageOpens,
     fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
@@ -659,6 +692,79 @@ test('迟到的取消事件仍能覆盖已经完成的同一轮', async t => {
   fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'cancelled', data: {} });
   await flush();
   assert.match(fx.el('conversation-status').textContent, /已停止/);
+});
+
+test('启动失败时已经切走，失败也要还给发起那轮的项目', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
+  await flush();
+  fx.clickProject('a');
+  await flush();
+  fx.holdStart();
+  fx.el('conversation-composer').value = 'A 的问题';
+  fire(fx.el('conversation-send'), 'click');
+  fx.clickProject('b');
+  await flush();
+  fx.releaseStart('并发已满');
+  await flush();
+
+  assert.ok(
+    fx.toasts.some(item => /项目 A/.test(item.message) && /失败/.test(item.message)),
+    '切走的项目启动失败要有通知',
+  );
+  fx.clickProject('a');
+  await flush();
+  assert.ok(!fx.projectButton('a').classNames.has('is-running'), '启动失败的项目不能永远显示运行中');
+  fx.setStartError('');
+  await fx.send('再来一次');
+  assert.equal(fx.startedRuns().length, 2, '失败的项目必须还能继续对话');
+});
+
+test('附件读取期间切了项目，图片不能跟着跑进新项目的输入框', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
+  await flush();
+  fx.clickProject('a');
+  await flush();
+  fx.holdAttachmentReads();
+  fx.fireTauri('tauri://drag-drop', { paths: ['/tmp/x1.png', '/tmp/x2.png'] });
+  fx.clickProject('b');
+  await flush();
+  fx.releaseAttachmentReads();
+  await flush();
+  assert.equal(
+    fx.el('conversation-attachments').childNodes.length,
+    0,
+    '不能把 A 项目拖的图片挂到 B 项目的输入框',
+  );
+});
+
+test('斜杠菜单被 Escape 收起后，Enter 按字面发送', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.clickProject('a');
+  await flush();
+  const composer = fx.el('conversation-composer');
+  composer.value = '/new';
+  fire(composer, 'keydown', { key: 'Escape', preventDefault() {} });
+  await flush();
+  fire(fx.el('conversation-send'), 'click');
+  await flush();
+  assert.equal(fx.startedRuns().length, 1, '收起菜单后按字面发送，不再执行 /new');
+  assert.equal(fx.startedRuns()[0].prompt, '/new');
+});
+
+test('只附图片没有文字也能点发送，补的是兜底提示', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.clickProject('a');
+  await flush();
+  fx.setPickedImages(['/tmp/one.png']);
+  fire(fx.el('conversation-attach-image'), 'click');
+  await flush();
+  assert.equal(fx.el('conversation-send').disabled, false, '有图片就该能发送');
+  fire(fx.el('conversation-send'), 'click');
+  await flush();
+  assert.equal(fx.startedRuns().length, 1);
+  assert.equal(fx.startedRuns()[0].prompt, '请查看我粘贴的图片，结合图片回答。');
 });
 
 function useClipboard() {
@@ -1287,6 +1393,36 @@ test('模型和推理强度带助手归属，换助手时不会把上一家的�
   assert.deepEqual(fx.tuningRows(), ['mode'], 'Claude 这边确实没有模型列表');
 });
 
+test('用 /model 换模型，同样丢掉新模型不支持的强度', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex'], t });
+  await flush();
+  fx.setSlashLists({
+    models: [
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: ['low', 'high', 'max', 'ultra'] },
+      { id: 'gpt-5.5', label: 'GPT-5.5', efforts: ['low', 'high'] },
+    ],
+    efforts: ['low', 'high', 'max', 'ultra'].map(id => ({ id, label: id })),
+  });
+  fx.pickAssistant('codex');
+  await flush();
+
+  fx.pickTuning('model', 'gpt-5.6-sol');
+  fx.pickTuning('effort', 'ultra');
+  assert.match(fx.el('conversation-tuning-summary').textContent, /ultra/);
+
+  // 走斜杠命令换模型：这条路以前不清理强度，ultra 会被继续发给不支持它的模型，
+  // 而 Codex 只会静默降级、什么都不说。
+  const composer = fx.el('conversation-composer');
+  composer.value = '/model gpt-5.5';
+  fire(composer, 'keydown', { key: 'Enter', preventDefault() {}, shiftKey: false });
+  await flush();
+  assert.equal(
+    /ultra/.test(fx.el('conversation-tuning-summary').textContent),
+    false,
+    '/model 换模型后不该还挂着新模型不支持的强度',
+  );
+});
+
 test('Codex 的强度按所选模型过滤，换到不支持的模型就丢掉旧强度', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex'], t });
   await flush();
@@ -1310,10 +1446,19 @@ test('Codex 的强度按所选模型过滤，换到不支持的模型就丢掉�
   fx.pickTuning('effort', 'ultra');
 
   // gpt-5.5 没有 max / ultra：实测 Codex 会收下再悄悄降级，所以干脆别列。
+  assert.match(
+    fx.el('conversation-tuning-summary').textContent,
+    /ultra/,
+    '先确认 ultra 真的被选上了，否则下面那句否定断言等于没测',
+  );
+
   fx.pickTuning('model', 'gpt-5.5');
   assert.deepEqual(effortIds(), ['low', 'medium', 'high', 'xhigh']);
-  const summary = fx.el('conversation-tuning-toggle').textContent;
-  assert.equal(/ultra/.test(summary), false, '换了模型就不该还挂着 ultra');
+  assert.equal(
+    /ultra/.test(fx.el('conversation-tuning-summary').textContent),
+    false,
+    '换了模型就不该还挂着 ultra',
+  );
 });
 
 test('Codex 的完全访问权限单独标出来，不和普通写入模式混为一谈', async t => {

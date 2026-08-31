@@ -328,6 +328,19 @@ export function applyConversationChatEvent(state, envelope) {
 // Backward-compatible name for callers that have not yet migrated to generic events.
 export const applyCodexChatEvent = applyConversationChatEvent;
 
+// 展开状态和 DOM 复用都以「项目 + 消息 id」为键。历史消息若只按序号编号，
+// 同一项目先后打开两条会话，前一条的展开状态会串到后一条同序号的消息上，
+// 所以把会话身份揉进 id。这里只需要稳定、够短，不需要密码学强度。
+function historySessionKey(source, threadId) {
+  const raw = `${source}\u0000${String(threadId || '')}`;
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < raw.length; index += 1) {
+    hash ^= raw.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 export function loadConversationTranscript({
   projectId,
   threadId,
@@ -337,13 +350,14 @@ export function loadConversationTranscript({
 }) {
   const source = normalizedTool(sourceTool, normalizedTool(providerId, 'codex'));
   const provider = normalizedTool(providerId, source);
+  const sessionKey = historySessionKey(source, threadId);
   const normalized = Array.isArray(messages)
     ? messages
         .filter(message => message && (message.role === 'user' || message.role === 'assistant'))
         .map((message, index) => {
           const attachments = normalizeConversationAttachments(message.attachments);
           return {
-            id: `history-${index}`,
+            id: `history-${sessionKey}-${index}`,
             role: message.role,
             text: String(message.text || ''),
             ...(attachments.length ? { attachments } : {}),

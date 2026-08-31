@@ -536,7 +536,8 @@ export function installConversationMode({
   // 不打归属就会把上一家的数字留在新助手的徽标旁边。
   const EMPTY_USAGE = { providerId: '', text: '', level: 'ok', peak: 0, reset: '', blocked: false };
   let usage = EMPTY_USAGE;
-  let usageFetchedAt = 0;
+  // 额度节流按助手各自记时：全局一个时间戳会让"刚查过 A"挡住"第一次看 B"。
+  let usageFetchedAt = {};
   let usageRevision = 0;
   let deletingHistory = null;
   let resumeLatestOnHistory = false;
@@ -860,6 +861,18 @@ export function installConversationMode({
     });
   }
 
+  /**
+   * 换模型后，原来选的强度可能这个模型根本没有。留着只会静默失效——实测 Codex
+   * 会照单收下再降级、什么都不说。调音面板和 `/model` 命令都必须过这一道。
+   */
+  function dropEffortUnsupportedByModel(providerId) {
+    const kept = providerEfforts[providerId];
+    if (!kept) return;
+    if (activeSlashEfforts().some(item => item.id === kept)) return;
+    delete providerEfforts[providerId];
+    persistProviderEfforts();
+  }
+
   /** 模型、推理强度、模式：都是"这一轮怎么跑"的设置，收进同一个入口。 */
   function tuningSections() {
     const sections = [];
@@ -876,12 +889,7 @@ export function installConversationMode({
           if (id) providerModels[provider] = id;
           else delete providerModels[provider];
           persistProviderModels();
-          // 换了模型，原来选的强度可能这个模型根本没有；留着只会静默失效。
-          const kept = providerEfforts[provider];
-          if (kept && !activeSlashEfforts().some(item => item.id === kept)) {
-            delete providerEfforts[provider];
-            persistProviderEfforts();
-          }
+          dropEffortUnsupportedByModel(provider);
         },
       });
     }
@@ -1101,6 +1109,7 @@ export function installConversationMode({
     if (plan?.type === 'set-model') {
       providerModels[currentProvider().id] = plan.model;
       persistProviderModels();
+      dropEffortUnsupportedByModel(currentProvider().id);
       if (dom.composer) dom.composer.value = '';
       slashDismissed = true;
       syncComposer();
@@ -1861,9 +1870,9 @@ export function installConversationMode({
       renderAssistantBadge();
       return;
     }
-    if (!force && Date.now() - usageFetchedAt < maxAge) return;
+    if (!force && Date.now() - (usageFetchedAt[agent] || 0) < maxAge) return;
     const revision = ++usageRevision;
-    usageFetchedAt = Date.now();
+    usageFetchedAt[agent] = Date.now();
     try {
       const payload = await invoke(usageCommandForAgent(agent));
       if (destroyed || revision !== usageRevision) return;
@@ -2222,7 +2231,9 @@ export function installConversationMode({
     const busy = isRunning();
     const deleting = isDeletingHistory();
     const promptState = inspectConversationPrompt(dom.composer?.value);
-    const hasPrompt = !!promptState.prompt;
+    // 只附图片没有文字也算可发送：send() 会补一条兜底 prompt，别让按钮和
+    // Enter 两条入口行为不一致。
+    const hasPrompt = Boolean(promptState.prompt) || pendingAttachments.length > 0;
     if (dom.send) {
       dom.send.hidden = busy;
       dom.send.disabled = unavailable || deleting || !hasPrompt || promptState.tooLong;
@@ -2489,9 +2500,22 @@ export function installConversationMode({
         sourceTool: session.tool,
         id: session.id,
       });
-      if (destroyed || revision !== transcriptRevision || selectedProject?.id !== project.id) return;
-      if (isRunning()) return;
-      if (auto && (conversationHasOpenSession(state) || String(dom.composer?.value || '').trim())) return;
+      // 早退时不能把"正在打开对话"留在侧栏：下一次 history 渲染前它一直挂着。
+      const dropPendingLabel = () => {
+        if (dom.historyState) dom.historyState.textContent = '';
+      };
+      if (destroyed || revision !== transcriptRevision || selectedProject?.id !== project.id) {
+        if (revision === transcriptRevision) dropPendingLabel();
+        return;
+      }
+      if (isRunning()) {
+        dropPendingLabel();
+        return;
+      }
+      if (auto && (conversationHasOpenSession(state) || String(dom.composer?.value || '').trim())) {
+        dropPendingLabel();
+        return;
+      }
       state = loadConversationTranscript({
         projectId: project.id,
         providerId: session.tool,
@@ -2549,7 +2573,8 @@ export function installConversationMode({
       `确定删除这条 ${session.label} 历史对话吗？`,
       '确认功能不可用，未删除历史对话',
     );
-    if (!approved || !selectedProject || row?.dataset.status === 'deleting') {
+    if (!approved || !selectedProject || selectedProject.id !== deletingHistory.projectId
+      || row?.dataset.status === 'deleting') {
       deletingHistory = null;
       renderControls();
       return;
@@ -2816,6 +2841,7 @@ export function installConversationMode({
       if (Array.isArray(paths) && paths.length) notify?.('只支持 PNG、JPEG、GIF、WebP 图片', 'error');
       return;
     }
+    const projectId = selectedProject?.id || '';
     for (const path of candidates) {
       if (pendingAttachments.length >= CONVERSATION_ATTACHMENT_LIMITS.maxCount) {
         notify?.(`一条消息最多附带 ${CONVERSATION_ATTACHMENT_LIMITS.maxCount} 张图片`, 'error');
@@ -2823,7 +2849,9 @@ export function installConversationMode({
       }
       try {
         const media = await invoke('read_conversation_attachment_image', { path });
-        if (destroyed) return;
+        // 逐张读取期间可能已经切了项目：图片属于发起拖放的项目，不能追加进
+        // 新项目的输入框，随下一轮发出去。
+        if (destroyed || selectedProject?.id !== projectId) return;
         const dataUrl = String(media?.dataUrl || '');
         if (!dataUrl.startsWith('data:image/')) continue;
         pendingAttachments = [...pendingAttachments, {
@@ -2850,8 +2878,10 @@ export function installConversationMode({
       accepted.push(file);
     }
     accepted.forEach(file => {
+      const projectId = selectedProject?.id || '';
       const reader = new FileReader();
       reader.onload = () => {
+        if (selectedProject?.id !== projectId) return;
         const dataUrl = String(reader.result || '');
         if (!dataUrl.startsWith('data:image/')) return;
         pendingAttachments = [...pendingAttachments, {
@@ -2860,6 +2890,7 @@ export function installConversationMode({
           dataUrl,
         }];
         renderPendingAttachments();
+        renderControls();
       };
       reader.readAsDataURL(file);
     });
@@ -2937,7 +2968,10 @@ export function installConversationMode({
   async function send() {
     const project = selectedProject;
     const provider = currentProvider();
-    const planned = slashPlan(dom.composer?.value, slashIndex);
+    // 菜单被 Escape 收起就是"这次按字面发送"；仍然按斜杠解析会违背提示语。
+    const planned = slashDismissed
+      ? { type: 'prompt', prompt: String(dom.composer?.value || '').trim() }
+      : slashPlan(dom.composer?.value, slashIndex);
     if (planned.type !== 'prompt') {
       applySlashPlan(planned);
       return;
@@ -2961,7 +2995,13 @@ export function installConversationMode({
     const runId = newRunId();
     const runContext = conversationRunContext(state);
     const allowWrite = currentModeWrites();
-    const runEntry = { runId, projectId: project.id, project: { ...project }, startedAt: Date.now() };
+    const runEntry = {
+      runId,
+      projectId: project.id,
+      providerId: runContext.providerId,
+      project: { ...project },
+      startedAt: Date.now(),
+    };
     if (allowWrite) {
       // 本轮到底改了什么以磁盘为准，所以先拍一张 Git 现状作基线。
       runEntry.baseline = invoke('project_context', { path: project.localPath })
@@ -3006,15 +3046,21 @@ export function installConversationMode({
         renderState();
       }
     } catch (error) {
-      state = applyConversationChatEvent(state, {
+      // await 期间用户可能已切到别的项目：错误必须还给发起这轮的项目，
+      // 应用到当前闭包 state 会把失败静默吞掉，让那个项目永远停在"连接中"。
+      const envelope = {
         runId,
         providerId: runContext.providerId,
         kind: 'error',
         data: { message: error?.message || String(error) },
-      });
-      activeRuns.delete(runId);
-      runController.clear(runId);
-        renderState();
+      };
+      const owned = stateForProject(runEntry.projectId);
+      if (owned && owned.runId === runId) handleEvent(envelope);
+      else {
+        activeRuns.delete(runId);
+        runController.clear(runId);
+      }
+      renderState();
       renderProjects();
     }
   }
@@ -3317,13 +3363,14 @@ export function installConversationMode({
     renderTuning();
   });
   // 点面板以外的地方就收起，避免它一直悬在输入框上。
-  document.addEventListener?.('click', event => {
+  const onDocumentClickForTuning = event => {
     if (!tuningOpen) return;
     const target = event?.target;
     if (target && (dom.tuningPanel?.contains?.(target) || dom.tuningToggle?.contains?.(target))) return;
     closeTuning();
     renderTuning();
-  });
+  };
+  document.addEventListener?.('click', onDocumentClickForTuning);
   dom.snippetSelect?.addEventListener('change', () => {
     if (dom.snippetSelect.value === MANAGE_SNIPPETS_VALUE) {
       dom.snippetSelect.value = '';
@@ -3555,6 +3602,7 @@ export function installConversationMode({
       contextRevision += 1;
       slashRevision += 1;
       document.removeEventListener?.('keydown', onWorkspaceKeydown);
+      document.removeEventListener?.('click', onDocumentClickForTuning);
       dragUnlisteners.splice(0).forEach(stop => stop?.());
       if (renderTimer !== null) clearTimeout(renderTimer);
       if (elapsedTimer !== null) clearInterval(elapsedTimer);

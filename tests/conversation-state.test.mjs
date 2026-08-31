@@ -146,6 +146,34 @@ test('历史预览只接收 user 和 assistant 消息', () => {
   assert.deepEqual(state.messages.map(message => message.text), ['问题', '回答']);
 });
 
+test('同一项目两条历史会话的消息 id 不同，展开状态不串台', () => {
+  const load = threadId => loadConversationTranscript({
+    projectId: 'p1',
+    threadId,
+    sourceTool: 'grok',
+    messages: [
+      { role: 'user', text: '问题' },
+      { role: 'assistant', text: '回答' },
+    ],
+  });
+  const first = load('session-a');
+  const second = load('session-b');
+  assert.equal(first.messages.length, second.messages.length);
+  first.messages.forEach((message, index) => {
+    assert.notEqual(
+      message.id,
+      second.messages[index].id,
+      `同项目不同会话的第 ${index} 条消息 id 必须不同`,
+    );
+  });
+  const again = load('session-a');
+  assert.deepEqual(
+    again.messages.map(message => message.id),
+    first.messages.map(message => message.id),
+    '同一条会话重新打开时 id 保持稳定，DOM 复用不失效',
+  );
+});
+
 test('历史对话保留后端验证过的图片附件并拒绝外部地址', () => {
   const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
   const state = loadConversationTranscript({

@@ -242,7 +242,6 @@ struct ParsedLine {
     fallback_answer: Option<String>,
     activities: Vec<Value>,
     plan: Option<Vec<Value>>,
-    notice: Option<String>,
     error: Option<String>,
 }
 
@@ -1241,20 +1240,6 @@ fn run_headless(stdout: std::process::ChildStdout, context: HeadlessContext) {
         if !reported_error.is_empty() {
             break;
         }
-        if let Some(notice) = parsed.notice.filter(|text| !text.is_empty()) {
-            normalized_events = normalized_events.saturating_add(1);
-            if normalized_events > MAX_NORMALIZED_EVENTS {
-                reported_error = "CLI 返回的标准化事件过多，已停止处理".to_string();
-                break;
-            }
-            emit(
-                &app,
-                &run_id,
-                &provider_id,
-                "notice",
-                json!({ "message": notice }),
-            );
-        }
     }
 
     drop(reader);
@@ -1654,13 +1639,15 @@ pub fn start(
         )?
     };
     crate::codex_chat::validate_prompt(&prompt)?;
+    // 先校验再落盘：`/` 命令和附件互斥，等写完图片才发现冲突会留下没人
+    // 引用的孤儿文件，只能等未来的清理把它挤掉。
+    if !attachments.is_empty() && slash.is_some() {
+        return Err("执行 / 命令时暂不支持图片附件；请去掉图片直接发送，或先执行命令".into());
+    }
     let attachment_paths = prepare_attachments(
         &attachments,
         &crate::data_dir().join("media").join("pastes"),
     )?;
-    if !attachment_paths.is_empty() && slash.is_some() {
-        return Err("执行 / 命令时暂不支持图片附件；请去掉图片直接发送，或先执行命令".into());
-    }
     let prompt = prompt_with_attachments(&prompt, &attachment_paths);
     crate::codex_chat::validate_prompt(&prompt)?;
 

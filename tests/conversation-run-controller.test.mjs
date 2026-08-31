@@ -72,6 +72,40 @@ test('start 失败会清掉排队取消，不向未注册运行发送 cancel', a
   assert.equal(calls.filter(call => call.command === 'conversation_chat_cancel').length, 0);
 });
 
+test('两个项目同时连接中取消，先排队的取消不会被覆盖', async () => {
+  const gates = new Map();
+  const calls = [];
+  const invoke = (command, payload) => {
+    calls.push({ command, payload });
+    if (command === 'conversation_chat_start') {
+      const gate = deferred();
+      gates.set(payload.request.runId, gate);
+      return gate.promise;
+    }
+    return Promise.resolve();
+  };
+  const controller = createConversationRunController({ invoke });
+
+  const startA = controller.start({ projectId: 'a', providerId: 'claude', runId: 'chat-a', prompt: 'A' });
+  const startB = controller.start({ projectId: 'b', providerId: 'grok', runId: 'chat-b', prompt: 'B' });
+  await controller.cancel('chat-a', { backendReady: false });
+  await controller.cancel('chat-b', { backendReady: false });
+
+  gates.get('chat-a').resolve();
+  await startA;
+  assert.ok(
+    calls.some(call => call.command === 'conversation_chat_cancel' && call.payload.runId === 'chat-a'),
+    'A 的排队取消必须在 start 落地后补发',
+  );
+
+  gates.get('chat-b').resolve();
+  await startB;
+  assert.ok(
+    calls.some(call => call.command === 'conversation_chat_cancel' && call.payload.runId === 'chat-b'),
+    'B 的排队取消也不能丢',
+  );
+});
+
 test('排队取消失败不应把已启动的对话误报为启动失败', async () => {
   const calls = [];
   const controller = createConversationRunController({
