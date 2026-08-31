@@ -975,7 +975,22 @@ pub(crate) fn reserve_run(
 ) -> Result<Arc<AtomicBool>, String> {
     let mut active = state.active.lock().map_err(|error| error.to_string())?;
     if active.len() >= MAX_ACTIVE_RUNS {
-        return Err("同时运行的对话太多，请稍后再试".into());
+        // 等审批的轮次同样占着名额，但它不是"忙"，是在等你去点批准——这时说
+        // "稍后再试"会把人支开，其实再等也不会自己好。
+        let waiting = active
+            .values()
+            .filter(|run| {
+                run.pending_approval
+                    .lock()
+                    .map(|pending| pending.is_some())
+                    .unwrap_or(false)
+            })
+            .count();
+        return Err(if waiting > 0 {
+            format!("已经有 {waiting} 条对话在等你批准，先处理掉再开新的")
+        } else {
+            "同时运行的对话太多，请稍后再试".to_string()
+        });
     }
     if active.contains_key(run_id) {
         return Err("这个对话请求已经在运行".into());
@@ -2249,6 +2264,32 @@ mod tests {
         )
         .is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_full_slot_says_whether_it_is_busy_or_waiting_on_you() {
+        // 等审批的轮次也占名额，但"稍后再试"会把人支开——再等也不会自己好，
+        // 得先去点批准。
+        let state = CodexChatState::default();
+        for index in 0..MAX_ACTIVE_RUNS {
+            reserve_run(&state, &format!("project-{index}"), &format!("run-{index}"))
+                .expect("先占满名额");
+        }
+
+        let busy = reserve_run(&state, "project-new", "run-new").unwrap_err();
+        assert_eq!(busy, "同时运行的对话太多，请稍后再试");
+
+        // 其中一条开始等待用户批准
+        {
+            let active = state.active.lock().unwrap();
+            let run = active.get("run-0").unwrap();
+            *run.pending_approval.lock().unwrap() = Some("exec-1".into());
+        }
+        let waiting = reserve_run(&state, "project-new", "run-new").unwrap_err();
+        assert!(
+            waiting.contains("等你批准"),
+            "满名额时要说清是在等批准，实际：{waiting}"
+        );
     }
 
     #[test]

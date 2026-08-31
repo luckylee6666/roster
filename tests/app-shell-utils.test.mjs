@@ -25,6 +25,9 @@ test('应用首次打开默认对话模式，且只接受两个应用视图', ()
   assert.equal(normalizeAppView('normal'), 'conversation');
   assert.equal(normalizeConversationProvider(' MiMo '), 'mimo');
   assert.equal(normalizeConversationProvider('../../bin/sh'), 'codex');
+  // 已移除的 CLI 留在本地偏好里，不能照样放行——否则界面会挂出一个不存在的助手。
+  assert.equal(normalizeConversationProvider('gemini'), 'codex');
+  assert.equal(normalizeConversationProvider('claude'), 'claude');
   assert.deepEqual(readAppShellPreference(memoryStorage()), {
     version: 1,
     appView: 'conversation',
