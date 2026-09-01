@@ -1861,8 +1861,60 @@ struct ContextUsage {
     limit: u64,
 }
 
-const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+/// 认不出模型时的兜底上限。取 1M 而不是 200k：Claude Code 当前的默认模型
+/// （Opus 5 / Sonnet 5）都是 1M 原生窗口，猜小了会让所有会话都显示 100%。
+const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
+const LEGACY_CONTEXT_WINDOW: u64 = 200_000;
 const CONTEXT_WINDOW_ENV: &str = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
+
+/// 按 transcript 里记的模型名推断上下文上限。
+///
+/// 这一档比写死一个常量稳：上限本来就是跟模型走的。Claude 官方 changelog 里
+/// Opus 5 与 Sonnet 5 都写明「1M context」，而 Claude 3/4 系列是 200k。
+/// 认不出的模型交给 `DEFAULT_CONTEXT_WINDOW`——按当前默认模型算，不按最老的算。
+///
+/// 上限写死过一次 200k，结果模型换代后每个会话都显示 100%（Claude Code 自己也
+/// 修过同样的症状）。所以别再把某个数字当常量，先看模型。
+/// 已知的上下文档位，从小到大。
+const KNOWN_CONTEXT_WINDOWS: [u64; 2] = [LEGACY_CONTEXT_WINDOW, 1_000_000];
+
+/// 观测到的 token 数超过推断上限时，抬到装得下的那一档。
+///
+/// 这是对「写死常量会过时」的自愈：模型表没跟上新模型时，真实数据会把它纠正过来。
+/// 只在已知档位之间抬——不凭空造窗口；超过最大已知档位说明是真的溢出，如实显示。
+fn raise_context_window_to_fit(guess: u64, tokens: u64) -> u64 {
+    if tokens <= guess {
+        return guess;
+    }
+    KNOWN_CONTEXT_WINDOWS
+        .into_iter()
+        .find(|tier| *tier >= tokens)
+        .unwrap_or(guess.max(KNOWN_CONTEXT_WINDOWS[KNOWN_CONTEXT_WINDOWS.len() - 1]))
+}
+
+fn context_window_for_model(model: &str) -> Option<u64> {
+    let model = model.trim().to_ascii_lowercase();
+    if model.is_empty() {
+        return None;
+    }
+    // 名字里明写 1m 的（如 `claude-sonnet-4-5-1m`）直接认。
+    if model.contains("-1m") || model.contains("[1m]") {
+        return Some(1_000_000);
+    }
+    for prefix in ["claude-opus-5", "claude-sonnet-5", "opus-5", "sonnet-5"] {
+        if model.contains(prefix) {
+            return Some(1_000_000);
+        }
+    }
+    for prefix in [
+        "claude-3", "claude-4", "opus-4", "sonnet-4", "haiku-4", "haiku-3",
+    ] {
+        if model.contains(prefix) {
+            return Some(LEGACY_CONTEXT_WINDOW);
+        }
+    }
+    None
+}
 
 fn parse_context_window_value(value: &str) -> Option<u64> {
     let trimmed = value.trim();
@@ -2373,7 +2425,8 @@ async fn context_usage(
         // transcript 可能达数十 MB；最近一条 usage 几乎总在文件尾部——先只读尾部 512KB 扫，
         // 命中就用；没命中（罕见：尾部恰好没有带 usage 的助手消息）再整读兜底，
         // 避免每次轮询都把整份文件读进内存。
-        let scan = |text: &str| -> Option<u64> {
+        // 同一行既有 usage 也有模型名：上限跟模型走，别让它和 token 数脱节。
+        let scan = |text: &str| -> Option<(u64, String)> {
             for line in text.lines().rev() {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
@@ -2386,7 +2439,12 @@ async fn context_usage(
                     + g("cache_read_input_tokens")
                     + g("cache_creation_input_tokens");
                 if tokens > 0 {
-                    return Some(tokens);
+                    let model = v
+                        .pointer("/message/model")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    return Some((tokens, model));
                 }
             }
             None
@@ -2395,10 +2453,25 @@ async fn context_usage(
             .as_deref()
             .and_then(&scan)
             .or_else(|| fs::read_to_string(&jsonl).ok().and_then(|c| scan(&c)));
-        if let Some(tokens) = found {
+        if let Some((tokens, model)) = found {
+            // 显式配置（环境变量 / `/context` 里的分母）最权威；没有就按模型推断，
+            // 再不行才用兜底常量。
+            let limit = match resolved_limit {
+                Some(explicit) => explicit,
+                None => {
+                    let guess = context_window_for_model(&model).unwrap_or(DEFAULT_CONTEXT_WINDOW);
+                    // 一个会话装不下超过自己窗口的 token——观测值超过了推断上限，
+                    // 说明推断错了，抬到装得下的那一档。这样即便将来又出现窗口更大
+                    // 的模型、模型表还没跟上，也不会再一路显示 100%。
+                    // 只在已知档位之间抬，不凭空造一个更大的窗口；真的超过最大已知
+                    // 档位（自动压缩前的溢出）仍旧如实显示 100%。
+                    raise_context_window_to_fit(guess, tokens)
+                }
+            };
             cu.ok = true;
             cu.tokens = tokens;
-            cu.percent = context_percent(tokens, fallback_limit);
+            cu.limit = limit;
+            cu.percent = context_percent(tokens, limit);
         }
         cu
     })
@@ -3351,6 +3424,59 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn context_window_follows_the_model_not_a_hardcoded_number() {
+        // 上限写死过 200k，模型换代后每个会话都显示 100%——Claude 官方也修过同样
+        // 的症状。现在按 transcript 里记的模型推断。
+        assert_eq!(context_window_for_model("claude-opus-5"), Some(1_000_000));
+        assert_eq!(context_window_for_model("claude-sonnet-5"), Some(1_000_000));
+        // 名字里明写 1M 的变体也认。
+        assert_eq!(
+            context_window_for_model("claude-sonnet-4-5-1m"),
+            Some(1_000_000)
+        );
+        // 老模型仍是 200k。
+        assert_eq!(
+            context_window_for_model("claude-3-5-sonnet-20241022"),
+            Some(LEGACY_CONTEXT_WINDOW)
+        );
+        assert_eq!(
+            context_window_for_model("claude-opus-4-1"),
+            Some(LEGACY_CONTEXT_WINDOW)
+        );
+        // 认不出的模型交给兜底，而兜底必须按当前默认模型算，不能按最老的算——
+        // 猜小了就会把正常会话显示成 100%。
+        assert_eq!(context_window_for_model("some-future-model"), None);
+        assert_eq!(context_window_for_model(""), None);
+        assert_eq!(DEFAULT_CONTEXT_WINDOW, 1_000_000);
+
+        // 本机真实观测：一个 opus-5 会话的上下文到过 638,506——按 200k 算就是
+        // 100%，按模型推断出的 1M 算才是 64%。
+        assert_eq!(context_percent(638_506, LEGACY_CONTEXT_WINDOW), 100);
+        assert_eq!(context_percent(638_506, 1_000_000), 64);
+    }
+
+    #[test]
+    fn observed_tokens_correct_a_stale_window_guess() {
+        // 没有任何 API 或 CLI 能问出模型的上下文窗口（transcript 的
+        // context_management 是 null，claude 也没有相应子命令），所以模型表总有
+        // 落后的一天。真实数据是唯一能自愈的信号：一个会话装不下超过自己窗口的
+        // token，观测值超了就说明推断错了。
+        assert_eq!(
+            raise_context_window_to_fit(LEGACY_CONTEXT_WINDOW, 120_000),
+            LEGACY_CONTEXT_WINDOW
+        );
+        // 认成 200k、却观测到 638k —— 抬到装得下的那一档，而不是一路显示 100%。
+        assert_eq!(
+            raise_context_window_to_fit(LEGACY_CONTEXT_WINDOW, 638_506),
+            1_000_000
+        );
+        // 已经是最大已知档位，且确实溢出了：如实保留，让它显示 100%。
+        assert_eq!(raise_context_window_to_fit(1_000_000, 1_200_000), 1_000_000);
+        // 不会把上限往下调。
+        assert_eq!(raise_context_window_to_fit(1_000_000, 10), 1_000_000);
+    }
+
     use super::*;
 
     #[test]
