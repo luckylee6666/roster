@@ -353,7 +353,12 @@ function installApplicationSurfaces() {
       return true;
     },
     onViewChange: view => {
-      if (view === 'conversation') conversationController?.focusComposer();
+      if (view === 'conversation') {
+        // 开发模式里的 CLI 可能刚把旧会话继续写成了最新会话。切回对话模式时
+        // 重新读磁盘历史，不能沿用上一次进入该工作台时的排序。
+        void conversationController?.refreshHistory();
+        conversationController?.focusComposer();
+      }
     },
     notify: msg,
   });

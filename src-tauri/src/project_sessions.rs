@@ -545,15 +545,18 @@ fn codex_session_from_jsonl(path: &Path, cwd: &str) -> Option<ProjectHistorySess
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())?
         .to_string();
-    let at_ms = payload
-        .get("timestamp")
-        .and_then(|value| value.as_str())
-        .and_then(parse_rfc3339_ms)
+    // session_meta.timestamp 是会话首次创建时间；`codex resume` 继续旧会话时它不会变。
+    // 最近对话应按 JSONL 的最后写入时间排序，否则今天仍在运行的旧线程会沉到数周前。
+    let at_ms = path
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .ok()
+        .map(millis)
         .or_else(|| {
-            path.metadata()
-                .and_then(|meta| meta.modified())
-                .ok()
-                .map(millis)
+            payload
+                .get("timestamp")
+                .and_then(|value| value.as_str())
+                .and_then(parse_rfc3339_ms)
         })
         .unwrap_or(0);
     Some(history_session(
@@ -3271,14 +3274,20 @@ mod tests {
         let cwd = "/Users/lucky/git/app";
         let day = home.join(".codex/sessions/2026/08/12");
         fs::create_dir_all(&day).unwrap();
+        let codex_path =
+            day.join("rollout-2026-08-12T18-41-01-019ff58f-ad10-76e0-9f8a-84951c2dd09c.jsonl");
         fs::write(
-            day.join("rollout-2026-08-12T18-41-01-019ff58f-ad10-76e0-9f8a-84951c2dd09c.jsonl"),
+            &codex_path,
             r#"{"type":"session_meta","payload":{"session_id":"019ff58f-ad10-76e0-9f8a-84951c2dd09c","cwd":"/Users/lucky/git/app","timestamp":"2026-08-12T10:41:01.737Z","thread_source":"user"}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>"}]}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"打tag吧"}]}}
 "#,
         )
         .unwrap();
+        let codex_last_activity = fs::metadata(&codex_path)
+            .and_then(|meta| meta.modified())
+            .map(millis)
+            .unwrap();
         fs::write(
             day.join("rollout-2026-08-12T17-36-44-019ff554-d177-79d3-9179-a6d4aa80032e.jsonl"),
             r#"{"type":"session_meta","payload":{"session_id":"019ff554-d177-79d3-9179-a6d4aa80032e","cwd":"/Users/lucky/git/app","thread_source":"subagent","source":{"subagent":{}}}}
@@ -3338,6 +3347,10 @@ mod tests {
         assert_eq!(codex.sessions.len(), 1);
         assert_eq!(codex.sessions[0].id, "019ff58f-ad10-76e0-9f8a-84951c2dd09c");
         assert_eq!(codex.sessions[0].title, "打tag吧");
+        assert_eq!(
+            codex.sessions[0].at_ms, codex_last_activity,
+            "续接旧 Codex 会话后要按文件最后活动时间排序，不能一直使用创建时间"
+        );
         let opencode = history
             .groups
             .iter()

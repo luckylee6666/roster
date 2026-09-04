@@ -311,6 +311,19 @@ test('强制 CLI 探测会取消旧重试，避免旧请求覆盖已安装列表
   );
 });
 
+test('从开发模式切回对话模式会重新读取最近历史', async () => {
+  const main = await read('src/main.js');
+  const start = main.indexOf('onViewChange: view =>');
+  const block = main.slice(start, start + 420);
+  assert.ok(start >= 0);
+  assert.match(block, /view === 'conversation'/);
+  assert.match(block, /conversationController\?\.refreshHistory\(\)/);
+  assert.ok(
+    block.indexOf('refreshHistory()') < block.indexOf('focusComposer()'),
+    '先发起最新历史读取，再把焦点还给输入框',
+  );
+});
+
 test('对话删除复用双模式共用的应用内确认，不依赖 WKWebView 原生 confirm', async () => {
   const [html, conversation, main] = await Promise.all([
     read('src/index.html'),

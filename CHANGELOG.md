@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased
+
+### English
+
+**Fixed**
+- Resumed Codex conversations are ordered by the JSONL file's last activity time instead of the thread's original creation timestamp, and returning from Developer mode refreshes the conversation sidebar immediately. A long-running thread continued today no longer appears buried under weeks-old history.
+
+### 中文
+
+**修复**
+- Codex 续接会话改按 JSONL 文件的最后活动时间排序，不再按线程首次创建时间；从开发模式切回对话模式时也会立即重读历史。今天仍在继续的长期会话不会再沉到数周前。
+
 ## v1.4.0
 
 ### English
