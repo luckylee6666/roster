@@ -1,11 +1,12 @@
 //! 用量查询：Claude 走官方 OAuth 限流接口；Codex 走官方 `app-server` JSON-RPC；
-//! Grok 读取官方 CLI 自己写下的结构化账单快照。
+//! Grok 走官方 CLI 的 ACP `x.ai/billing` 扩展。
 //!
 //! Claude：一次 https 调用 `api/oauth/usage`（仅官方地址），零 Node 依赖。
 //! Codex：拉起本机 `codex app-server`，握手后调用 `account/rateLimits/read`。
-//! Grok：有界读取 `~/.grok/logs/unified.jsonl` 中官方
-//! `billing: fetched credits config` 事件；该快照由 Grok 的真实请求和 `/usage` 更新。
-//! Claude/Codex 带 60s 文件缓存，Codex 另有单飞锁，避免连点刷新堆进程。
+//! Grok：拉起本机 `grok agent stdio`，握手后调用线协议方法 `_x.ai/billing`；
+//! 失败时才有界读取 `~/.grok/logs/unified.jsonl` 中官方账单快照兜底。
+//! 三者都带 60s 缓存；Codex/Grok 另有单飞锁，避免并发查询堆进程；UI 的
+//! 显式手动刷新可绕过新鲜缓存，但仍受单飞和失败冷却保护。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,6 +30,10 @@ fn now_ms() -> u64 {
 
 fn cache_file(name: &str) -> PathBuf {
     crate::data_dir().join(name)
+}
+
+fn may_use_fresh_cache(force_refresh: bool, age_ms: u64, ok: bool) -> bool {
+    !force_refresh && age_ms <= 60_000 && ok
 }
 
 /// 通用文件缓存：写（带时间戳）。
@@ -319,10 +324,11 @@ fn write_oauth_cache(endpoint: &str, usage: &OAuthUsage) {
     cache_write(&oauth_cache_path(endpoint), usage);
 }
 
-/// 拉 OAuth 用量。60s 文件缓存命中则秒返；否则读 token → 调 API → 写缓存。
+/// 拉 OAuth 用量。普通查询命中 60s 文件缓存则秒返；显式刷新跳过新鲜缓存，
+/// 直接读 token → 调 API → 写缓存。
 /// 失败时回退到当前 API 地址的旧缓存，并**带上真实失败原因 + 数据年龄**（标 stale），
 /// 避免把几小时前的旧值当现值静默显示。
-pub fn fetch_oauth_usage() -> OAuthUsage {
+pub fn fetch_oauth_usage(force_refresh: bool) -> OAuthUsage {
     let (endpoint, is_custom_endpoint) = match configured_oauth_endpoint() {
         Ok(config) => config,
         Err(error) => {
@@ -343,7 +349,7 @@ pub fn fetch_oauth_usage() -> OAuthUsage {
         };
     }
     if let Some((mut c, age)) = read_oauth_cache_with_age(&endpoint) {
-        if age <= 60_000 {
+        if may_use_fresh_cache(force_refresh, age, c.ok) {
             c.stale = false;
             c.age_secs = age / 1000;
             return c;
@@ -807,10 +813,11 @@ fn fail_codex(err: String) -> CodexUsage {
     }
 }
 
-/// 拉 Codex 限流用量。60s 缓存命中则秒返；否则单飞拉起 `codex app-server`。
-pub fn fetch_codex_usage() -> CodexUsage {
+/// 拉 Codex 限流用量。普通查询命中 60s 缓存则秒返；显式刷新跳过新鲜缓存，
+/// 但仍在单飞锁内拉起 `codex app-server`，并保留 15s 失败冷却。
+pub fn fetch_codex_usage(force_refresh: bool) -> CodexUsage {
     if let Some((mut c, age)) = read_codex_cache_with_age() {
-        if age <= 60_000 && c.ok {
+        if may_use_fresh_cache(force_refresh, age, c.ok) {
             c.stale = false;
             c.age_secs = age / 1000;
             return c;
@@ -831,7 +838,7 @@ pub fn fetch_codex_usage() -> CodexUsage {
     }
     let _gate = CODEX_GATE.lock().unwrap_or_else(|p| p.into_inner());
     if let Some((mut c, age)) = read_codex_cache_with_age() {
-        if age <= 60_000 && c.ok {
+        if may_use_fresh_cache(force_refresh, age, c.ok) {
             c.stale = false;
             c.age_secs = age / 1000;
             return c;
@@ -869,12 +876,12 @@ pub fn fetch_codex_usage() -> CodexUsage {
 }
 
 // ============================================================================
-// Grok 限流用量：读取官方 Grok CLI 落下的结构化 billing 日志。
+// Grok 限流用量：官方 Grok CLI ACP `x.ai/billing`。
 //
-// Grok 1.0.13 的 `agent stdio` 尚未对外暴露源码已有的 `x.ai/billing`
-// 扩展（会返回 Method not found）；`grok models` 也不会刷新 billing。真实
-// Grok 请求和交互式 `/usage` 会把经过收敛的快照写入 unified.jsonl。
-// Roster 不读 auth.json、不经手 token，也不通过隐藏 TUI 制造空会话。
+// ACP 自定义方法在线上传输时必须加 `_` 前缀，所以请求 `_x.ai/billing`，agent
+// 内部收到的是 `x.ai/billing`。Grok 自己读取缓存登录并请求账单服务，Roster
+// 不读 auth.json、不经手 token，也不创建会话或发送模型请求。若 ACP 查询失败，
+// 再有界读取 Grok 自己写下的 unified.jsonl 账单快照兜底。
 // ============================================================================
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -901,12 +908,17 @@ struct GrokLogSnapshot {
 struct GrokCacheEntry {
     snapshot: GrokLogSnapshot,
     cached_at_ms: u64,
+    authoritative: bool,
 }
 
 static GROK_CACHE: OnceLock<Mutex<Option<GrokCacheEntry>>> = OnceLock::new();
+static GROK_GATE: Mutex<()> = Mutex::new(());
+const GROK_FAIL_KEY: &str = "grok";
 const GROK_BILLING_LOG_MESSAGE: &str = "billing: fetched credits config";
 const GROK_LOG_TAIL_BYTES: u64 = 1024 * 1024;
 const GROK_LOG_LINE_MAX_BYTES: usize = 128 * 1024;
+const GROK_RPC_OUTPUT_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const GROK_RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const GROK_FRESH_MS: u64 = 60_000;
 const GROK_FUTURE_CLOCK_SKEW_MS: u64 = 5 * 60_000;
 
@@ -991,25 +1003,13 @@ fn grok_usage_percent(config: &Value) -> Option<f64> {
         .then_some(((used / limit) * 100.0).clamp(0.0, 100.0))
 }
 
-fn parse_grok_billing_event(event: &Value, now: u64) -> Result<GrokLogSnapshot, String> {
-    if event.get("msg").and_then(Value::as_str) != Some(GROK_BILLING_LOG_MESSAGE) {
-        return Err("不是 Grok billing 快照".to_string());
-    }
-    let observed_at_ms = grok_log_timestamp_ms(event.get("ts"))
-        .ok_or_else(|| "Grok 用量快照缺少有效时间".to_string())?;
-    if observed_at_ms > now.saturating_add(GROK_FUTURE_CLOCK_SKEW_MS) {
-        return Err("Grok 用量快照时间明显晚于本机时间".to_string());
-    }
-    let ctx = event
-        .get("ctx")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "Grok 用量快照缺少 ctx".to_string())?;
-    let config = ctx
-        .get("config")
-        .filter(|value| value.is_object())
-        .ok_or_else(|| "当前 Grok 登录没有返回订阅用量".to_string())?;
+fn grok_usage_from_config(
+    config: &Value,
+    plan_value: Option<&Value>,
+    age_ms: u64,
+) -> Result<GrokUsage, String> {
     let utilization =
-        grok_usage_percent(config).ok_or_else(|| "Grok 用量快照缺少有效百分比".to_string())?;
+        grok_usage_percent(config).ok_or_else(|| "Grok 用量数据缺少有效百分比".to_string())?;
     let current_period = config
         .get("currentPeriod")
         .filter(|value| value.is_object());
@@ -1040,21 +1040,240 @@ fn parse_grok_billing_event(event: &Value, now: u64) -> Result<GrokLogSnapshot, 
             .and_then(|p| p.get("end"))
             .or_else(|| config.get("billingPeriodEnd")),
     );
-    let plan = bounded_log_text(ctx.get("subscriptionTier"), 128);
+    Ok(GrokUsage {
+        ok: true,
+        error: None,
+        plan: bounded_log_text(plan_value, 128),
+        stale: false,
+        age_secs: age_ms / 1000,
+        age_ms,
+        windows: vec![LimitWindow {
+            label: grok_period_label(&period_type, &period_start, &period_end),
+            utilization,
+            resets_at,
+        }],
+    })
+}
+
+fn parse_grok_billing_response(response: &Value) -> Result<GrokUsage, String> {
+    // 当前 ACP 直接返回 BillingConfigResponse；兼容曾经在 result 中再包一层的
+    // 客户端桥接形状，但绝不递归查找或接受无关字段。
+    let response = response
+        .get("result")
+        .filter(|_| response.get("config").is_none())
+        .unwrap_or(response);
+    let config = response
+        .get("config")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "当前 Grok 登录没有返回订阅用量".to_string())?;
+    let plan = response
+        .get("subscription_tier")
+        .or_else(|| response.get("subscriptionTier"));
+    grok_usage_from_config(config, plan, 0)
+}
+
+fn resolve_grok_bin() -> Result<PathBuf, String> {
+    crate::cli_detect::resolve_registered_cli_bin("grok").map_err(|_| {
+        "未找到安全可执行的 Grok CLI（请确认已安装 `grok`，并用 grok.com 登录过）".to_string()
+    })
+}
+
+fn grok_rpc_error(error: &Value, fallback: &str) -> String {
+    error
+        .get("data")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("message").and_then(Value::as_str))
+        .unwrap_or(fallback)
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(300)
+        .collect()
+}
+
+/// 通过 Grok 官方 ACP 进程实时查询账单。这里只执行 initialize 和 billing 两个
+/// 请求；不创建/恢复 session，也不发送 prompt。登录凭据始终由 Grok 子进程持有。
+fn fetch_grok_billing_raw(bin: &Path) -> Result<Value, String> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Instant;
+
+    let mut command = std::process::Command::new(bin);
+    command
+        .args(["agent", "stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("启动 Grok ACP 失败：{e}"))?;
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            kill_child(&mut child);
+            return Err("无法写入 Grok ACP stdin".to_string());
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            kill_child(&mut child);
+            return Err("无法读取 Grok ACP stdout".to_string());
+        }
+    };
+    if let Some(mut stderr) = child.stderr.take() {
+        thread::spawn(move || {
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        });
+    }
+
+    let (tx, rx) = mpsc::channel::<Result<Value, String>>();
+    thread::spawn(move || {
+        // 初始化会主动推送模型、设置等通知；限制本次探针可读取的总量，避免异常
+        // 子进程用无限输出拖垮宿主。正常握手和 billing 响应远小于 2 MiB。
+        let reader = BufReader::new(stdout).take(GROK_RPC_OUTPUT_MAX_BYTES);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<Value>(line) {
+                        Ok(value) => {
+                            if tx.send(Ok(value)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Err(format!("Grok ACP 输出不是 JSON：{error}")));
+                            break;
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(format!("读取 Grok ACP 输出失败：{error}")));
+                    break;
+                }
+            }
+        }
+    });
+
+    let init = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": {
+                "fs": { "readTextFile": false, "writeTextFile": false },
+                "terminal": false
+            },
+            "clientInfo": {
+                "name": "roster",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }
+    });
+    if let Err(error) = stdin.write_all(format!("{init}\n").as_bytes()) {
+        kill_child(&mut child);
+        return Err(format!("向 Grok ACP 写入握手失败：{error}"));
+    }
+    stdin.flush().ok();
+
+    let deadline = Instant::now() + GROK_RPC_TIMEOUT;
+    let mut initialized = false;
+    loop {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain.is_zero() {
+            kill_child(&mut child);
+            return Err("查询 Grok 用量超时（grok agent stdio 未响应）".to_string());
+        }
+        match rx.recv_timeout(remain) {
+            Ok(Ok(message)) if message.get("id") == Some(&Value::from(1)) => {
+                if let Some(error) = message.get("error") {
+                    kill_child(&mut child);
+                    return Err(grok_rpc_error(error, "Grok ACP 握手失败"));
+                }
+                if message.get("result").is_none() {
+                    continue;
+                }
+                // agent-client-protocol 把自定义方法序列化成 `_` + 方法名；agent
+                // 解码后会去掉前缀，再路由到 `x.ai/billing`。
+                let request = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "_x.ai/billing",
+                    "params": {}
+                });
+                if let Err(error) = stdin.write_all(format!("{request}\n").as_bytes()) {
+                    kill_child(&mut child);
+                    return Err(format!("向 Grok ACP 写入用量查询失败：{error}"));
+                }
+                stdin.flush().ok();
+                initialized = true;
+            }
+            Ok(Ok(message)) if message.get("id") == Some(&Value::from(2)) => {
+                kill_child(&mut child);
+                if let Some(error) = message.get("error") {
+                    return Err(grok_rpc_error(error, "Grok 用量查询失败"));
+                }
+                return message
+                    .get("result")
+                    .cloned()
+                    .ok_or_else(|| "Grok 用量查询没有返回数据".to_string());
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                kill_child(&mut child);
+                return Err(error);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                kill_child(&mut child);
+                return Err("查询 Grok 用量超时（grok agent stdio 未响应）".to_string());
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                kill_child(&mut child);
+                return Err(if initialized {
+                    "Grok ACP 在返回用量前退出".to_string()
+                } else {
+                    "Grok ACP 已退出（请确认 `grok` 可用且已登录）".to_string()
+                });
+            }
+        }
+    }
+}
+
+fn parse_grok_billing_event(event: &Value, now: u64) -> Result<GrokLogSnapshot, String> {
+    if event.get("msg").and_then(Value::as_str) != Some(GROK_BILLING_LOG_MESSAGE) {
+        return Err("不是 Grok billing 快照".to_string());
+    }
+    let observed_at_ms = grok_log_timestamp_ms(event.get("ts"))
+        .ok_or_else(|| "Grok 用量快照缺少有效时间".to_string())?;
+    if observed_at_ms > now.saturating_add(GROK_FUTURE_CLOCK_SKEW_MS) {
+        return Err("Grok 用量快照时间明显晚于本机时间".to_string());
+    }
+    let ctx = event
+        .get("ctx")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Grok 用量快照缺少 ctx".to_string())?;
+    let config = ctx
+        .get("config")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "当前 Grok 登录没有返回订阅用量".to_string())?;
+    let usage = grok_usage_from_config(
+        config,
+        ctx.get("subscriptionTier"),
+        now.saturating_sub(observed_at_ms),
+    )?;
     Ok(GrokLogSnapshot {
-        usage: GrokUsage {
-            ok: true,
-            error: None,
-            plan,
-            stale: false,
-            age_secs: now.saturating_sub(observed_at_ms) / 1000,
-            age_ms: now.saturating_sub(observed_at_ms),
-            windows: vec![LimitWindow {
-                label: grok_period_label(&period_type, &period_start, &period_end),
-                utilization,
-                resets_at,
-            }],
-        },
+        usage,
         observed_at_ms,
     })
 }
@@ -1278,20 +1497,40 @@ fn read_grok_log_snapshot(now: u64) -> Result<GrokLogSnapshot, String> {
     parse_grok_usage_log(&tail, now)
 }
 
-fn grok_log_modified_ms() -> Option<u64> {
-    let home = grok_home_dir().ok()?;
-    let file = open_grok_log_file(&home).ok()?;
-    file.metadata()
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis() as u64)
-}
-
 fn grok_cache() -> &'static Mutex<Option<GrokCacheEntry>> {
     GROK_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn cached_grok_snapshot() -> Option<GrokCacheEntry> {
+    grok_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn cache_grok_snapshot(snapshot: GrokLogSnapshot, cached_at_ms: u64, authoritative: bool) {
+    *grok_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(GrokCacheEntry {
+        snapshot,
+        cached_at_ms,
+        authoritative,
+    });
+}
+
+fn fresh_authoritative_grok_cache(
+    entry: GrokCacheEntry,
+    force_refresh: bool,
+    now: u64,
+) -> Option<GrokUsage> {
+    if force_refresh
+        || !entry.authoritative
+        || now.saturating_sub(entry.cached_at_ms) > GROK_FRESH_MS
+    {
+        return None;
+    }
+    let usage = finish_grok_snapshot(entry.snapshot, now);
+    (!usage.stale).then_some(usage)
 }
 
 fn finish_grok_snapshot(mut snapshot: GrokLogSnapshot, now: u64) -> GrokUsage {
@@ -1317,7 +1556,7 @@ fn grok_error_or_cached(cached: Option<GrokLogSnapshot>, error: String, now: u64
     if let Some(snapshot) = cached {
         let mut usage = finish_grok_snapshot(snapshot, now);
         usage.stale = true;
-        usage.error = Some(format!("读取最新 Grok 用量失败：{error}"));
+        usage.error = Some(error);
         return usage;
     }
     GrokUsage {
@@ -1327,49 +1566,135 @@ fn grok_error_or_cached(cached: Option<GrokLogSnapshot>, error: String, now: u64
     }
 }
 
-/// 读取 Grok 订阅用量。Grok 当前没有可供外部无头客户端调用的 billing 刷新
-/// 方法，因此只展示它最近一次真实请求或 `/usage` 写下的精确快照，并如实标记年龄。
-pub fn fetch_grok_usage() -> GrokUsage {
-    if cfg!(windows) {
-        return GrokUsage {
-            ok: false,
-            error: Some("Windows 暂不支持安全读取 Grok 本地账单日志".to_string()),
-            ..Default::default()
-        };
+fn grok_fallback_after_error(error: String, now: u64) -> GrokUsage {
+    let memory = cached_grok_snapshot().map(|entry| entry.snapshot);
+    let (disk, disk_error) = match read_grok_log_snapshot(now) {
+        Ok(snapshot) => (Some(snapshot), None),
+        Err(log_error) => (None, Some(log_error)),
+    };
+    let fallback = match (memory, disk) {
+        (Some(memory), Some(disk)) => Some(if disk.observed_at_ms > memory.observed_at_ms {
+            disk
+        } else {
+            memory
+        }),
+        (Some(memory), None) => Some(memory),
+        (None, Some(disk)) => Some(disk),
+        (None, None) => None,
+    };
+    if let Some(snapshot) = fallback.as_ref() {
+        // 兜底快照即使刚写入也不能冒充一次成功的实时查询；缓存只为后续失败
+        // 保留最后好值，普通 60 秒快路径只接受 authoritative=true。
+        cache_grok_snapshot(snapshot.clone(), now, false);
+    }
+    let detail = match disk_error {
+        Some(log_error) if fallback.is_none() => {
+            format!("实时查询 Grok 用量失败：{error}；本地快照也不可用：{log_error}")
+        }
+        _ => format!("实时查询 Grok 用量失败：{error}"),
+    };
+    grok_error_or_cached(fallback, detail, now)
+}
+
+/// 查询 Grok 订阅用量。普通查询在 60 秒内复用实时结果；手动刷新跳过新鲜缓存，
+/// 通过官方 `grok agent stdio` 的 `_x.ai/billing` 方法重新请求。ACP 失败时才读取
+/// Grok 自己写下的结构化账单日志作为旧数据兜底。
+pub fn fetch_grok_usage(force_refresh: bool) -> GrokUsage {
+    let now = now_ms();
+    if !force_refresh {
+        if let Some(usage) = cached_grok_snapshot()
+            .and_then(|entry| fresh_authoritative_grok_cache(entry, false, now))
+        {
+            return usage;
+        }
+    }
+    if let Some(error) = recent_failure(GROK_FAIL_KEY) {
+        return grok_fallback_after_error(error, now);
     }
 
-    let now = now_ms();
-    let mut cached = grok_cache()
+    let _gate = GROK_GATE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(entry) = cached.as_ref() {
-        let cache_age = now.saturating_sub(entry.cached_at_ms);
-        let log_unchanged = grok_log_modified_ms()
-            .map(|modified| modified <= entry.cached_at_ms)
-            .unwrap_or(false);
-        if cache_age <= GROK_FRESH_MS && log_unchanged {
-            return finish_grok_snapshot(entry.snapshot.clone(), now);
+    let now = now_ms();
+    if !force_refresh {
+        if let Some(usage) = cached_grok_snapshot()
+            .and_then(|entry| fresh_authoritative_grok_cache(entry, false, now))
+        {
+            return usage;
         }
     }
-    match read_grok_log_snapshot(now) {
-        Ok(snapshot) => {
-            *cached = Some(GrokCacheEntry {
-                snapshot: snapshot.clone(),
-                cached_at_ms: now,
-            });
-            finish_grok_snapshot(snapshot, now)
+    if let Some(error) = recent_failure(GROK_FAIL_KEY) {
+        return grok_fallback_after_error(error, now);
+    }
+
+    let bin = match resolve_grok_bin() {
+        Ok(bin) => bin,
+        Err(error) => {
+            record_failure(GROK_FAIL_KEY, &error);
+            return grok_fallback_after_error(error, now);
         }
-        Err(error) => grok_error_or_cached(
-            cached.as_ref().map(|entry| entry.snapshot.clone()),
-            error,
-            now,
-        ),
+    };
+    match fetch_grok_billing_raw(&bin).and_then(|response| parse_grok_billing_response(&response)) {
+        Ok(mut usage) => {
+            let observed_at_ms = now_ms();
+            usage.stale = false;
+            usage.age_secs = 0;
+            usage.age_ms = 0;
+            let summary = usage
+                .windows
+                .iter()
+                .map(|window| format!("{} {}%", window.label, window.utilization.round() as i64))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            crate::log_info!("grok 用量实时刷新：{summary}");
+            cache_grok_snapshot(
+                GrokLogSnapshot {
+                    usage: usage.clone(),
+                    observed_at_ms,
+                },
+                observed_at_ms,
+                true,
+            );
+            usage
+        }
+        Err(error) => {
+            crate::log_warn!("grok 用量实时刷新失败，回退本地快照：{error}");
+            record_failure(GROK_FAIL_KEY, &error);
+            grok_fallback_after_error(error, now_ms())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_grok_acp_billing_response() {
+        let response = serde_json::json!({
+            "config": {
+                "creditUsagePercent": 96.0,
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "start": "2026-08-28T14:50:19.334455+00:00",
+                    "end": "2026-09-04T14:50:19.334455+00:00"
+                }
+            },
+            "subscription_tier": "SuperGrok"
+        });
+        let usage = parse_grok_billing_response(&response).expect("应解析 ACP billing 响应");
+        assert!(usage.ok);
+        assert!(!usage.stale);
+        assert_eq!(usage.age_secs, 0);
+        assert_eq!(usage.plan.as_deref(), Some("SuperGrok"));
+        assert_eq!(usage.windows.len(), 1);
+        assert_eq!(usage.windows[0].label, "7 天窗口");
+        assert!((usage.windows[0].utilization - 96.0).abs() < f64::EPSILON);
+        assert_eq!(
+            usage.windows[0].resets_at,
+            "2026-09-04T14:50:19.334455+00:00"
+        );
+    }
 
     #[test]
     fn parses_grok_weekly_billing_snapshot() {
@@ -1502,6 +1827,43 @@ mod tests {
     }
 
     #[test]
+    fn grok_fallback_snapshot_never_enters_the_fresh_live_cache_path() {
+        let now = rfc3339_ms("2026-09-03T12:00:30Z").unwrap();
+        let snapshot = GrokLogSnapshot {
+            usage: GrokUsage {
+                ok: true,
+                windows: vec![LimitWindow {
+                    label: "7 天窗口".to_string(),
+                    utilization: 33.0,
+                    resets_at: "2026-09-08T12:00:00Z".to_string(),
+                }],
+                ..Default::default()
+            },
+            observed_at_ms: now,
+        };
+        let fallback = GrokCacheEntry {
+            snapshot: snapshot.clone(),
+            cached_at_ms: now,
+            authoritative: false,
+        };
+        assert!(fresh_authoritative_grok_cache(fallback, false, now).is_none());
+
+        let live = GrokCacheEntry {
+            snapshot: snapshot.clone(),
+            cached_at_ms: now,
+            authoritative: true,
+        };
+        assert!(fresh_authoritative_grok_cache(live, false, now).is_some());
+
+        let forced = GrokCacheEntry {
+            snapshot,
+            cached_at_ms: now,
+            authoritative: true,
+        };
+        assert!(fresh_authoritative_grok_cache(forced, true, now).is_none());
+    }
+
+    #[test]
     fn grok_snapshot_rejects_a_timestamp_far_in_the_future() {
         let now = rfc3339_ms("2026-09-03T12:00:00Z").unwrap();
         let event = serde_json::json!({
@@ -1616,7 +1978,7 @@ mod tests {
     #[test]
     #[ignore = "人工核对用：需要本机已安装并登录 Grok"]
     fn probe_local_grok_usage_snapshot_without_exposing_account_values() {
-        let usage = fetch_grok_usage();
+        let usage = fetch_grok_usage(true);
         assert!(usage.ok, "Grok 用量探针失败：{:?}", usage.error);
         assert!(!usage.windows.is_empty(), "Grok 没有返回任何用量窗口");
         assert!(usage.windows.iter().all(|window| {
@@ -1671,6 +2033,14 @@ mod tests {
             Some("boom".to_string())
         );
         assert_eq!(recent_failure("never-failed-agent"), None);
+    }
+
+    #[test]
+    fn manual_refresh_bypasses_the_normal_sixty_second_cache() {
+        assert!(may_use_fresh_cache(false, 30_000, true));
+        assert!(!may_use_fresh_cache(true, 30_000, true));
+        assert!(!may_use_fresh_cache(false, 60_001, true));
+        assert!(!may_use_fresh_cache(false, 30_000, false));
     }
 
     #[test]

@@ -22,17 +22,18 @@ test('用量面板支持 Claude、Codex、Grok，且不再依赖 OpenCode/ccusag
   assert.match(main, /usage_supported_agents/);
   assert.match(main, /usageAgentsForInstalledClis\(installedCliIds, usageCapableAgentIds\)/);
   assert.match(main, /tab\.hidden = !visible/);
-  assert.match(main, /refreshInstalledClis\(\{ force: true, syncUsageLoad: false \}\)/);
+  assert.match(main, /refreshInstalledClis\(\{ force: forceProbe, syncUsageLoad: false \}\)/);
   assert.match(main, /本机没有已安装且支持用量查询的 Claude、Codex 或 Grok/);
   const loadBlock = main.slice(
-    main.indexOf('async function loadUsage()'),
+    main.indexOf('async function loadUsage('),
     main.indexOf('function renderLimitUsage'),
   );
   const capabilityGateAt = loadBlock.indexOf(
     'usageAgentsForInstalledClis(installedCliIds, usageCapableAgentIds).includes(agent)',
   );
   assert.ok(
-    capabilityGateAt >= 0 && capabilityGateAt < loadBlock.indexOf('invoke(command)'),
+    capabilityGateAt >= 0
+      && capabilityGateAt < loadBlock.indexOf('invoke(command, { force: forceRefresh })'),
     '本机未安装的 CLI 必须在调用其用量命令前被拦截',
   );
   assert.match(main, /usagePanelProbeRevision/);
@@ -52,12 +53,42 @@ test('用量面板支持 Claude、Codex、Grok，且不再依赖 OpenCode/ccusag
   assert.doesNotMatch(rust, /fn has_npx/);
   assert.match(usage, /account\/rateLimits\/read/);
   assert.match(usage, /codex app-server/);
+  assert.match(usage, /grok agent stdio/);
+  assert.match(usage, /_x\.ai\/billing/);
+  assert.match(usage, /parse_grok_billing_response/);
   assert.match(usage, /billing: fetched credits config/);
   assert.match(usage, /unified\.jsonl/);
-  assert.match(usage, /下一次真实请求或交互式 `\/usage`/);
   assert.match(usage, /GROK_LOG_TAIL_BYTES/);
   assert.match(usage, /O_NOFOLLOW/);
-  assert.match(usage, /grok_error_or_cached/);
-  assert.doesNotMatch(usage, /refresh_grok_billing_snapshot/);
+  assert.match(usage, /grok_fallback_after_error/);
   assert.doesNotMatch(usage, /ccusage/);
+});
+
+test('打开用量面板复用启动探测，只有手动刷新才重新检查 CLI', () => {
+  const openBlock = main.slice(
+    main.indexOf('async function openUsage()'),
+    main.indexOf('function closeUsage()'),
+  );
+  assert.match(openBlock, /refreshUsagePanel\(\{ resetSelection: true, forceProbe: false \}\)/);
+  assert.match(main, /usage-refresh'\)\.onclick = \(\) => \{ void refreshUsagePanel\(\{ forceProbe: true \}\); \}/);
+
+  const panelBlock = main.slice(
+    main.indexOf('async function refreshUsagePanel'),
+    main.indexOf('async function loadUsage()'),
+  );
+  const cachedAt = panelBlock.indexOf('!forceProbe && installedCliIds !== null');
+  const checkingAt = panelBlock.indexOf('setUsageTabsChecking()');
+  assert.ok(cachedAt >= 0 && cachedAt < checkingAt, '已知安装列表必须在显示检查状态前直接复用');
+  assert.match(panelBlock, /if \(available\.length\) await loadUsage\(\)/);
+  assert.match(panelBlock, /if \(forceProbe\) tasks\.push\(refreshUsageCapabilities/);
+  assert.match(panelBlock, /loadUsage\(\{ forceRefresh: forceProbe \}\)/);
+  assert.match(panelBlock, /setUsageRefreshStatus\('busy'\)/);
+  assert.match(panelBlock, /!payload\?\.ok \|\| payload\?\.stale/);
+  assert.match(panelBlock, /setUsageRefreshStatus\(completionStatus\)/);
+  assert.match(main, /button\.textContent = '刷新中…'/);
+  assert.match(main, /status === 'failed'[^]*?'刷新失败'/);
+  assert.match(main, /status === 'done' \? '已刷新' : '刷新'/);
+  assert.doesNotMatch(main, /快照未更新/);
+  assert.doesNotMatch(main, /重新读取/);
+  assert.match(main, /invoke\(command, \{ force: forceRefresh \}\)/);
 });

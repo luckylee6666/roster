@@ -2352,7 +2352,7 @@ function bind() {
   termEl.usageBtn.onclick = openUsage;
   $('usage-close').onclick = closeUsage;
   $('usage-ok').onclick = closeUsage;
-  $('usage-refresh').onclick = () => { void refreshUsagePanel(); };
+  $('usage-refresh').onclick = () => { void refreshUsagePanel({ forceProbe: true }); };
   document.querySelectorAll('.usage-tab').forEach(tab => {
     tab.onclick = () => {
       if (tab.hidden || tab.disabled || tab.classList.contains('active')) return;
@@ -2821,10 +2821,12 @@ let usageAgent = '';
 const usageInflight = new Map();
 let usagePanelProbeRevision = 0;
 let usageRequestRevision = 0;
+let usagePanelRefreshing = false;
+let usageRefreshLabelTimer = null;
 
 async function openUsage() {
   $('usage-overlay').classList.add('active');
-  await refreshUsagePanel({ resetSelection: true });
+  await refreshUsagePanel({ resetSelection: true, forceProbe: false });
 }
 function closeUsage() {
   usagePanelProbeRevision += 1;
@@ -2839,6 +2841,7 @@ function switchUsageTab(agent) {
   usageAgent = agent;
   document.querySelectorAll('.usage-tab').forEach(t =>
     t.classList.toggle('active', t.dataset.agent === agent));
+  setUsageRefreshStatus('idle');
   return true;
 }
 
@@ -2854,6 +2857,7 @@ function syncUsageTabs({ loadOnChange = false } = {}) {
     tab.disabled = !visible;
     tab.classList.toggle('active', visible && tab.dataset.agent === usageAgent);
   });
+  if (previous !== usageAgent) setUsageRefreshStatus('idle');
   if (!available.length && $('usage-overlay').classList.contains('active')) {
     body.dataset.checking = 'false';
     body.innerHTML = '<div class="usage-error">本机没有已安装且支持用量查询的 Claude、Codex 或 Grok</div>';
@@ -2878,23 +2882,67 @@ function setUsageTabsChecking() {
   $('usage-body').innerHTML = '<div class="usage-loading">正在检查本机 CLI…</div>';
 }
 
-async function refreshUsagePanel({ resetSelection = false } = {}) {
-  const revision = ++usagePanelProbeRevision;
-  if (resetSelection) usageAgent = '';
-  setUsageTabsChecking();
-  const [detected] = await Promise.all([
-    refreshInstalledClis({ force: true, syncUsageLoad: false }),
-    refreshUsageCapabilities({ syncTabs: false }),
-  ]);
-  if (revision !== usagePanelProbeRevision
-    || !$('usage-overlay').classList.contains('active')
-    || detected === null) return;
-  const available = syncUsageTabs();
-  $('usage-body').dataset.checking = 'false';
-  if (available.length) await loadUsage();
+function setUsageRefreshStatus(status) {
+  const button = $('usage-refresh');
+  clearTimeout(usageRefreshLabelTimer);
+  usageRefreshLabelTimer = null;
+  if (status === 'busy') {
+    button.disabled = true;
+    button.textContent = '刷新中…';
+    return;
+  }
+  button.disabled = false;
+  button.textContent = status === 'failed'
+      ? '刷新失败'
+      : status === 'done' ? '已刷新' : '刷新';
+  if (status !== 'idle') {
+    usageRefreshLabelTimer = setTimeout(() => {
+      button.textContent = '刷新';
+      usageRefreshLabelTimer = null;
+    }, 1200);
+  }
 }
 
-async function loadUsage() {
+async function refreshUsagePanel({ resetSelection = false, forceProbe = false } = {}) {
+  if (forceProbe && usagePanelRefreshing) return;
+  if (forceProbe) {
+    usagePanelRefreshing = true;
+    setUsageRefreshStatus('busy');
+  }
+  const revision = ++usagePanelProbeRevision;
+  let completionStatus = 'done';
+  try {
+    if (resetSelection) usageAgent = '';
+    // 启动和窗口 focus 已维护 installedCliIds；普通打开直接复用，避免每次都把
+    // 已知 tab 隐藏后重新跑登录壳探测。只有首次结果尚未回来或用户手动刷新才检查。
+    if (!forceProbe && installedCliIds !== null) {
+      const available = syncUsageTabs();
+      $('usage-body').dataset.checking = 'false';
+      if (available.length) await loadUsage();
+      return;
+    }
+    setUsageTabsChecking();
+    const tasks = [refreshInstalledClis({ force: forceProbe, syncUsageLoad: false })];
+    if (forceProbe) tasks.push(refreshUsageCapabilities({ syncTabs: false }));
+    const [detected] = await Promise.all(tasks);
+    if (revision !== usagePanelProbeRevision
+      || !$('usage-overlay').classList.contains('active')
+      || detected === null) return;
+    const available = syncUsageTabs();
+    $('usage-body').dataset.checking = 'false';
+    if (available.length) {
+      const payload = await loadUsage({ forceRefresh: forceProbe });
+      if (forceProbe && (!payload?.ok || payload?.stale)) completionStatus = 'failed';
+    }
+  } finally {
+    if (forceProbe) {
+      usagePanelRefreshing = false;
+      setUsageRefreshStatus(completionStatus);
+    }
+  }
+}
+
+async function loadUsage({ forceRefresh = false } = {}) {
   const agent = usageAgent;
   const body = $('usage-body');
   if (!usageAgentsForInstalledClis(installedCliIds, usageCapableAgentIds).includes(agent)) {
@@ -2909,11 +2957,6 @@ async function loadUsage() {
   }
   const requestRevision = ++usageRequestRevision;
   body.innerHTML = '<div id="usage-oauth"><div class="usage-loading">查询用量…</div></div>';
-  let pending = usageInflight.get(agent);
-  if (!pending) {
-    pending = Promise.resolve().then(() => invoke(command));
-    usageInflight.set(agent, pending);
-  }
   const isCurrent = () => shouldApplyUsageResult({
     requestRevision,
     currentRevision: usageRequestRevision,
@@ -2923,16 +2966,29 @@ async function loadUsage() {
     installedIds: installedCliIds,
     supportedIds: usageCapableAgentIds,
   });
+  let pending = usageInflight.get(agent);
+  if (forceRefresh && pending) {
+    try { await pending; } catch (_) {}
+    if (!isCurrent()) return null;
+    if (usageInflight.get(agent) === pending) usageInflight.delete(agent);
+    pending = null;
+  }
+  if (!pending) {
+    pending = Promise.resolve().then(() => invoke(command, { force: forceRefresh }));
+    usageInflight.set(agent, pending);
+  }
   try {
     const o = await pending;
-    if (!isCurrent()) return;
+    if (!isCurrent()) return null;
     renderLimitUsage(o, windowsFromUsagePayload(agent, o), agent);
+    return o;
   } catch (e) {
-    if (!isCurrent()) return;
+    if (!isCurrent()) return null;
     const el = document.getElementById('usage-oauth');
     const msg = `查询失败：${String(e)}`;
     if (el) el.innerHTML = `<div class="usage-error">${esc(msg)}</div>`;
     else body.innerHTML = `<div class="usage-error">${esc(msg)}</div>`;
+    return null;
   } finally {
     if (usageInflight.get(agent) === pending) usageInflight.delete(agent);
   }

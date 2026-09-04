@@ -8,11 +8,13 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 **Fixed**
 - Resumed Codex conversations are ordered by the JSONL file's last activity time instead of the thread's original creation timestamp, and returning from Developer mode refreshes the conversation sidebar immediately. A long-running thread continued today no longer appears buried under weeks-old history.
+- Opening the usage panel now reuses the CLI installation result already maintained at startup and on window focus instead of hiding all tabs and probing again every time. Manual Refresh shows a visible state, explicitly rechecks capabilities and installation, and bypasses each provider's normal 60-second cache. Grok now makes a real read-only billing request through the official local `grok agent stdio` ACP process (`x.ai/billing`) without creating a conversation or sending a prompt; the structured local billing log remains a stale-data fallback only when that live query fails.
 
 ### 中文
 
 **修复**
 - Codex 续接会话改按 JSONL 文件的最后活动时间排序，不再按线程首次创建时间；从开发模式切回对话模式时也会立即重读历史。今天仍在继续的长期会话不会再沉到数周前。
+- 打开用量面板会直接复用应用启动和窗口聚焦时维护的 CLI 安装结果，不再每次隐藏所有标签并重复探测；手动刷新会显示明确状态，重查平台能力与安装状态，并绕过各家的普通 60 秒缓存。Grok 现在会通过官方本机 `grok agent stdio` ACP 进程真实请求 `x.ai/billing`，不创建对话、也不发送模型请求；只有实时查询失败时，才把结构化本地 billing 日志作为明确标记的旧数据兜底。
 
 ## v1.4.0
 

@@ -3024,35 +3024,29 @@ fn terminal_remote_stop(state: State<TerminalState>) {
 }
 
 /// Codex 限流用量（ChatGPT 套餐窗口）：走本机 `codex app-server` 的
-/// `account/rateLimits/read`，带 60s 缓存。async + spawn_blocking，避免冻 UI。
+/// `account/rateLimits/read`，普通查询带 60s 缓存，手动刷新可跳过。async +
+/// spawn_blocking，避免冻 UI。
 #[tauri::command]
-async fn codex_usage() -> Result<usage::CodexUsage, String> {
-    tauri::async_runtime::spawn_blocking(usage::fetch_codex_usage)
+async fn codex_usage(force: Option<bool>) -> Result<usage::CodexUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || usage::fetch_codex_usage(force.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())
 }
 
-/// Grok 订阅用量：读取本机 Grok CLI 最近写下的结构化 billing 快照，Roster
-/// 只投影百分比/周期/订阅档位，不读取或转发 Grok 登录凭据。
+/// Grok 订阅用量：由本机 Grok CLI 的 ACP billing 扩展实时查询；Roster 只投影
+/// 百分比/周期/订阅档位，不读取或转发 Grok 登录凭据。失败时后端可回退本地快照。
 #[tauri::command]
-async fn grok_usage() -> Result<usage::GrokUsage, String> {
-    tauri::async_runtime::spawn_blocking(usage::fetch_grok_usage)
+async fn grok_usage(force: Option<bool>) -> Result<usage::GrokUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || usage::fetch_grok_usage(force.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())
 }
 
-/// 返回当前平台真正可用的用量来源。CLI 是否安装由另一条命令负责；这里单独
-/// 表达后端能力，避免 Windows 安装 Grok 后出现一个必然失败的用量入口。
+/// 返回当前平台具备用量后端能力的来源。CLI 是否安装由另一条命令负责；Grok
+/// 通过跨平台的官方 ACP 查询，不再依赖 Unix 专属的安全日志读取能力。
 #[tauri::command]
 fn usage_supported_agents() -> Vec<&'static str> {
-    #[cfg(windows)]
-    {
-        vec!["claude", "codex"]
-    }
-    #[cfg(not(windows))]
-    {
-        vec!["claude", "codex", "grok"]
-    }
+    vec!["claude", "codex", "grok"]
 }
 
 /// 在普通用户对话工作台里启动一轮已登记 CLI。项目路径始终从后端保存的项目记录
@@ -3236,10 +3230,11 @@ fn app_log(level: String, msg: String) {
     }
 }
 
-/// OAuth 限流用量（Claude 专属，同 /usage 数据源）：5h/7d 使用百分比 + 重置时间，带 60s 缓存。
+/// OAuth 限流用量（Claude 专属，同 /usage 数据源）：5h/7d 使用百分比 + 重置时间；
+/// 普通查询带 60s 缓存，手动刷新可跳过。
 #[tauri::command]
-async fn oauth_usage() -> Result<usage::OAuthUsage, String> {
-    tauri::async_runtime::spawn_blocking(usage::fetch_oauth_usage)
+async fn oauth_usage(force: Option<bool>) -> Result<usage::OAuthUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || usage::fetch_oauth_usage(force.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())
 }
@@ -3502,9 +3497,6 @@ mod tests {
         let agents = usage_supported_agents();
         assert!(agents.contains(&"claude"));
         assert!(agents.contains(&"codex"));
-        #[cfg(windows)]
-        assert!(!agents.contains(&"grok"));
-        #[cfg(not(windows))]
         assert!(agents.contains(&"grok"));
     }
 
