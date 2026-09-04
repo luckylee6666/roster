@@ -10,7 +10,7 @@
 
 <p align="center">多 AI CLI 指挥台桌面应用，基于 Tauri v2 构建。</p>
 
-最新版本：**v1.3.3** — 移除 Gemini（七家里唯一无法在本机验证的一家）；agy 的只读档现在真正跑的是 plan 模式，不再靠默认档恰好不写；等待审批时 Codex 进程死掉不再把这一轮挂住；菜单栏托盘不再显示只有 Claude 的用量。详情见[更新日志](CHANGELOG.md)。
+最新版本：**v1.4.0** — Claude、Codex 之外新增 Grok 订阅用量，并按本机安装与平台能力动态过滤；Claude 上下文占比能正确识别当前 1M 模型；跨 CLI 交接也不再因递归同步而栈溢出。详情见[更新日志](CHANGELOG.md)。
 
 ## 功能特性
 
@@ -34,7 +34,7 @@
 - **项目想法** — 每个项目可保存多条未成形想法；开发模式和对话工作台都能记录、完善、归档、删除，成熟后放入当前输入框且不自动发送
 - **跨 CLI 交接** — 任意一家已登记 CLI 都能把当前项目的最新会话和 Git 现场交给另一家已安装 CLI，例如 Grok 交给 Claude，来源会话保持不动
 - **恢复现场** — 项目卡片历史图标，一张速览接回上次工作：git 概览 + 最近提交 + 改动文件 + CLAUDE.md 摘要 + 上次启动的 CLI；底部一键打开终端 / Claude
-- **限流用量（零 Node）** — 用量面板：Claude 走官方 `api/oauth/usage`（5 小时 / 7 天，钥匙串 token，首次弹授权）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`（ChatGPT 套餐窗口，时长由服务端决定）。缓存 60 秒、秒出
+- **限流用量（零 Node）** — 只显示本机已安装且当前平台具备对应用量后端能力的 Claude/Codex/Grok 标签，打开面板或刷新时都会重新探测。Claude 走官方 `api/oauth/usage`（5 小时 / 7 天）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`；macOS/Linux 上的 Grok 观测官方 CLI 本地结构化 billing 日志（beta，并非公开稳定 API），读取周/月百分比与重置时间。Roster 不读取 Grok 凭据；旧快照会显示真实年龄，并在 Grok 下一次真实请求或交互式 `/usage` 后更新。Windows 在具备等价的 reparse-point 安全读取前会隐藏 Grok 用量
 - **菜单栏托盘** — macOS 菜单栏常驻显示 Claude `5h X% · 周 Y%`，每 60 秒刷新；菜单可打开应用 / 刷新 / 退出
 - **终端上下文 %** — Claude 会话标签显示 `NN%` 上下文占用（读启动横幅判窗口大小 + transcript 估算，≥70% 橙、≥90% 红），新会话发话前为 0
 - **扫描导入** — 扫描目录批量导入 git 项目（自动读取 remote、按路径去重）

@@ -71,6 +71,13 @@ test('交接读取最新磁盘会话和 Git 现场，再安全新开目标终端
   );
   assert.match(closeBlock, /sessionHandoffBusy && !force/);
   assert.match(closeBlock, /return false/);
+  const clearContextAt = closeBlock.indexOf('sessionHandoffContext = null');
+  const closeOverlayAt = closeBlock.indexOf("sessionHandoff?.classList.remove('active')");
+  const syncBusyAt = closeBlock.indexOf('setSessionHandoffBusy(false)');
+  assert.ok(clearContextAt >= 0 && clearContextAt < syncBusyAt,
+    '触发按钮同步前必须先清空交接上下文，避免切换到目标终端后递归关闭');
+  assert.ok(closeOverlayAt >= 0 && closeOverlayAt < syncBusyAt,
+    '触发按钮同步前必须先把交接弹窗标记为关闭');
   assert.match(main, /sessionHandoffClose\.disabled = sessionHandoffBusy/);
   assert.match(main, /sessionHandoffCancel\.disabled = sessionHandoffBusy/);
 });

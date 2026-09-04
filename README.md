@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.3.3** — Gemini is removed (the one CLI that could not be verified here), agy's read-only tier now actually runs plan mode instead of relying on its default happening not to write, a Codex process that died while an approval was pending no longer hangs the turn, and the menu-bar tray no longer shows a Claude-only quota. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.4.0** — Grok subscription usage joins Claude and Codex with installed-CLI and platform-capability filtering; Claude context percentages recognize current 1M models correctly; and cross-CLI handoff no longer fails with a recursive stack overflow. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -34,7 +34,7 @@ Latest release: **v1.3.3** — Gemini is removed (the one CLI that could not be 
 - **Per-project ideas** — keep multiple rough ideas per project; both workspaces can capture, refine, archive, delete, and place them into the current input without sending automatically
 - **Cross-CLI handoff** — from any running registered CLI tab, review that tool's latest project conversation plus the current Git state, edit the handoff draft, then open any other installed CLI to continue without modifying the source session
 - **Restore context** — a history icon on each project card opens a one-glance snapshot to resume work: git overview + recent commits + changed files + CLAUDE.md summary + the CLI you last launched there; footer buttons jump back in (open terminal / Claude)
-- **Rate-limit usage (no Node)** — usage panel: Claude uses the official `api/oauth/usage` endpoint (5-hour / 7-day, Keychain token; first read prompts authorization); Codex uses the local `codex app-server` `account/rateLimits/read` RPC (ChatGPT plan windows, duration from the server). Cached 60s, near-instant
+- **Rate-limit usage (no Node)** — only locally installed Claude/Codex/Grok tabs whose usage backend is available on the current platform are shown, rechecked whenever the panel opens or refreshes. Claude uses the official `api/oauth/usage` endpoint (5-hour / 7-day); Codex uses the local `codex app-server` `account/rateLimits/read` RPC; on macOS/Linux, Grok observes the official CLI's local structured billing log (beta, not a public stable API) for weekly/monthly percentage and reset time. Roster never reads Grok credentials; older snapshots are labelled with their real age and update after a real Grok request or interactive `/usage`. Windows hides Grok usage until equivalent reparse-point-safe log access is available
 - **Menu-bar tray** — a macOS menu-bar item shows Claude `5h X% · 7d Y%`, refreshed every 60s; its menu opens the app / refreshes / quits
 - **Terminal context %** — Claude tabs show an `NN%` context-window badge (window size read from the startup banner, fill estimated from the transcript; amber ≥70%, red ≥90%); 0 before the first turn of a new session
 - **Scan & import** — batch-import git projects from a directory (auto-reads remote, dedups by path)

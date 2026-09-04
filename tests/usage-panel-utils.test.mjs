@@ -6,13 +6,57 @@ import {
   windowsFromUsagePayload,
   conversationUsageSummary,
   conversationUsageState,
+  grokUsageFreshRemainingMs,
+  selectUsageAgent,
+  shouldApplyUsageResult,
+  usageAgentsForInstalledClis,
+  usageRefreshMaxAge,
   usageResetLabel,
 } from '../src/usage-panel-utils.js';
 
-test('用量面板只保留 Claude 与 Codex', () => {
-  assert.deepEqual(USAGE_AGENTS, ['claude', 'codex']);
+test('用量面板支持 Claude、Codex 与 Grok，并对未知助手 fail closed', () => {
+  assert.deepEqual(USAGE_AGENTS, ['claude', 'codex', 'grok']);
   assert.equal(usageCommandForAgent('claude'), 'oauth_usage');
   assert.equal(usageCommandForAgent('codex'), 'codex_usage');
+  assert.equal(usageCommandForAgent('grok'), 'grok_usage');
+  assert.equal(usageCommandForAgent('unknown'), '');
+});
+
+test('用量标签只保留本机已安装的受支持 CLI', () => {
+  assert.deepEqual(usageAgentsForInstalledClis(null), []);
+  assert.deepEqual(usageAgentsForInstalledClis([]), []);
+  assert.deepEqual(usageAgentsForInstalledClis(['opencode', 'agy']), []);
+  assert.deepEqual(usageAgentsForInstalledClis(['grok']), ['grok']);
+  assert.deepEqual(
+    usageAgentsForInstalledClis(['grok', 'codex', 'grok', 'unknown']),
+    ['codex', 'grok'],
+    '结果按用量面板固定顺序展示，不受探测顺序和重复项影响',
+  );
+  assert.deepEqual(
+    usageAgentsForInstalledClis(['claude', 'codex', 'grok'], ['claude', 'codex']),
+    ['claude', 'codex'],
+    'CLI 已安装但当前平台没有对应后端能力时也必须隐藏',
+  );
+  assert.equal(selectUsageAgent(['codex', 'grok'], 'grok'), 'grok');
+  assert.equal(selectUsageAgent(['codex', 'grok'], 'claude'), 'codex');
+  assert.equal(selectUsageAgent([], 'claude'), '');
+});
+
+test('旧用量响应不能跨关闭、重开或已卸载标签回写', () => {
+  const current = {
+    requestRevision: 3,
+    currentRevision: 3,
+    overlayOpen: true,
+    agent: 'grok',
+    currentAgent: 'grok',
+    installedIds: ['grok'],
+  };
+  assert.equal(shouldApplyUsageResult(current), true);
+  assert.equal(shouldApplyUsageResult({ ...current, requestRevision: 2 }), false);
+  assert.equal(shouldApplyUsageResult({ ...current, overlayOpen: false }), false);
+  assert.equal(shouldApplyUsageResult({ ...current, currentAgent: 'codex' }), false);
+  assert.equal(shouldApplyUsageResult({ ...current, installedIds: ['claude'] }), false);
+  assert.equal(shouldApplyUsageResult({ ...current, supportedIds: ['claude', 'codex'] }), false);
 });
 
 test('Claude 载荷映射为 5h / 7d 窗口', () => {
@@ -32,6 +76,40 @@ test('Codex 载荷直接使用后端窗口列表', () => {
   };
   assert.deepEqual(windowsFromUsagePayload('codex', payload), payload.windows);
   assert.deepEqual(windowsFromUsagePayload('codex', {}), []);
+});
+
+test('Grok 载荷复用统一窗口结构', () => {
+  const payload = {
+    windows: [{ label: '7 天窗口', utilization: 18, resetsAt: '2026-09-08T12:00:00Z' }],
+  };
+  assert.deepEqual(windowsFromUsagePayload('grok', payload), payload.windows);
+  assert.deepEqual(windowsFromUsagePayload('grok', {}), []);
+  assert.deepEqual(windowsFromUsagePayload('unknown', payload), []);
+  assert.equal(conversationUsageSummary('grok', { ok: true, ...payload }), '7 天 18%');
+});
+
+test('Grok 旧快照明确标记且不能冒充实时用满', () => {
+  const payload = {
+    ok: true,
+    stale: true,
+    windows: [{ label: '7 天窗口', utilization: 100, resetsAt: '2026-09-08T12:00:00Z' }],
+  };
+  const state = conversationUsageState('grok', payload, Date.UTC(2026, 8, 3, 12));
+  assert.equal(state.text, '7 天 100%');
+  assert.equal(state.stale, true);
+  assert.equal(state.level, 'ok');
+  assert.equal(state.blocked, false, '旧数据可能已经跨过重置点，不能提前宣称当前额度已用满');
+});
+
+test('Grok 前端缓存不超过后端的一分钟新鲜期', () => {
+  assert.equal(usageRefreshMaxAge('grok', 3 * 60 * 1000), 60 * 1000);
+  assert.equal(usageRefreshMaxAge('grok', 30 * 1000), 30 * 1000);
+  assert.equal(usageRefreshMaxAge('claude', 3 * 60 * 1000), 3 * 60 * 1000);
+  assert.equal(usageRefreshMaxAge('grok', Number.NaN), 0);
+  assert.equal(grokUsageFreshRemainingMs({ ageMs: 59_250, ageSecs: 59 }), 750);
+  assert.equal(grokUsageFreshRemainingMs({ ageSecs: 59 }), 0, '旧后端整数秒按下一秒保守过期');
+  assert.equal(grokUsageFreshRemainingMs({ ageSecs: 80 }), 0);
+  assert.equal(grokUsageFreshRemainingMs({ stale: true, ageSecs: 1 }), 0);
 });
 
 test('对话侧栏的用量只留窗口和百分比，查不到就给空串', () => {

@@ -52,7 +52,13 @@ import {
   sessionRailHiddenFromStorage,
   sessionRailViewLoading,
 } from './session-rail-utils.js';
-import { usageCommandForAgent, windowsFromUsagePayload } from './usage-panel-utils.js';
+import {
+  selectUsageAgent,
+  shouldApplyUsageResult,
+  usageAgentsForInstalledClis,
+  usageCommandForAgent,
+  windowsFromUsagePayload,
+} from './usage-panel-utils.js';
 import {
   DEFAULT_ORCHESTRA_BRAIN,
   ORCHESTRA_GOAL_FILE,
@@ -280,6 +286,7 @@ async function init() {
   await load();
   bind();
   installApplicationSurfaces();
+  await refreshUsageCapabilities({ syncTabs: false });
   void refreshInstalledClis();
   void refreshProxyIndicator();
   try {
@@ -570,8 +577,23 @@ let installedCliAt = 0;
 let installedCliProbeRevision = 0;
 let installedCliProbeRetries = 0;
 let installedCliRetryTimer = null;
+// Claude/Codex 的用量后端跨平台可用；Grok 只有后端明确声明支持时才开放。
+// 初值故意 fail closed，避免 Windows 启动探测完成前短暂出现必然失败的入口。
+let usageCapableAgentIds = ['claude', 'codex'];
 const INSTALLED_CLI_TTL_MS = 60_000;
 const INSTALLED_CLI_MAX_RETRIES = 2;
+
+async function refreshUsageCapabilities({ syncTabs = true } = {}) {
+  try {
+    const supported = await invoke('usage_supported_agents');
+    usageCapableAgentIds = usageAgentsForInstalledClis(supported);
+  } catch (_) {
+    usageCapableAgentIds = ['claude', 'codex'];
+  }
+  conversationController?.setUsageAgentIds(usageCapableAgentIds);
+  if (syncTabs) syncUsageTabs();
+  return usageCapableAgentIds;
+}
 
 function scheduleInstalledCliRetry() {
   clearTimeout(installedCliRetryTimer);
@@ -605,12 +627,13 @@ function paintCardCliRows() {
   });
 }
 
-async function refreshInstalledClis({ force = false } = {}) {
+async function refreshInstalledClis({ force = false, syncUsageLoad = true } = {}) {
   if (!force && installedCliIds && Date.now() - installedCliAt < INSTALLED_CLI_TTL_MS) {
     paintCardCliRows();
     syncSessionHandoffButton();
+    syncUsageTabs({ loadOnChange: syncUsageLoad });
     conversationController?.setInstalledCliIds(installedCliIds);
-    return;
+    return installedCliIds;
   }
   // A pending retry is an older probe. If it fires while this forced request is
   // in flight it would advance the revision and discard this newer result,
@@ -622,7 +645,7 @@ async function refreshInstalledClis({ force = false } = {}) {
   const revision = ++installedCliProbeRevision;
   try {
     const found = await invoke('list_installed_clis', { names: [...CLI_TOOL_IDS] });
-    if (revision !== installedCliProbeRevision) return;
+    if (revision !== installedCliProbeRevision) return null;
     const detected = normalizeInstalledCliIds(found);
     // Login-shell startup can fail transiently while the app itself is still
     // opening. Do not turn one empty probe into a false “not installed” state.
@@ -631,11 +654,11 @@ async function refreshInstalledClis({ force = false } = {}) {
       installedCliAt = 0;
       conversationController?.setInstalledCliIds(installedCliIds);
       scheduleInstalledCliRetry();
-      return;
+      return null;
     }
     installedCliIds = detected;
   } catch (_) {
-    if (revision !== installedCliProbeRevision) return;
+    if (revision !== installedCliProbeRevision) return null;
     // 探测失败不能谎报“全部已安装”；保留上一次成功结果，
     // 首次启动则先有界重试，多次失败后才安全显示为空。
     if (installedCliProbeRetries < INSTALLED_CLI_MAX_RETRIES) {
@@ -643,14 +666,15 @@ async function refreshInstalledClis({ force = false } = {}) {
       installedCliAt = 0;
       conversationController?.setInstalledCliIds(installedCliIds);
       scheduleInstalledCliRetry();
-      return;
+      return null;
     }
     installedCliIds ??= [];
     installedCliAt = 0;
     paintCardCliRows();
     syncSessionHandoffButton();
+    syncUsageTabs({ loadOnChange: syncUsageLoad });
     conversationController?.setInstalledCliIds(installedCliIds);
-    return;
+    return installedCliIds;
   }
   clearTimeout(installedCliRetryTimer);
   installedCliRetryTimer = null;
@@ -658,7 +682,9 @@ async function refreshInstalledClis({ force = false } = {}) {
   installedCliAt = Date.now();
   paintCardCliRows();
   syncSessionHandoffButton();
+  syncUsageTabs({ loadOnChange: syncUsageLoad });
   conversationController?.setInstalledCliIds(installedCliIds);
+  return installedCliIds;
 }
 
 function render(list) {
@@ -1355,16 +1381,16 @@ function closeSessionHandoff(restoreButtonFocus = true, { force = false } = {}) 
   if (sessionHandoffBusy && !force) return false;
   const wasOpen = el.sessionHandoff?.classList.contains('active');
   sessionHandoffGate.invalidate();
-  setSessionHandoffBusy(false);
   sessionHandoffOperation = null;
   sessionHandoffContext = null;
-  sessionHandoffBusy = false;
   sessionHandoffContentDirty = false;
   el.sessionHandoff?.classList.remove('active');
   termEl?.handoffBtn?.classList.remove('active');
   termEl?.handoffBtn?.setAttribute('aria-expanded', 'false');
+  // setSessionHandoffBusy 会同步交接按钮；必须先清空上下文并关闭弹窗，
+  // 否则活动终端已切到接手 CLI 时，同步逻辑会再次进入本函数并递归爆栈。
+  setSessionHandoffBusy(false);
   if (wasOpen && restoreButtonFocus) requestAnimationFrame(() => termEl.handoffBtn?.focus());
-  syncSessionHandoffButton();
   return true;
 }
 
@@ -2321,11 +2347,11 @@ function bind() {
   termEl.usageBtn.onclick = openUsage;
   $('usage-close').onclick = closeUsage;
   $('usage-ok').onclick = closeUsage;
-  $('usage-refresh').onclick = () => loadUsage();
+  $('usage-refresh').onclick = () => { void refreshUsagePanel(); };
   document.querySelectorAll('.usage-tab').forEach(tab => {
     tab.onclick = () => {
-      if (tab.classList.contains('active')) return;
-      switchUsageTab(tab.dataset.agent);
+      if (tab.hidden || tab.disabled || tab.classList.contains('active')) return;
+      if (!switchUsageTab(tab.dataset.agent)) return;
       loadUsage();
     };
   });
@@ -2786,61 +2812,143 @@ function closeRemote() {
 }
 
 // ===== 用量统计 =====
-let usageAgent = 'claude';      // 当前用量 tab：claude / codex
-const usageInflight = new Set();
+let usageAgent = '';
+const usageInflight = new Map();
+let usagePanelProbeRevision = 0;
+let usageRequestRevision = 0;
 
 async function openUsage() {
   $('usage-overlay').classList.add('active');
-  switchUsageTab('claude');
-  loadUsage();
+  await refreshUsagePanel({ resetSelection: true });
 }
 function closeUsage() {
+  usagePanelProbeRevision += 1;
+  usageRequestRevision += 1;
   $('usage-overlay').classList.remove('active');
 }
 
 // 切 tab（不触发加载，仅改激活态）。
 function switchUsageTab(agent) {
+  if (!usageAgentsForInstalledClis(installedCliIds, usageCapableAgentIds).includes(agent)) return false;
+  usageRequestRevision += 1;
   usageAgent = agent;
   document.querySelectorAll('.usage-tab').forEach(t =>
     t.classList.toggle('active', t.dataset.agent === agent));
+  return true;
+}
+
+function syncUsageTabs({ loadOnChange = false } = {}) {
+  const available = usageAgentsForInstalledClis(installedCliIds, usageCapableAgentIds);
+  const previous = usageAgent;
+  const body = $('usage-body');
+  usageAgent = selectUsageAgent(available, previous);
+  if (previous !== usageAgent) usageRequestRevision += 1;
+  document.querySelectorAll('.usage-tab').forEach(tab => {
+    const visible = available.includes(tab.dataset.agent);
+    tab.hidden = !visible;
+    tab.disabled = !visible;
+    tab.classList.toggle('active', visible && tab.dataset.agent === usageAgent);
+  });
+  if (!available.length && $('usage-overlay').classList.contains('active')) {
+    body.dataset.checking = 'false';
+    body.innerHTML = '<div class="usage-error">本机没有已安装且支持用量查询的 Claude、Codex 或 Grok</div>';
+  } else if (loadOnChange
+    && (previous !== usageAgent || body.dataset.checking === 'true')
+    && usageAgent
+    && $('usage-overlay').classList.contains('active')) {
+    body.dataset.checking = 'false';
+    void loadUsage();
+  }
+  return available;
+}
+
+function setUsageTabsChecking() {
+  usageRequestRevision += 1;
+  document.querySelectorAll('.usage-tab').forEach(tab => {
+    tab.hidden = true;
+    tab.disabled = true;
+    tab.classList.remove('active');
+  });
+  $('usage-body').dataset.checking = 'true';
+  $('usage-body').innerHTML = '<div class="usage-loading">正在检查本机 CLI…</div>';
+}
+
+async function refreshUsagePanel({ resetSelection = false } = {}) {
+  const revision = ++usagePanelProbeRevision;
+  if (resetSelection) usageAgent = '';
+  setUsageTabsChecking();
+  const [detected] = await Promise.all([
+    refreshInstalledClis({ force: true, syncUsageLoad: false }),
+    refreshUsageCapabilities({ syncTabs: false }),
+  ]);
+  if (revision !== usagePanelProbeRevision
+    || !$('usage-overlay').classList.contains('active')
+    || detected === null) return;
+  const available = syncUsageTabs();
+  $('usage-body').dataset.checking = 'false';
+  if (available.length) await loadUsage();
 }
 
 async function loadUsage() {
   const agent = usageAgent;
   const body = $('usage-body');
-  if (usageInflight.has(agent)) return;
-  usageInflight.add(agent);
-  body.innerHTML = '<div id="usage-oauth"><div class="usage-loading">查询限流用量…</div></div>';
+  if (!usageAgentsForInstalledClis(installedCliIds, usageCapableAgentIds).includes(agent)) {
+    syncUsageTabs();
+    return;
+  }
+  body.dataset.checking = 'false';
+  const command = usageCommandForAgent(agent);
+  if (!command) {
+    body.innerHTML = '<div class="usage-error">当前助手没有可用的限流接口</div>';
+    return;
+  }
+  const requestRevision = ++usageRequestRevision;
+  body.innerHTML = '<div id="usage-oauth"><div class="usage-loading">查询用量…</div></div>';
+  let pending = usageInflight.get(agent);
+  if (!pending) {
+    pending = Promise.resolve().then(() => invoke(command));
+    usageInflight.set(agent, pending);
+  }
+  const isCurrent = () => shouldApplyUsageResult({
+    requestRevision,
+    currentRevision: usageRequestRevision,
+    overlayOpen: $('usage-overlay').classList.contains('active'),
+    agent,
+    currentAgent: usageAgent,
+    installedIds: installedCliIds,
+    supportedIds: usageCapableAgentIds,
+  });
   try {
-    const o = await invoke(usageCommandForAgent(agent));
-    if (usageAgent !== agent) return;
-    renderLimitUsage(o, windowsFromUsagePayload(agent, o));
+    const o = await pending;
+    if (!isCurrent()) return;
+    renderLimitUsage(o, windowsFromUsagePayload(agent, o), agent);
   } catch (e) {
-    if (usageAgent !== agent) return;
+    if (!isCurrent()) return;
     const el = document.getElementById('usage-oauth');
     const msg = `查询失败：${String(e)}`;
     if (el) el.innerHTML = `<div class="usage-error">${esc(msg)}</div>`;
     else body.innerHTML = `<div class="usage-error">${esc(msg)}</div>`;
   } finally {
-    usageInflight.delete(agent);
+    if (usageInflight.get(agent) === pending) usageInflight.delete(agent);
   }
 }
 
-function renderLimitUsage(o, windows) {
+function renderLimitUsage(o, windows, agent = usageAgent) {
   const el = document.getElementById('usage-oauth');
   if (!el) return;
   if (!o || !o.ok) {
-    el.innerHTML = `<div class="usage-error">${esc((o && o.error) || '限流用量查询失败')}</div>`;
+    el.innerHTML = `<div class="usage-error">${esc((o && o.error) || '用量查询失败')}</div>`;
     return;
   }
   const plan = o.plan ? ` · ${esc(o.plan)}` : '';
   const age = `<span class="usage-age">${esc(fmtUsageAge(o.ageSecs))}</span>`;
   const staleWarn = o.stale
-    ? `<div class="usage-stale-warn">⚠ 实时刷新失败，下面是旧数据${o.error ? '：' + esc(o.error) : ''}</div>`
+    ? `<div class="usage-stale-warn">⚠ 当前显示的是旧数据${o.error ? '：' + esc(o.error) : ''}</div>`
     : '';
   const rows = (windows || []).map(w => oauthRow(w.label, w)).join('');
+  const title = agent === 'grok' ? '订阅用量' : '限流用量';
   el.innerHTML =
-    `<div class="usage-oauth-head">限流用量${plan}${age}</div>` +
+    `<div class="usage-oauth-head">${title}${plan}${age}</div>` +
     staleWarn +
     (rows || '<div class="usage-weekly-empty">暂无限流窗口</div>');
 }

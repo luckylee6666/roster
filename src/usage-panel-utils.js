@@ -1,17 +1,70 @@
-export const USAGE_AGENTS = ['claude', 'codex'];
+export const USAGE_AGENTS = ['claude', 'codex', 'grok'];
+export const GROK_USAGE_FRESH_MS = 60 * 1000;
+
+export function usageAgentsForInstalledClis(installedIds, supportedIds = USAGE_AGENTS) {
+  const installed = new Set((Array.isArray(installedIds) ? installedIds : []).map(String));
+  const supported = new Set((Array.isArray(supportedIds) ? supportedIds : []).map(String));
+  return USAGE_AGENTS.filter(agent => installed.has(agent) && supported.has(agent));
+}
+
+export function selectUsageAgent(availableAgents, requestedAgent) {
+  const available = Array.isArray(availableAgents) ? availableAgents : [];
+  return available.includes(requestedAgent) ? requestedAgent : (available[0] || '');
+}
+
+export function shouldApplyUsageResult({
+  requestRevision,
+  currentRevision,
+  overlayOpen,
+  agent,
+  currentAgent,
+  installedIds,
+  supportedIds,
+} = {}) {
+  return requestRevision === currentRevision
+    && Boolean(overlayOpen)
+    && agent === currentAgent
+    && usageAgentsForInstalledClis(installedIds, supportedIds).includes(agent);
+}
+
+export function usageRefreshMaxAge(agent, requestedMaxAge) {
+  const maxAge = Number(requestedMaxAge);
+  const normalized = Number.isFinite(maxAge) && maxAge >= 0 ? maxAge : 0;
+  return agent === 'grok' ? Math.min(normalized, GROK_USAGE_FRESH_MS) : normalized;
+}
+
+export function grokUsageFreshRemainingMs(payload) {
+  if (payload?.stale) return 0;
+  const exactAgeMs = Number(payload?.ageMs);
+  if (Number.isFinite(exactAgeMs) && exactAgeMs >= 0) {
+    return Math.max(0, GROK_USAGE_FRESH_MS - exactAgeMs);
+  }
+  const ageSecs = Number(payload?.ageSecs);
+  // 旧后端只有向下取整的整数秒；保守补足下一秒，避免 59.999s 被当成
+  // 还剩整整 1s 的新鲜数据。完全没给年龄时才从 0 开始计。
+  const ageMs = Number.isFinite(ageSecs) && ageSecs >= 0
+    ? (Math.floor(ageSecs) + 1) * 1000
+    : 0;
+  return Math.max(0, GROK_USAGE_FRESH_MS - ageMs);
+}
 
 export function usageCommandForAgent(agent) {
-  return agent === 'codex' ? 'codex_usage' : 'oauth_usage';
+  if (agent === 'claude') return 'oauth_usage';
+  if (agent === 'codex') return 'codex_usage';
+  if (agent === 'grok') return 'grok_usage';
+  return '';
 }
 
 export function windowsFromUsagePayload(agent, payload) {
-  if (agent === 'codex') {
+  if (agent === 'codex' || agent === 'grok') {
     return Array.isArray(payload?.windows) ? payload.windows : [];
   }
-  return [
-    { label: '5 小时窗口', utilization: payload?.fiveHour?.utilization, resetsAt: payload?.fiveHour?.resetsAt },
-    { label: '7 天窗口', utilization: payload?.sevenDay?.utilization, resetsAt: payload?.sevenDay?.resetsAt },
-  ];
+  return agent === 'claude'
+    ? [
+        { label: '5 小时窗口', utilization: payload?.fiveHour?.utilization, resetsAt: payload?.fiveHour?.resetsAt },
+        { label: '7 天窗口', utilization: payload?.sevenDay?.utilization, resetsAt: payload?.sevenDay?.resetsAt },
+      ]
+    : [];
 }
 
 /**
@@ -61,14 +114,15 @@ export function usageResetLabel(resetsAt, now = Date.now()) {
  */
 export function conversationUsageState(agent, payload, now = Date.now()) {
   const windows = conversationUsageWindows(agent, payload);
-  if (!windows.length) return { text: '', level: 'ok', peak: 0, reset: '', blocked: false };
+  if (!windows.length) return { text: '', level: 'ok', peak: 0, reset: '', blocked: false, stale: false };
   const text = conversationUsageSummary(agent, payload);
   const peakWindow = windows.reduce(
     (worst, entry) => (Number(entry.utilization) > Number(worst.utilization) ? entry : worst),
     windows[0],
   );
   const peak = Math.max(0, Math.min(100, Math.round(Number(peakWindow.utilization))));
-  const level = peak >= 100 ? 'blocked' : peak >= 90 ? 'danger' : peak >= 70 ? 'warn' : 'ok';
+  const stale = Boolean(payload?.stale);
+  const level = stale ? 'ok' : peak >= 100 ? 'blocked' : peak >= 90 ? 'danger' : peak >= 70 ? 'warn' : 'ok';
   const label = String(peakWindow.label || '').replace(/窗口$/, '').trim();
   return {
     text,
@@ -77,5 +131,6 @@ export function conversationUsageState(agent, payload, now = Date.now()) {
     window: label,
     reset: usageResetLabel(peakWindow.resetsAt, now),
     blocked: level === 'blocked',
+    stale,
   };
 }

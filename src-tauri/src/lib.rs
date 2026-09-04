@@ -1870,7 +1870,7 @@ const CONTEXT_WINDOW_ENV: &str = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
 /// 按 transcript 里记的模型名推断上下文上限。
 ///
 /// 这一档比写死一个常量稳：上限本来就是跟模型走的。Claude 官方 changelog 里
-/// Opus 5 与 Sonnet 5 都写明「1M context」，而 Claude 3/4 系列是 200k。
+/// Opus 5、Sonnet 5 与 Opus 4.8 都是 1M；Claude 3 和较早的 4.x 仍是 200k。
 /// 认不出的模型交给 `DEFAULT_CONTEXT_WINDOW`——按当前默认模型算，不按最老的算。
 ///
 /// 上限写死过一次 200k，结果模型换代后每个会话都显示 100%（Claude Code 自己也
@@ -1901,7 +1901,15 @@ fn context_window_for_model(model: &str) -> Option<u64> {
     if model.contains("-1m") || model.contains("[1m]") {
         return Some(1_000_000);
     }
-    for prefix in ["claude-opus-5", "claude-sonnet-5", "opus-5", "sonnet-5"] {
+    for prefix in [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "opus-5",
+        "sonnet-5",
+        // Opus 4.8 已是原生 1M；canonical model id 不一定带 `[1m]`。
+        "claude-opus-4-8",
+        "opus-4-8",
+    ] {
         if model.contains(prefix) {
             return Some(1_000_000);
         }
@@ -3024,6 +3032,29 @@ async fn codex_usage() -> Result<usage::CodexUsage, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Grok 订阅用量：读取本机 Grok CLI 最近写下的结构化 billing 快照，Roster
+/// 只投影百分比/周期/订阅档位，不读取或转发 Grok 登录凭据。
+#[tauri::command]
+async fn grok_usage() -> Result<usage::GrokUsage, String> {
+    tauri::async_runtime::spawn_blocking(usage::fetch_grok_usage)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 返回当前平台真正可用的用量来源。CLI 是否安装由另一条命令负责；这里单独
+/// 表达后端能力，避免 Windows 安装 Grok 后出现一个必然失败的用量入口。
+#[tauri::command]
+fn usage_supported_agents() -> Vec<&'static str> {
+    #[cfg(windows)]
+    {
+        vec!["claude", "codex"]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["claude", "codex", "grok"]
+    }
+}
+
 /// 在普通用户对话工作台里启动一轮已登记 CLI。项目路径始终从后端保存的项目记录
 /// 读取，不接受前端自行传入 cwd、可执行文件或参数。
 #[tauri::command]
@@ -3398,6 +3429,8 @@ pub fn run() {
             load_theme_image,
             oauth_usage,
             codex_usage,
+            grok_usage,
+            usage_supported_agents,
             conversation_chat_start,
             conversation_slash_list,
             conversation_model_list,
@@ -3430,6 +3463,14 @@ mod tests {
         // 的症状。现在按 transcript 里记的模型推断。
         assert_eq!(context_window_for_model("claude-opus-5"), Some(1_000_000));
         assert_eq!(context_window_for_model("claude-sonnet-5"), Some(1_000_000));
+        assert_eq!(context_window_for_model("claude-opus-4-8"), Some(1_000_000));
+        assert_eq!(
+            context_percent(
+                100_000,
+                context_window_for_model("claude-opus-4-8").unwrap()
+            ),
+            10
+        );
         // 名字里明写 1M 的变体也认。
         assert_eq!(
             context_window_for_model("claude-sonnet-4-5-1m"),
@@ -3454,6 +3495,17 @@ mod tests {
         // 100%，按模型推断出的 1M 算才是 64%。
         assert_eq!(context_percent(638_506, LEGACY_CONTEXT_WINDOW), 100);
         assert_eq!(context_percent(638_506, 1_000_000), 64);
+    }
+
+    #[test]
+    fn usage_capabilities_match_the_platform_backend() {
+        let agents = usage_supported_agents();
+        assert!(agents.contains(&"claude"));
+        assert!(agents.contains(&"codex"));
+        #[cfg(windows)]
+        assert!(!agents.contains(&"grok"));
+        #[cfg(not(windows))]
+        assert!(agents.contains(&"grok"));
     }
 
     #[test]

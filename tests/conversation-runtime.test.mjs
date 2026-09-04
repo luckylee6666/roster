@@ -307,7 +307,7 @@ test('强制 CLI 探测会取消旧重试，避免旧请求覆盖已安装列表
   const main = await read('src/main.js');
   assert.match(
     main,
-    /async function refreshInstalledClis\(\{ force = false \} = \{\}\) \{[\s\S]{0,700}if \(force && installedCliRetryTimer !== null\) \{[\s\S]{0,120}clearTimeout\(installedCliRetryTimer\);[\s\S]{0,120}installedCliRetryTimer = null;[\s\S]{0,180}const revision = \+\+installedCliProbeRevision;/,
+    /async function refreshInstalledClis\(\{ force = false, syncUsageLoad = true \} = \{\}\) \{[\s\S]{0,800}if \(force && installedCliRetryTimer !== null\) \{[\s\S]{0,120}clearTimeout\(installedCliRetryTimer\);[\s\S]{0,120}installedCliRetryTimer = null;[\s\S]{0,180}const revision = \+\+installedCliProbeRevision;/,
   );
 });
 

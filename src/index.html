@@ -508,7 +508,7 @@
       </div>
     </div>
 
-    <!-- 用量统计（Claude OAuth / Codex app-server） -->
+    <!-- 用量统计（Claude OAuth / Codex app-server / Grok billing snapshot） -->
     <div class="modal-mask" id="usage-overlay">
       <div class="modal-wrap">
         <div class="modal modal-sm">
@@ -518,8 +518,9 @@
           </div>
           <div class="modal-body">
             <div class="usage-tabs" id="usage-tabs">
-              <button class="usage-tab active" data-agent="claude">Claude</button>
-              <button class="usage-tab" data-agent="codex">Codex</button>
+              <button class="usage-tab" data-agent="claude" hidden>Claude</button>
+              <button class="usage-tab" data-agent="codex" hidden>Codex</button>
+              <button class="usage-tab" data-agent="grok" hidden>Grok</button>
             </div>
             <div class="usage-body" id="usage-body">
               <div class="usage-loading">查询中…</div>

@@ -13,7 +13,14 @@ import {
   startConversationTurn,
 } from './conversation-state.js';
 import { createConversationRunController } from './conversation-run-controller.js';
-import { conversationUsageState, usageCommandForAgent, USAGE_AGENTS } from './usage-panel-utils.js';
+import {
+  conversationUsageState,
+  GROK_USAGE_FRESH_MS,
+  grokUsageFreshRemainingMs,
+  usageCommandForAgent,
+  usageRefreshMaxAge,
+  USAGE_AGENTS,
+} from './usage-panel-utils.js';
 import {
   conversationSlashHelpText,
   inspectConversationSlash,
@@ -502,6 +509,9 @@ export function installConversationMode({
   let projects = [];
   let snippets = [];
   let installedCliIds = null;
+  // Grok 的日志读取并非全平台可用；由后端 capability 明确放行。
+  // Claude/Codex 是安全默认值，避免 capability 未返回时误调 Grok。
+  let usageAgentIds = ['claude', 'codex'];
   let selectedProject = null;
   let pendingAttachments = [];
   let createFolderValue = '';
@@ -534,11 +544,14 @@ export function installConversationMode({
   let usageText = '';
   // 和模式表一样，额度必须带上它属于哪个助手：切换助手/续接历史都会换人，
   // 不打归属就会把上一家的数字留在新助手的徽标旁边。
-  const EMPTY_USAGE = { providerId: '', text: '', level: 'ok', peak: 0, reset: '', blocked: false };
+  const EMPTY_USAGE = {
+    providerId: '', text: '', level: 'ok', peak: 0, reset: '', blocked: false, stale: false,
+  };
   let usage = EMPTY_USAGE;
   // 额度节流按助手各自记时：全局一个时间戳会让"刚查过 A"挡住"第一次看 B"。
   let usageFetchedAt = {};
   let usageRevision = 0;
+  let usageExpiryTimer = null;
   let deletingHistory = null;
   let resumeLatestOnHistory = false;
   // Each project keeps its own transcript, draft and run, so a turn started in
@@ -1341,7 +1354,7 @@ export function installConversationMode({
         : provider.label;
     // 额度是这家助手的属性，挂在它身上就不会有"谁的额度"的歧义。
     dom.assistantBadge.title = usage.text
-      ? `${base}\n额度：${usage.text}${usage.reset ? ` · ${usage.reset}` : ''}`
+      ? `${base}\n额度：${usage.text}${usage.stale ? ' · 旧数据' : ''}${usage.reset ? ` · ${usage.reset}` : ''}`
       : base;
   }
 
@@ -1852,17 +1865,46 @@ export function installConversationMode({
       dom.usage.dataset.level = 'ok';
       return;
     }
-    // 平时安静；接近上限才需要被看见，这时补上重置时间。
+    // 平时安静；接近上限才需要被看见，这时补上重置时间。旧快照必须
+    // 明说，且 conversationUsageState 不会拿它触发“已用满”的实时告警。
     dom.usage.dataset.level = usage.level;
-    dom.usage.textContent = usage.reset && (usage.level === 'danger' || usage.blocked)
-      ? `${usageText} · ${usage.reset}`
-      : usageText;
+    const stale = usage.stale ? ' · 旧数据' : '';
+    const reset = usage.reset && (usage.level === 'danger' || usage.blocked) ? ` · ${usage.reset}` : '';
+    dom.usage.textContent = `${usageText}${stale}${reset}`;
+  }
+
+  function clearUsageExpiryTimer() {
+    if (usageExpiryTimer) clearTimeout(usageExpiryTimer);
+    usageExpiryTimer = null;
+  }
+
+  function expireGrokUsage(providerId) {
+    usageExpiryTimer = null;
+    if (destroyed || currentProvider().id !== providerId
+      || usage.providerId !== providerId || usage.stale || !usage.text) return;
+    usage = { ...usage, stale: true, level: 'ok', blocked: false, reset: '' };
+    renderUsage();
+    renderControls();
+    renderAssistantBadge();
+  }
+
+  function scheduleUsageExpiry(agent, payload) {
+    clearUsageExpiryTimer();
+    if (agent !== 'grok' || payload?.stale || !usage.text) return;
+    const remaining = grokUsageFreshRemainingMs(payload);
+    if (remaining <= 0) {
+      expireGrokUsage(agent);
+      return;
+    }
+    usageExpiryTimer = setTimeout(() => expireGrokUsage(agent), remaining);
   }
 
   // 只查当前助手自己的限流，且最快三分钟一次；查不到就安静地不显示。
   async function refreshUsage({ force = false, maxAge = USAGE_MIN_INTERVAL_MS } = {}) {
     const agent = currentProvider().id;
-    if (!USAGE_AGENTS.includes(agent)) {
+    if (!usageAgentIds.includes(agent)) {
+      usageRevision += 1;
+      clearUsageExpiryTimer();
       usage = EMPTY_USAGE;
       usageText = '';
       renderUsage();
@@ -1870,17 +1912,24 @@ export function installConversationMode({
       renderAssistantBadge();
       return;
     }
-    if (!force && Date.now() - (usageFetchedAt[agent] || 0) < maxAge) return;
+    const effectiveMaxAge = usageRefreshMaxAge(agent, maxAge);
+    if (!force && Date.now() - (usageFetchedAt[agent] || 0) < effectiveMaxAge) return;
     const revision = ++usageRevision;
     usageFetchedAt[agent] = Date.now();
     try {
       const payload = await invoke(usageCommandForAgent(agent));
       if (destroyed || revision !== usageRevision) return;
       usage = { ...conversationUsageState(agent, payload), providerId: agent };
+      if (agent === 'grok') {
+        const remaining = grokUsageFreshRemainingMs(payload);
+        usageFetchedAt[agent] = Date.now() - (GROK_USAGE_FRESH_MS - remaining);
+      }
       // 紧挨着助手徽标显示，不必再重复一遍助手名字。
       usageText = usage.text;
+      scheduleUsageExpiry(agent, payload);
     } catch (_) {
       if (revision !== usageRevision) return;
+      clearUsageExpiryTimer();
       usage = EMPTY_USAGE;
       usageText = '';
     }
@@ -2784,6 +2833,7 @@ export function installConversationMode({
 
   function selectProvider(providerId) {
     if (isRunning() || !providerReady(providerId)) return;
+    clearUsageExpiryTimer();
     usageText = '';
     const next = selectConversationProvider(state, providerId);
     if (next === state) return;
@@ -3586,6 +3636,14 @@ export function installConversationMode({
       void refreshUsage({ force: true });
       void refreshModeOptions();
     },
+    setUsageAgentIds(ids) {
+      const supported = new Set((Array.isArray(ids) ? ids : []).map(String));
+      const next = USAGE_AGENTS.filter(agent => supported.has(agent));
+      if (next.length === usageAgentIds.length
+        && next.every((agent, index) => agent === usageAgentIds[index])) return;
+      usageAgentIds = next;
+      if (installedCliIds !== null) void refreshUsage({ force: true });
+    },
     setSnippets(nextSnippets) {
       snippets = Array.isArray(nextSnippets) ? nextSnippets : [];
       renderSnippets();
@@ -3597,6 +3655,7 @@ export function installConversationMode({
     isRunning,
     destroy() {
       destroyed = true;
+      clearUsageExpiryTimer();
       historyRevision += 1;
       transcriptRevision += 1;
       contextRevision += 1;

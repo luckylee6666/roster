@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.4.0
+
+### English
+
+**Added**
+- **Grok subscription usage is now available alongside Claude and Codex.** The usage panel rechecks locally installed CLIs when opened or refreshed and hides every provider tab whose CLI is absent or whose usage backend is unavailable on the current platform. On macOS/Linux, Roster reads only the bounded, structured billing snapshot written by the official Grok CLI and shows the weekly/monthly utilization, reset time, subscription tier, data age, and an explicit stale warning. It never reads Grok credentials or calls the private billing endpoint directly. The observed log schema is beta rather than a public stable API; Windows hides Grok usage until an equivalent reparse-point-safe reader is available.
+
+**Fixed**
+- Claude terminal context percentages now prefer an explicit limit, then infer the window from the transcript model and observed usage instead of falling back to a stale fixed 200k window; canonical Opus 4.8 model ids are correctly recognized as 1M even without a suffix.
+- Closing a successful cross-CLI handoff no longer recursively re-enters the handoff state sync and fails with `Maximum call stack size exceeded`; failure cleanup no longer reports the same stack overflow as a terminal-close error.
+
+### 中文
+
+**新增**
+- **用量面板在 Claude、Codex 之外加入 Grok 订阅用量。** 打开面板或点刷新时会重新探测本机 CLI，没有安装或当前平台没有对应后端能力的 provider 标签不会显示。macOS/Linux 上，Roster 只会有界读取 Grok 官方 CLI 写下的结构化 billing 快照，显示周/月已用百分比、重置时间、订阅档位、数据年龄和明确的旧数据提示；不会读取 Grok 凭据，也不直接调用其私有账单接口。该日志结构目前属于 beta 观测而非公开稳定 API；Windows 在具备等价的 reparse-point 安全读取前会隐藏 Grok 用量。
+
+**修复**
+- Claude 终端上下文占比现在优先采用显式上限，其次按 transcript 模型和实际观测值推断，不再回退到已经过时的固定 200k 窗口；不带后缀的 Opus 4.8 canonical model id 也会正确识别为 1M。
+- 成功完成跨 CLI 交接时不再递归进入交接状态同步并报 `Maximum call stack size exceeded`；异常回滚也不再把同一栈溢出连带报成终端关闭失败。
+
 ## v1.3.3
 
 ### English

@@ -218,7 +218,15 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function fixture({ projects, installed = ['claude'], focused = true, appView, history, t } = {}) {
+function fixture({
+  projects,
+  installed = ['claude'],
+  usageAgents = ['claude', 'codex', 'grok'],
+  focused = true,
+  appView,
+  history,
+  t,
+} = {}) {
   const byId = new Map(IDS.map(id => [id, new FakeEl(id.endsWith('-select') ? 'select' : 'div')]));
   const scroller = new FakeEl();
   scroller.appendChild(byId.get('conversation-messages'));
@@ -229,6 +237,11 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
   let pickedImages = [];
   let slashLists = { models: [], efforts: [] };
   let oauthUsage = { ok: true, fiveHour: { utilization: 32 }, sevenDay: { utilization: 7 } };
+  let grokUsage = {
+    ok: true,
+    plan: 'SuperGrok',
+    windows: [{ label: '7 天窗口', utilization: 18, resetsAt: '2026-09-08T12:00:00Z' }],
+  };
   const sessionTitles = {};
   let projectFiles = [
     { path: 'README.md', name: 'README.md', depth: 0 },
@@ -311,6 +324,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
         return { ...sessionTitles };
       }
       if (command === 'oauth_usage') return oauthUsage;
+      if (command === 'grok_usage') return grokUsage;
       if (command === 'conversation_project_files') {
         return projectFiles.filter(file => file.path.toLowerCase().includes(String(payload.query || '').toLowerCase()));
       }
@@ -334,6 +348,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
     onManageSnippets: () => { manageOpens.push(Date.now()); },
   });
   controller.setProjects(projects);
+  controller.setUsageAgentIds(usageAgents);
   controller.setInstalledCliIds(installed);
   // Registered here so a failing assertion still clears the elapsed-time
   // interval; a leaked timer would hang the whole test run.
@@ -350,6 +365,7 @@ function fixture({ projects, installed = ['claude'], focused = true, appView, hi
     setPickedImages: paths => { pickedImages = paths; },
     setSlashLists: lists => { slashLists = { models: [], efforts: [], ...lists }; },
     setUsage: payload => { oauthUsage = payload; },
+    setGrokUsage: payload => { grokUsage = payload; },
     setStartError: message => { startError = message; },
     holdStart: () => { startGate = deferred(); },
     releaseStart: (errorMessage = '') => {
@@ -1183,8 +1199,8 @@ test('@ 会列出项目文件，选中后把相对路径插进输入框', async 
   assert.equal(menu.hidden, true, '没有 @ 时不弹');
 });
 
-test('侧栏显示当前助手的限流用量，换到没有用量的助手就收起', async t => {
-  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+test('侧栏显示 Claude/Grok 各自的限流用量，没有接口的助手则收起', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok', 'agy'], t });
   await flush();
   const usage = fx.el('conversation-usage');
 
@@ -1193,15 +1209,78 @@ test('侧栏显示当前助手的限流用量，换到没有用量的助手就�
   assert.equal(usage.hidden, false);
   assert.equal(usage.textContent, '5 小时 32% · 7 天 7%', '徽标就在旁边，不用再写一遍助手名');
 
-  const beforeGrok = fx.invokes.filter(entry => entry.command === 'oauth_usage').length;
   fx.pickAssistant('grok');
   await flush();
-  assert.equal(usage.hidden, true, 'Grok 没有限流接口，这行就不显示');
-  assert.equal(
-    fx.invokes.filter(entry => entry.command === 'oauth_usage').length,
-    beforeGrok,
-    '没有限流接口的助手不该发查询',
-  );
+  assert.equal(usage.hidden, false);
+  assert.equal(usage.textContent, '7 天 18%');
+  assert.equal(fx.invokes.filter(entry => entry.command === 'grok_usage').length, 1);
+
+  const usageCalls = () => fx.invokes.filter(entry => (
+    entry.command === 'oauth_usage'
+    || entry.command === 'codex_usage'
+    || entry.command === 'grok_usage'
+  )).length;
+  const beforeAgy = usageCalls();
+  fx.pickAssistant('agy');
+  await flush();
+  assert.equal(usage.hidden, true, '没有限流接口的助手就不显示');
+  assert.equal(usageCalls(), beforeAgy, '没有限流接口的助手不该发查询');
+});
+
+test('Grok 陈旧额度会明确标记，不能看起来像实时值', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['grok'], t });
+  await flush();
+  fx.pickAssistant('grok');
+  await flush();
+  fx.setGrokUsage({
+    ok: true,
+    stale: true,
+    windows: [{ label: '7 天窗口', utilization: 18, resetsAt: '2026-09-08T12:00:00Z' }],
+  });
+  await fx.send('让 Grok 刷新一轮');
+  const run = fx.startedRuns().pop();
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  assert.equal(fx.el('conversation-usage').textContent, '7 天 18% · 旧数据');
+  assert.match(fx.el('conversation-assistant-badge').title, /旧数据/);
+});
+
+test('平台未提供 Grok 用量能力时，即使已安装 Grok 也不查询', async t => {
+  const fx = fixture({
+    projects: [project('a', '项目 A')],
+    installed: ['grok'],
+    usageAgents: ['claude', 'codex'],
+    t,
+  });
+  await flush();
+  fx.pickAssistant('grok');
+  await flush();
+  assert.equal(fx.el('conversation-usage').hidden, true);
+  assert.equal(fx.invokes.some(entry => entry.command === 'grok_usage'), false);
+});
+
+test('Grok 新鲜额度到期时主动解除实时告警，不等下一次聚焦', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  await flush();
+  fx.setGrokUsage({
+    ok: true,
+    ageMs: 59_980,
+    ageSecs: 59,
+    windows: [{
+      label: '7 天窗口',
+      utilization: 100,
+      resetsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }],
+  });
+  fx.pickAssistant('grok');
+  await flush();
+  assert.equal(fx.el('conversation-usage').dataset.level, 'blocked');
+  assert.match(fx.el('conversation-composer-hint').textContent, /额度已用满/);
+
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(fx.el('conversation-usage').textContent, '7 天 100% · 旧数据');
+  assert.equal(fx.el('conversation-usage').dataset.level, 'ok');
+  assert.doesNotMatch(fx.el('conversation-composer-hint').textContent, /额度已用满/);
 });
 
 test('失败后能一键把原消息和图片放回输入框，失败的空气泡不显示', async t => {
@@ -1700,7 +1779,7 @@ test('额度接近上限才抢注意力，打满时发送前就说清楚', async
 });
 
 test('额度带助手归属，换到没有额度接口的助手立刻清掉', async t => {
-  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'agy'], t });
   await flush();
   const usage = fx.el('conversation-usage');
 
@@ -1709,8 +1788,8 @@ test('额度带助手归属，换到没有额度接口的助手立刻清掉', as
   assert.equal(usage.hidden, false);
   assert.equal(usage.textContent, '5 小时 32% · 7 天 7%');
 
-  // Grok 没有额度接口：绝不能把 Claude 的数字留在它的徽标旁
-  fx.pickAssistant('grok');
+  // agy 没有额度接口：绝不能把 Claude 的数字留在它的徽标旁
+  fx.pickAssistant('agy');
   await flush();
   assert.equal(usage.hidden, true, '换到没有额度接口的助手就该消失');
   assert.equal(usage.textContent, '');
@@ -1739,8 +1818,8 @@ test('切项目后自动续接换了助手，额度不能留着上一家的', as
   fx.clickProject('b');
   await flush();
   assert.equal(fx.el('conversation-assistant-name').textContent, 'Grok');
-  assert.equal(usage.hidden, true, '换成 Grok 后不能还挂着 Claude 的数字');
-  assert.equal(usage.textContent, '');
+  assert.equal(usage.hidden, false, '自动续接 Grok 后应显示 Grok 自己的额度');
+  assert.equal(usage.textContent, '7 天 18%');
 });
 
 test('换助手的瞬间旧额度立刻消失，不等新请求回来', async t => {
