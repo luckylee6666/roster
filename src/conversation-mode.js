@@ -426,6 +426,8 @@ export function installConversationMode({
   onOpenFolder,
   onRefreshProject,
   onManageSnippets,
+  onMemoryRead,
+  onMemorySaved,
   onReloadProjects,
   confirm,
 }) {
@@ -457,6 +459,10 @@ export function installConversationMode({
     composer: document.getElementById('conversation-composer'),
     attachments: document.getElementById('conversation-attachments'),
     attachImage: document.getElementById('conversation-attach-image'),
+    composerMore: document.getElementById('conversation-compose-more'),
+    moreToggle: document.getElementById('conversation-more-toggle'),
+    moreMenu: document.getElementById('conversation-more-menu'),
+    manageSnippets: document.getElementById('conversation-manage-snippets'),
     composerBox: document.querySelector('.conversation-composer-box'),
     imagePreview: document.getElementById('conversation-image-preview'),
     filePreview: document.getElementById('conversation-file-preview'),
@@ -478,6 +484,7 @@ export function installConversationMode({
     slashMenu: document.getElementById('conversation-slash-menu'),
     mentionMenu: document.getElementById('conversation-mention-menu'),
     snippetSelect: document.getElementById('conversation-snippet-select'),
+    snippetPicker: document.getElementById('conversation-snippet-picker'),
     handoffNote: document.getElementById('conversation-handoff-note'),
     approval: document.getElementById('conversation-approval'),
     approvalBadge: document.getElementById('conversation-approval-badge'),
@@ -2303,18 +2310,19 @@ export function installConversationMode({
   }
 
   function renderSnippets() {
+    if (dom.snippetPicker) dom.snippetPicker.hidden = snippets.length === 0;
     if (!dom.snippetSelect) return;
     dom.snippetSelect.replaceChildren();
-    const placeholder = element(document, 'option', '', snippets.length ? '常用片段' : '暂无片段');
+    const placeholder = element(document, 'option', '', '常用指令');
     placeholder.value = '';
     dom.snippetSelect.appendChild(placeholder);
     snippets.forEach(snippet => {
-      const option = element(document, 'option', '', String(snippet.title || '未命名片段'));
+      const option = element(document, 'option', '', String(snippet.title || '未命名指令'));
       option.value = String(snippet.id || '');
       dom.snippetSelect.appendChild(option);
     });
     if (onManageSnippets) {
-      const manage = element(document, 'option', '', '管理片段…');
+      const manage = element(document, 'option', '', '管理常用指令…');
       manage.value = MANAGE_SNIPPETS_VALUE;
       dom.snippetSelect.appendChild(manage);
     }
@@ -2435,8 +2443,11 @@ export function installConversationMode({
     }
     if (dom.snippetSelect) {
       dom.snippetSelect.disabled = busy || deleting || !selectedProject
-        || (snippets.length === 0 && !onManageSnippets);
+        || snippets.length === 0;
     }
+    if (dom.manageSnippets) dom.manageSnippets.hidden = !onManageSnippets;
+    if (dom.moreToggle) dom.moreToggle.disabled = busy || deleting;
+    if (busy || deleting) closeComposerMore();
     if (dom.attachImage) dom.attachImage.disabled = unavailable || busy || deleting;
     if (dom.newChat) {
       const showNewChat = Boolean(selectedProject && conversationHasOpenSession(state));
@@ -3396,10 +3407,20 @@ export function installConversationMode({
     // A settled run still accepts its own late cancellation, which the reducer
     // lets win over a completion that raced it.
     const entry = activeRuns.get(envelope.runId)
-      || (envelope.kind === 'cancelled' ? settledRuns.get(envelope.runId) : null);
+      || (['cancelled','memory_saved'].includes(envelope.kind) ? settledRuns.get(envelope.runId) : null);
     if (!entry) return;
+    if (envelope.kind==='memory_saved') {
+      if(envelope.providerId===entry.providerId&&envelope.data?.projectId===entry.projectId)onMemorySaved?.(entry.projectId,envelope.data);
+      return;
+    }
     const previousState = stateForProject(entry.projectId);
     if (!previousState || previousState.runId !== envelope.runId) return;
+    if (envelope.kind === 'memory') {
+      if (envelope.providerId === previousState.providerId && envelope.data?.projectId === entry.projectId) {
+        onMemoryRead?.(entry.projectId, envelope.data.receipt);
+      }
+      return;
+    }
     const wasRunning = conversationRunning(previousState);
     const nextState = applyConversationChatEvent(previousState, envelope);
     const stillRunning = conversationRunning(nextState);
@@ -3469,6 +3490,11 @@ export function installConversationMode({
 
   // 只在对话工作台生效，且避开系统菜单已占用的组合键。
   const onWorkspaceKeydown = event => {
+    if (event.key === 'Escape' && dom.moreMenu && !dom.moreMenu.hidden) {
+      event.preventDefault();
+      closeComposerMore(true);
+      return;
+    }
     if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
     if (document.documentElement?.dataset?.appView === 'developer') return;
     if (document.querySelector?.('.modal-mask.active')) return;
@@ -3558,6 +3584,7 @@ export function installConversationMode({
   });
   // 点面板以外的地方就收起，避免它一直悬在输入框上。
   const onDocumentClickForTuning = event => {
+    if (!dom.composerMore?.contains?.(event?.target)) closeComposerMore();
     if (!tuningOpen) return;
     const target = event?.target;
     if (target && (dom.tuningPanel?.contains?.(target) || dom.tuningToggle?.contains?.(target))) return;
@@ -3565,6 +3592,25 @@ export function installConversationMode({
     renderTuning();
   };
   document.addEventListener?.('click', onDocumentClickForTuning);
+  function closeComposerMore(restoreFocus = false) {
+    if (dom.moreMenu) dom.moreMenu.hidden = true;
+    dom.moreToggle?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) dom.moreToggle?.focus();
+  }
+  dom.moreToggle?.addEventListener('click', () => {
+    if (dom.moreToggle.disabled || !dom.moreMenu) return;
+    const open = dom.moreMenu.hidden;
+    dom.moreMenu.hidden = !open;
+    dom.moreToggle.setAttribute('aria-expanded', String(open));
+    if (open) dom.moreMenu.querySelector('button:not([disabled]):not([hidden])')?.focus();
+  });
+  dom.composerMore?.addEventListener('focusout', event => {
+    if (!dom.composerMore.contains(event.relatedTarget)) closeComposerMore();
+  });
+  dom.manageSnippets?.addEventListener('click', () => {
+    closeComposerMore();
+    onManageSnippets?.();
+  });
   dom.snippetSelect?.addEventListener('change', () => {
     if (dom.snippetSelect.value === MANAGE_SNIPPETS_VALUE) {
       dom.snippetSelect.value = '';
@@ -3582,6 +3628,7 @@ export function installConversationMode({
   });
   dom.attachImage?.addEventListener('click', async () => {
     if (dom.attachImage.disabled) return;
+    closeComposerMore();
     try {
       await addAttachmentPaths(await invoke('pick_attachment_images'));
     } catch (error) {
@@ -3815,6 +3862,7 @@ export function installConversationMode({
     focusComposer() { dom.composer?.focus(); },
     isRunning,
     destroy() {
+      closeComposerMore();
       destroyed = true;
       filePreviewRevision += 1;
       clearUsageExpiryTimer();

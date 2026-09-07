@@ -272,9 +272,201 @@ pub fn apply_to_std_command(cmd: &mut std::process::Command) {
     }
 }
 
+/// macOS HTTP clients can inherit System Settings while Codex's WebSocket
+/// dialer only sees proxy environment variables. Bridge that gap for Codex
+/// only, without overriding an explicit Roster/process proxy or touching TLS.
+pub fn apply_codex_system_proxy(cmd: &mut std::process::Command) {
+    #[cfg(target_os = "macos")]
+    {
+        let explicit = PROXY_ENV_KEYS.iter().any(|key| {
+            !key.eq_ignore_ascii_case("NO_PROXY")
+                && (std::env::var_os(key).is_some()
+                    || cmd.get_envs().any(|(k, _)| k == std::ffi::OsStr::new(key)))
+        });
+        if explicit {
+            return;
+        }
+        if let Some(output) = read_macos_proxy_settings() {
+            if let Some(url) = macos_https_proxy(&output) {
+                cmd.env("HTTPS_PROXY", &url).env("https_proxy", &url);
+                // Preserve explicit bypass settings; always keep localhost IPC local.
+                if std::env::var_os("NO_PROXY").is_none()
+                    && std::env::var_os("no_proxy").is_none()
+                    && !cmd
+                        .get_envs()
+                        .any(|(k, _)| k == "NO_PROXY" || k == "no_proxy")
+                {
+                    let bypass = macos_proxy_bypass(&output);
+                    cmd.env("NO_PROXY", &bypass).env("no_proxy", &bypass);
+                }
+                crate::log_info!("Codex 后台连接沿用 macOS 系统 HTTPS 代理");
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = cmd;
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_https_proxy(output: &str) -> Option<String> {
+    let field = |name: &str| {
+        output.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key.trim() == name).then(|| value.trim())
+        })
+    };
+    if field("HTTPSEnable")? != "1" || field("ProxyAutoConfigEnable") == Some("1") {
+        return None;
+    }
+    let host = field("HTTPSProxy")?;
+    let port = field("HTTPSPort")?.parse::<u16>().ok().filter(|p| *p > 0)?;
+    if host.is_empty()
+        || host.len() > 253
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
+    {
+        return None;
+    }
+    let host = if host.contains(':') || host.contains(['[', ']']) {
+        let address = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host);
+        format!("[{}]", address.parse::<std::net::Ipv6Addr>().ok()?)
+    } else {
+        host.to_string()
+    };
+    Some(format!("http://{host}:{port}"))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_proxy_bypass(output: &str) -> String {
+    let mut entries = vec![DEFAULT_NO_PROXY.to_string()];
+    let mut in_exceptions = false;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with("ExceptionsList :") {
+            in_exceptions = true;
+            continue;
+        }
+        if in_exceptions && line == "}" {
+            in_exceptions = false;
+        }
+        if !in_exceptions {
+            continue;
+        }
+        if let Some((index, host)) = line.split_once(':') {
+            let host = host.trim();
+            if index.trim().parse::<usize>().is_ok()
+                && !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-:*[]/".contains(&b))
+            {
+                entries.push(host.to_string());
+            }
+        }
+    }
+    entries.join(",")
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_proxy_settings() -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut child = Command::new("/usr/sbin/scutil")
+        .arg("--proxy")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut bytes = Vec::new();
+                child
+                    .stdout
+                    .take()?
+                    .take(8193)
+                    .read_to_end(&mut bytes)
+                    .ok()?;
+                return (bytes.len() <= 8192)
+                    .then(|| String::from_utf8(bytes).ok())
+                    .flatten();
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_proxy_bridge_requires_enabled_https_and_valid_endpoint() {
+        let settings =
+            "HTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7897\nProxyAutoConfigEnable : 0";
+        assert_eq!(
+            macos_https_proxy(settings),
+            Some("http://127.0.0.1:7897".into())
+        );
+        assert!(
+            macos_https_proxy(&settings.replace("HTTPSEnable : 1", "HTTPSEnable : 0")).is_none()
+        );
+        assert!(macos_https_proxy(
+            &settings.replace("ProxyAutoConfigEnable : 0", "ProxyAutoConfigEnable : 1")
+        )
+        .is_none());
+        assert!(macos_https_proxy(&settings.replace("7897", "0")).is_none());
+        assert!(macos_https_proxy(&settings.replace("127.0.0.1", "user:password@host")).is_none());
+        assert!(macos_https_proxy(&settings.replace("127.0.0.1", "host/path")).is_none());
+        assert!(macos_https_proxy(&settings.replace("127.0.0.1", "[invalid")).is_none());
+        assert_eq!(
+            macos_https_proxy(&settings.replace("127.0.0.1", "::1")),
+            Some("http://[::1]:7897".into())
+        );
+    }
+
+    #[test]
+    fn macos_proxy_bridge_preserves_system_bypass_domains_and_networks() {
+        let text = "ExceptionsList : <array> {\n0 : *.local\n1 : 10.0.0.0/8\n2 : <local>\n3 : host with spaces\n}\nHTTPSPort : 7897";
+        assert_eq!(
+            macos_proxy_bypass(text),
+            "localhost,127.0.0.1,::1,*.local,10.0.0.0/8"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codex_system_proxy_does_not_override_explicit_process_proxy() {
+        let mut cmd = std::process::Command::new("codex");
+        cmd.env("HTTPS_PROXY", "http://explicit.invalid:8080");
+        cmd.env("NO_PROXY", "internal.invalid");
+        apply_codex_system_proxy(&mut cmd);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("HTTPS_PROXY")),
+            Some(&Some(std::ffi::OsStr::new("http://explicit.invalid:8080")))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("NO_PROXY")),
+            Some(&Some(std::ffi::OsStr::new("internal.invalid")))
+        );
+        assert_eq!(env.len(), 2);
+    }
 
     #[test]
     fn normalizes_host_port_and_rejects_bad_schemes() {

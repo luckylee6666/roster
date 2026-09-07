@@ -30,6 +30,7 @@ mod project_memory;
 mod project_sessions;
 mod proxy_settings;
 mod session_titles;
+mod shared_memory;
 mod usage;
 
 /// 手机端远程服务监听端口（局域网）。
@@ -148,7 +149,28 @@ pub(crate) fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
 
 /// 数据目录：优先用隐藏目录 ~/.roster/，避免清理软件误删。
 /// 首次启动依次从 ~/.vibe-coding-manage/、旧 Application Support 目录迁移。
+static DEVELOPMENT_INSTANCE: OnceLock<bool> = OnceLock::new();
+
+fn development_instance() -> bool {
+    DEVELOPMENT_INSTANCE.get().copied().unwrap_or(false)
+}
+
+fn instance_data_dir(home: &Path, development: bool) -> PathBuf {
+    home.join(if development {
+        ".roster-dev"
+    } else {
+        ".roster"
+    })
+}
+
 fn preferred_data_dir() -> PathBuf {
+    instance_data_dir(
+        &dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
+        development_instance(),
+    )
+}
+
+fn release_data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".roster")
@@ -247,6 +269,13 @@ fn migrate_backup_dir_if_needed() {
 /// 当前进程把空数据保存到新目录；下次启动会再次尝试迁移。
 fn initialize_data_dir() -> PathBuf {
     let preferred = preferred_data_dir();
+    if development_instance() {
+        if let Err(error) = seed_development_projects(&release_data_dir(), &preferred) {
+            crate::log_warn!("开发版项目列表初始化失败：{error}");
+        }
+        // Never migrate or fall back to production storage for a dev instance.
+        return preferred;
+    }
     if preferred.join(".migrated-from-legacy").exists() {
         migrate_backup_dir_if_needed();
         return preferred;
@@ -276,7 +305,29 @@ fn initialize_data_dir() -> PathBuf {
 /// 故意放在数据目录外面——一旦数据目录整体被清理工具删除/误删，
 /// 备份仍然存活，可手动拷回恢复。
 fn backup_root_dir() -> PathBuf {
-    data_dir().with_file_name("roster-backups")
+    data_dir().with_file_name(if development_instance() {
+        "roster-dev-backups"
+    } else {
+        "roster-backups"
+    })
+}
+
+/// One-time read-only seed of the project list. Never import terminal layouts,
+/// scheduled snippets, credentials or caches from the running production app.
+fn seed_development_projects(release: &Path, development: &Path) -> Result<(), String> {
+    fs::create_dir_all(development).map_err(|e| e.to_string())?;
+    let marker = development.join(".seeded-projects");
+    if marker.exists() {
+        return Ok(());
+    }
+    let target = development.join("projects.json");
+    let source = release.join("projects.json");
+    if !target.exists() && source.exists() {
+        let bytes = read_binary_file_bounded(&source, 8 * 1024 * 1024, "项目列表超过 8MB")?;
+        let _: Vec<Project> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        atomic_write(&target, &bytes).map_err(|e| e.to_string())?;
+    }
+    atomic_write(&marker, b"ok").map_err(|e| e.to_string())
 }
 
 /// 当前已存在的 3 个核心数据文件（仅返回磁盘上真实存在的）。
@@ -1992,6 +2043,170 @@ async fn ensure_project_memory(path: String) -> Result<project_memory::ProjectMe
         .map_err(|e| e.to_string())?
 }
 
+fn shared_memory_project(app: &AppHandle, id: &str) -> Result<String, String> {
+    let state = app.state::<Mutex<AppState>>();
+    let state = state.lock().map_err(|e| e.to_string())?;
+    let path = saved_project_path(&state.projects, id)?;
+    let paths = state
+        .projects
+        .iter()
+        .map(|p| p.local_path.clone())
+        .collect::<Vec<_>>();
+    drop(state);
+    shared_memory::validate_scope(&dirs::home_dir().ok_or("找不到用户目录")?, &path, &paths)?;
+    Ok(path)
+}
+
+#[tauri::command]
+async fn shared_memory_initialize(
+    app: AppHandle,
+    enabled_project_ids: Vec<String>,
+    legacy_present: bool,
+) -> Result<(), String> {
+    if enabled_project_ids.len() > 2000 {
+        return Err("旧记忆配置过大".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<AppState>>();
+        let projects = state
+            .lock()
+            .map_err(|e| e.to_string())?
+            .projects
+            .iter()
+            .map(|p| (p.id.clone(), p.local_path.clone()))
+            .collect::<Vec<_>>();
+        let lock = app.state::<shared_memory::SharedMemoryState>();
+        let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+        shared_memory::initialize(&data_dir(), &projects, &enabled_project_ids, legacy_present)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn shared_memory_state(
+    app: AppHandle,
+    project_id: String,
+) -> Result<shared_memory::MemoryState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = shared_memory_project(&app, &project_id)?;
+        let home = dirs::home_dir().ok_or("找不到用户目录")?;
+        let lock = app.state::<shared_memory::SharedMemoryState>();
+        let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+        shared_memory::state(&data_dir(), &home, &path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn shared_memory_set_enabled(
+    app: AppHandle,
+    project_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = shared_memory_project(&app, &project_id)?;
+        let lock = app.state::<shared_memory::SharedMemoryState>();
+        let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+        if enabled {
+            let mounted = project_memory::ensure_project_memory(&path)?;
+            if !mounted.mounted || !mounted.warning.is_empty() {
+                return Err(if mounted.warning.is_empty() {
+                    "项目记忆未能挂载".into()
+                } else {
+                    mounted.warning
+                });
+            }
+        } else {
+            // Stopping future injection must remain possible even if a legacy
+            // workspace pointer is damaged or its instruction file is read-only.
+            shared_memory::set_enabled(&data_dir(), &path, false)?;
+            if project_memory::detach_project_memory(&path).is_err() {
+                crate::log_warn!("共享记忆已关闭，但旧项目记忆指引未能完全解除");
+            }
+        }
+        shared_memory::set_enabled(&data_dir(), &path, enabled)?;
+        if let Ok(cwd) = fs::canonicalize(&path) {
+            app.state::<conversation_chat::ConversationChatState>()
+                .release_idle(Some(&cwd));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn shared_memory_read(
+    app: AppHandle,
+    project_id: String,
+    name: String,
+) -> Result<shared_memory::Document, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = shared_memory_project(&app, &project_id)?;
+        let home = dirs::home_dir().ok_or("找不到用户目录")?;
+        let lock = app.state::<shared_memory::SharedMemoryState>();
+        let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+        shared_memory::read(&home, &path, &name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn shared_memory_save(
+    app: AppHandle,
+    project_id: String,
+    name: String,
+    content: String,
+    expected: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = shared_memory_project(&app, &project_id)?;
+        let home = dirs::home_dir().ok_or("找不到用户目录")?;
+        let lock = app.state::<shared_memory::SharedMemoryState>();
+        let _guard = lock.0.lock().map_err(|e| e.to_string())?;
+        shared_memory::save(&home, &path, &name, &content, expected.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn shared_memory_backups(
+    app: AppHandle,
+    project_id: String,
+    name: String,
+) -> Result<Vec<shared_memory::BackupInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = shared_memory_project(&app, &project_id)?;
+        shared_memory::backups(&dirs::home_dir().ok_or("找不到用户目录")?, &path, &name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn shared_memory_read_backup(
+    app: AppHandle,
+    project_id: String,
+    name: String,
+    backup_id: String,
+) -> Result<shared_memory::Document, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = shared_memory_project(&app, &project_id)?;
+        shared_memory::read_backup(
+            &dirs::home_dir().ok_or("找不到用户目录")?,
+            &path,
+            &name,
+            &backup_id,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn detach_project_memory(path: String) -> Result<project_memory::ProjectMemoryState, String> {
     tauri::async_runtime::spawn_blocking(move || project_memory::detach_project_memory(&path))
@@ -2149,8 +2364,17 @@ async fn read_conversation_link_file(
 }
 
 #[tauri::command]
-async fn delete_project_session(path: String, tool: String, id: String) -> Result<(), String> {
+async fn delete_project_session(
+    app: AppHandle,
+    path: String,
+    tool: String,
+    id: String,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(cwd) = std::fs::canonicalize(&path) {
+            app.state::<conversation_chat::ConversationChatState>()
+                .release_idle(Some(&cwd));
+        }
         project_sessions::delete_project_session(&path, &tool, &id)
     })
     .await
@@ -2160,6 +2384,7 @@ async fn delete_project_session(path: String, tool: String, id: String) -> Resul
 /// 对话工作台删除历史会话：路径只从后端已保存的项目记录中解析。
 #[tauri::command]
 async fn delete_conversation_project_session(
+    app: AppHandle,
     app_state: State<'_, Mutex<AppState>>,
     project_id: String,
     tool: String,
@@ -2170,10 +2395,25 @@ async fn delete_conversation_project_session(
         saved_project_path(&state.projects, &project_id)?
     };
     tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(cwd) = std::fs::canonicalize(&path) {
+            app.state::<conversation_chat::ConversationChatState>()
+                .release_idle(Some(&cwd));
+        }
         project_sessions::delete_project_session(&path, &tool, &id)
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+/// Release only idle Codex servers when handing control back to native CLIs.
+#[tauri::command]
+async fn conversation_chat_release_idle(app: AppHandle, enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<conversation_chat::ConversationChatState>()
+            .set_resident_enabled(enabled);
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2712,6 +2952,10 @@ fn terminal_create(
     // 不允许无效项目路径静默回退到应用默认目录，否则 `codex resume --last`
     // 可能按错误 cwd 接入另一个项目的最近会话。
     validate_terminal_cwd(&cwd)?;
+    if let Ok(project) = std::fs::canonicalize(&cwd) {
+        app.state::<conversation_chat::ConversationChatState>()
+            .release_idle(Some(&project));
+    }
     let id_reservation = TerminalIdReservation::reserve(state.used_ids.clone(), &id)?;
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -3094,13 +3338,29 @@ async fn conversation_chat_start(
     };
     let start_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        if shared_memory_project(&start_app, &request.project_id)? != project_path {
+            return Err("项目路径已变化，请重试".into());
+        }
         let chat_state = start_app.state::<conversation_chat::ConversationChatState>();
-        conversation_chat::start(
+        let run_id = request.run_id.clone();
+        let registered = shared_memory::begin_auto(
+            &start_app,
+            &request.project_id,
+            &project_path,
+            &request.provider_id,
+            &run_id,
+            &request.prompt,
+        )?;
+        let result = conversation_chat::start(
             start_app.clone(),
             chat_state.inner(),
             &project_path,
             request,
-        )
+        );
+        if result.is_err() && registered {
+            shared_memory::abort_auto(&start_app, &run_id);
+        }
+        result
     })
     .await
     .map_err(|error| error.to_string())?
@@ -3315,11 +3575,18 @@ fn companion_navigation_policy<R: tauri::Runtime>() -> tauri::plugin::TauriPlugi
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    let _ = DEVELOPMENT_INSTANCE.set(context.config().identifier == "com.lucky.roster.dev");
+    let app_name = if development_instance() {
+        "Roster Dev"
+    } else {
+        "Roster"
+    };
     let _instance_lock = match instance_lock::acquire(&preferred_data_dir()) {
         Ok(lock) => lock,
         Err(error) => {
             rfd::MessageDialog::new()
-                .set_title("Roster")
+                .set_title(app_name)
                 .set_description(&error)
                 .set_level(rfd::MessageLevel::Warning)
                 .show();
@@ -3347,6 +3614,7 @@ pub fn run() {
         .manage(proxy_settings::ProxySettingsLock(Mutex::new(())))
         .manage(EditorExitGuard::default())
         .manage(conversation_chat::ConversationChatState::default())
+        .manage(shared_memory::SharedMemoryState::default())
         .setup(move |app| {
             // macOS WKWebView 会吞掉 ESC；本地 NSEvent 监听把裸 ESC 转成 native-esc。
             native_esc::install_native_esc_monitor(app.handle().clone());
@@ -3355,7 +3623,7 @@ pub fn run() {
             std::thread::spawn(move || monitor_attention(mon_app, activity_for_monitor));
             // 版本号显示在原生标题栏（来自 Cargo.toml，单一来源）
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_title(&format!("Roster v{}", env!("CARGO_PKG_VERSION")));
+                let _ = win.set_title(&format!("{app_name} v{}", env!("CARGO_PKG_VERSION")));
             }
             // 菜单栏托盘：常驻显示 5h / 周限流用量，菜单可打开主窗/刷新/退出
             let show_i = MenuItem::with_id(app, "tray_show", "打开 Roster", true, None::<&str>)?;
@@ -3430,6 +3698,13 @@ pub fn run() {
             git_branch,
             project_context,
             ensure_project_memory,
+            shared_memory_initialize,
+            shared_memory_state,
+            shared_memory_set_enabled,
+            shared_memory_read,
+            shared_memory_save,
+            shared_memory_backups,
+            shared_memory_read_backup,
             detach_project_memory,
             list_project_sessions,
             preview_project_session,
@@ -3469,6 +3744,7 @@ pub fn run() {
             conversation_model_list,
             conversation_effort_list,
             conversation_chat_cancel,
+            conversation_chat_release_idle,
             conversation_chat_approve,
             list_installed_clis,
             has_bash,
@@ -3476,9 +3752,13 @@ pub fn run() {
             open_log,
             app_log
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<conversation_chat::ConversationChatState>()
+                    .shutdown();
+            }
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
                 if !app_exit_is_confirmed(app) {
                     api.prevent_exit();
@@ -3587,6 +3867,32 @@ mod tests {
         assert_eq!(fs::read(new.join("logs/app.log")).unwrap(), b"log");
         assert!(new.join(".migrated-from-legacy").is_file());
         assert!(old.join("projects.json").is_file());
+    }
+
+    #[test]
+    fn development_storage_is_independent_and_seeds_projects_only_once() {
+        let home = tempfile::tempdir().unwrap();
+        let release = instance_data_dir(home.path(), false);
+        let dev = instance_data_dir(home.path(), true);
+        assert_ne!(release, dev);
+        fs::create_dir_all(&release).unwrap();
+        fs::write(release.join("projects.json"), b"[]").unwrap();
+        fs::write(
+            release.join("snippets.json"),
+            b"do not import scheduled commands",
+        )
+        .unwrap();
+        let release_lock = instance_lock::acquire(&release).unwrap();
+        let dev_lock = instance_lock::acquire(&dev).unwrap();
+        seed_development_projects(&release, &dev).unwrap();
+        assert_eq!(fs::read(dev.join("projects.json")).unwrap(), b"[]");
+        assert!(!dev.join("snippets.json").exists());
+        fs::write(dev.join("projects.json"), b"[ ]").unwrap();
+        seed_development_projects(&release, &dev).unwrap();
+        assert_eq!(fs::read(dev.join("projects.json")).unwrap(), b"[ ]");
+        assert_eq!(fs::read(release.join("projects.json")).unwrap(), b"[]");
+        assert!(instance_lock::acquire(&dev).is_err());
+        drop((release_lock, dev_lock));
     }
 
     #[test]

@@ -4,6 +4,34 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ## Unreleased
 
+### English
+
+**Fixed**
+- Project memory now runs automatically in conversation mode: a compact status replaces the management dialog, successful substantive turns record bounded source-labelled progress excerpts, and subsequent requests reuse recent progress. Curated topics remain untouched; editing/recovery stay optional in Developer mode.
+- Added project shared memory to both workspaces with one migrated preference, bounded reference injection/read receipts for ordinary conversations, and a confirmed Markdown editor with conflict checks and recoverable history. Existing off choices remain off; new projects default on. CLI security flags are unchanged, inbox/private memories are not automatically merged, and custom slash commands retain their native semantics.
+- The conversation composer hides the snippet selector when empty. Saved snippets are labelled “Common instructions”; management and image attachment live under the compact “+” menu. Selecting an instruction still fills the draft without sending it.
+- Extended resident sessions to Claude/agy/Qwen (bidirectional JSON) and Grok/OpenCode/MiMo Code (stdio ACP), preserving native modes, validated history resume, model/effort selection and local slash commands. A shared bounded pool reuses same-project/thread processes and releases them on errors/cancel, settings changes, workspace handoff, history deletion and exit. agy's current `event`/`step_update` protocol is now supported. OpenCode/MiMo retain native unattended restrictions on question/plan-transition tools so ACP cannot wait indefinitely for an unavailable UI. No other conversation is automatically compacted.
+- Codex transcript loading retains bounded 64 MiB history headroom for appended native compaction records, keeping earlier chat visible when those records push a rollout past the former 32 MiB read boundary. Existing message/text/image output limits remain unchanged.
+- Codex conversation turns now reuse a resident App Server and loaded thread when project, thread and launch settings match. Up to four idle servers are retained for 30 minutes; cancellation/errors, configuration changes, switching to Developer mode and app exit clean them up. Added per-turn preparation/total timing logs; HTTP transport still sends the model's required context, so this is not a guarantee of instant long-history replies.
+- Transient reconnect notices disappear once the assistant responds or the turn completes, instead of leaving “Reconnecting... 5/5” visible beside a successful answer.
+- Codex now follows the macOS system HTTPS proxy when no explicit process/Roster proxy is configured, addressing mismatched HTTP/WebSocket routes without weakening certificate verification. The default official route prefers native WebSocket continuation, with one stream retry before Codex's HTTP fallback; it no longer forces all conversations to HTTP. Custom providers/endpoints remain unchanged. Large histories may still require user-approved native context compaction; Roster never silently summarizes or deletes them.
+- Dedicated `pnpm dev` / `pnpm build:dev` commands launch Roster Dev with a separate application identifier, data directory, backups and WebView preferences. It may run alongside production; the first launch seeds only the project list and never falls back to writing production storage.
+- Codex long-thread resume now requests metadata only (`excludeTurns: true`). This prevents stored turns, images and tool output from exceeding the 1 MiB protocol-message limit before a new prompt can start. Conversation history continues to use the separate bounded transcript reader; existing history and transport safety limits are preserved.
+
+### 中文
+
+**修复**
+- 会话模式的项目记忆改为后台自动运行：只显示简短状态，正常结束且有实质进度的对话自动记录有来源标记的摘录，下次请求自动读取近期进度。人工专题不自动覆盖，编辑/恢复仅作为开发模式的可选高级操作。
+- 两种工作台接入同一项目共享记忆偏好、普通会话有界资料附加/读取回执，以及明确确认的 Markdown 编辑、冲突检查和可恢复历史。保留旧关闭选择，新项目默认开启；不放宽 CLI 安全参数，不自动合并 inbox 或私有记忆，自定义命令保留原生语义。
+- 对话输入框在没有片段时隐藏空下拉框，改称“常用指令”；管理和添加图片收进紧凑的“＋”菜单，有内容后才显示快捷选择。选择指令仍只填入草稿，不自动发送。
+- Claude/agy/Qwen（双向 JSON）与 Grok/OpenCode/MiMo Code（stdio ACP）也接入常驻会话，保留原生权限档位、已校验历史续接、模型/强度和本地命令。共享有界空闲池复用同项目/线程进程，取消/错误、设置变化、切换开发模式、删除历史和退出时清理；适配 agy 当前的 `event`/`step_update` 输出。OpenCode/MiMo 沿用原生无头模式对提问/计划切换工具的限制，避免 ACP 等待不存在的答题界面。本轮不自动压缩其他历史。
+- Codex 会话历史读取上限调整为有界 64 MiB，为原生压缩追加记录留出空间，避免文件刚超过原 32 MiB 边界就隐藏更早的聊天；消息数、文本和图片输出限额不变。
+- Codex 对话改为常驻 App Server：同项目、同会话与启动设置的连续消息复用已加载线程，不再每轮启动/恢复/退出。最多保留 4 个空闲服务，空闲 30 分钟回收；取消/异常、配置变化、切换开发模式和退出应用时清理。新增准备时间与整轮耗时日志；HTTP 仍需发送模型所需上下文，不承诺长历史秒回。
+- 重连提示在恢复回复或本轮结束后清除，不再在成功回答旁残留「Reconnecting... 5/5」。
+- Codex 后台在没有显式进程/Roster 代理时沿用 macOS 系统 HTTPS 代理，修正 HTTP/WebSocket 路径不一致，不降低证书校验。默认官方路由恢复 WebSocket 优先，流断开重试一次后由 Codex 回退 HTTP，不再把所有会话强制为 HTTP；自定义 provider/地址不变。超长历史仍可能需要用户确认后执行原生上下文压缩，Roster 不静默摘要或删除历史。
+- 增加 `pnpm dev` / `pnpm build:dev` 独立开发版入口，Roster Dev 使用单独应用标识、数据目录、备份和 WebView 偏好，可与正式版并行；首次仅复制项目列表，初始化失败也不回退写入正式版数据。
+- Codex 续接长会话时请求仅返回会话元数据（`excludeTurns: true`），避免历史轮次、图片和工具输出聚合成超过 1 MiB 的通信消息，导致新提问还没开始就失败。对话历史仍通过独立的有界正文读取流程展示，原历史和通信大小保护保持不变。
+
 ## v1.4.1
 
 ### English

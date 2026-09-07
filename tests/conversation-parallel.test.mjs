@@ -195,6 +195,11 @@ const IDS = [
   'conversation-mention-menu',
   'conversation-usage',
   'conversation-snippet-select',
+  'conversation-snippet-picker',
+  'conversation-compose-more',
+  'conversation-more-toggle',
+  'conversation-more-menu',
+  'conversation-manage-snippets',
   'conversation-history-filter',
   'conversation-history-state',
   'conversation-project-search',
@@ -240,6 +245,9 @@ function fixture({
   t,
 } = {}) {
   const byId = new Map(IDS.map(id => [id, new FakeEl(id.endsWith('-select') ? 'select' : 'div')]));
+  byId.get('conversation-compose-more').append(byId.get('conversation-more-toggle'), byId.get('conversation-more-menu'));
+  byId.get('conversation-more-menu').append(byId.get('conversation-attach-image'), byId.get('conversation-manage-snippets'));
+  byId.get('conversation-more-menu').hidden = true;
   const scroller = new FakeEl();
   scroller.appendChild(byId.get('conversation-messages'));
 
@@ -292,6 +300,7 @@ function fixture({
     click();
   };
   const manageOpens = [];
+  const memoryReads = [];
   const controller = installConversationMode({
     document,
     storage: {
@@ -370,6 +379,7 @@ function fixture({
     ),
     invalidateHistory: () => {},
     onManageSnippets: () => { manageOpens.push(Date.now()); },
+    onMemoryRead: (projectId,receipt) => memoryReads.push({projectId,receipt}),
   });
   controller.setProjects(projects);
   controller.setUsageAgentIds(usageAgents);
@@ -407,6 +417,7 @@ function fixture({
     },
     sessionTitles,
     manageOpens,
+    memoryReads,
     fireTauri: (name, payload) => (tauriListeners[name] || []).forEach(fn => fn({ payload })),
     tuningRows: () => {
       ensureTuningOpen();
@@ -1455,13 +1466,53 @@ test('片段下拉自带管理入口，选它只开弹窗不插内容', async t 
   const select = fx.el('conversation-snippet-select');
   assert.deepEqual(
     select.childNodes.map(node => node.textContent),
-    ['常用片段', '片段一', '管理片段…'],
+    ['常用指令', '片段一', '管理常用指令…'],
   );
   select.value = '__manage__';
   fire(select, 'change');
   assert.equal(fx.el('conversation-composer').value, '', '管理项不插入正文');
   assert.equal(select.value, '');
   assert.equal(fx.manageOpens.length, 1, '打开的是片段管理弹窗');
+});
+
+test('记忆读取回执只接受当前运行和项目，不串到其他助手或项目', async t => {
+  const fx=fixture({projects:[project('a','A')],t});await flush();await fx.send('测试读取记忆');
+  const run=fx.startedRuns()[0];const receipt={enabled:true,files:['MEMORY.md'],bytes:20};
+  fx.emit({...run,kind:'memory',data:{projectId:'wrong',receipt}});
+  fx.emit({...run,providerId:'unknown',kind:'memory',data:{projectId:'a',receipt}});
+  assert.equal(fx.memoryReads.length,0);
+  fx.emit({...run,kind:'memory',data:{projectId:'a',receipt}});
+  assert.deepEqual(fx.memoryReads,[{projectId:'a',receipt}]);
+});
+
+test('常用指令空时隐藏、有内容时显示，更多入口不发送消息', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.controller.setSnippets([]);
+  const picker = fx.el('conversation-snippet-picker');
+  const menu = fx.el('conversation-more-menu');
+  const toggle = fx.el('conversation-more-toggle');
+  assert.equal(picker.hidden, true);
+  menu.hidden = true;
+  fx.clickWithBubble(toggle);
+  assert.equal(menu.hidden, false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  fx.key({ key: 'Escape' });
+  assert.equal(menu.hidden, true);
+  fx.clickWithBubble(toggle);
+  fire(fx.el('conversation-manage-snippets'), 'click');
+  assert.equal(fx.manageOpens.length, 1);
+  assert.equal(menu.hidden, true);
+  assert.equal(fx.startedRuns().length, 0);
+  fx.controller.setSnippets([{ id: 's1', title: '检查', content: '检查代码' }]);
+  assert.equal(picker.hidden, false);
+  const select = fx.el('conversation-snippet-select');
+  select.value = 's1';
+  fire(select, 'change');
+  assert.equal(fx.el('conversation-composer').value, '检查代码');
+  assert.equal(fx.startedRuns().length, 0);
+  fx.controller.setSnippets([]);
+  assert.equal(picker.hidden, true);
 });
 
 test('超长回答默认收起，展开后保持展开', async t => {

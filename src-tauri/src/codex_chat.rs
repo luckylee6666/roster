@@ -1,8 +1,8 @@
 //! 普通用户对话工作台的 Codex 适配器。
 //!
-//! 每个 turn 使用一条独立的 `codex app-server --stdio` 连接：完成后立即回收进程，
-//! 下一轮通过 thread id 恢复。这样不会长期占用 writer，也能和安装版 Codex 的线程锁
-//! 明确隔离。前端只收到经过收敛的消息、计划和活动事件，不接触原始 JSON-RPC、
+//! 同项目、同会话与配置的连续 turn 复用 `codex app-server --stdio`。
+//! 空闲连接有数量/时间上限；取消、错误、配置改变和应用退出回收整个进程组。
+//! 前端只收到经过收敛的消息、计划和活动事件，不接触原始 JSON-RPC、
 //! reasoning 文本、命令完整输出或工具参数。
 
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -106,6 +106,10 @@ pub(crate) const MAX_ACTIVE_RUNS: usize = 4;
 pub(crate) const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_TEXT_CHARS: usize = 32 * 1024;
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
+const NATIVE_PROVIDER_ID: &str = "roster_openai_native";
+// Process-local alias: Codex still owns authentication and chooses the official
+// ChatGPT/API endpoint. Keep the name OpenAI so Codex preserves its native routing.
+const NATIVE_PROVIDER_CONFIG: &str = "model_providers.roster_openai_native={name=\"OpenAI\",wire_api=\"responses\",requires_openai_auth=true,supports_websockets=true,stream_max_retries=1,supports_standalone_web_search=true,env_http_headers={OpenAI-Organization=\"OPENAI_ORGANIZATION\",OpenAI-Project=\"OPENAI_PROJECT\"}}";
 const MAX_PROTOCOL_MESSAGES: usize = 16_384;
 const MAX_PROTOCOL_TURN_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ASSISTANT_TURN_BYTES: usize = 2 * 1024 * 1024;
@@ -117,6 +121,49 @@ const MAX_ACTIVITY_EVENTS_PER_TURN: usize = 1_024;
 const MAX_ACTIVITY_TURN_BYTES: usize = 4 * 1024 * 1024;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+type ProtocolLines = Receiver<Result<Option<String>, String>>;
+
+struct IdleSession {
+    stdin: Option<ChildStdin>,
+    lines: Option<ProtocolLines>,
+    process: Arc<Mutex<Child>>,
+    process_tree: ProcessTreeGuard,
+    thread_id: String,
+    signature: String,
+    next_request_id: i64,
+    since: Instant,
+}
+
+impl IdleSession {
+    fn alive(&self) -> bool {
+        self.process
+            .lock()
+            .is_ok_and(|mut child| matches!(child.try_wait(), Ok(None)))
+    }
+}
+
+impl Drop for IdleSession {
+    fn drop(&mut self) {
+        if self.stdin.is_none() {
+            return;
+        } // ownership moved into an active turn
+        drop(self.stdin.take());
+        drop(self.lines.take());
+        if let Ok(mut child) = self.process.lock() {
+            stop_child(&mut child, true);
+        }
+        self.process_tree.terminate();
+    }
+}
+
+#[derive(Default)]
+struct SessionPool {
+    sessions: HashMap<PathBuf, IdleSession>,
+    stopped: bool,
+    suspended: bool,
+}
 
 #[derive(Clone)]
 pub(crate) struct ActiveRun {
@@ -167,10 +214,55 @@ impl ApprovalDecision {
 #[derive(Default)]
 pub struct CodexChatState {
     pub(crate) active: Arc<Mutex<HashMap<String, ActiveRun>>>,
+    idle: Arc<Mutex<SessionPool>>,
+    reaper_started: AtomicBool,
+    pub(crate) other_resident: crate::conversation_chat::ResidentPool,
 }
 
 impl Drop for CodexChatState {
     fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+impl CodexChatState {
+    pub(crate) fn set_resident_enabled(&self, enabled: bool) {
+        self.other_resident.set_enabled(enabled);
+        let removed = {
+            let mut pool = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+            pool.suspended = !enabled;
+            if enabled {
+                HashMap::new()
+            } else {
+                std::mem::take(&mut pool.sessions)
+            }
+        };
+        drop(removed);
+    }
+
+    pub(crate) fn release_idle(&self, project: Option<&Path>) {
+        self.other_resident.release(project);
+        let removed = {
+            let mut pool = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(project) = project {
+                pool.sessions
+                    .remove(project)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                pool.sessions.drain().map(|(_, s)| s).collect()
+            }
+        };
+        drop(removed);
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.other_resident.shutdown();
+        let idle = {
+            let mut pool = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+            pool.stopped = true;
+            std::mem::take(&mut pool.sessions)
+        };
         let runs = self
             .active
             .lock()
@@ -187,6 +279,36 @@ impl Drop for CodexChatState {
                 }
             }
         }
+        drop(idle);
+    }
+
+    fn start_idle_reaper(&self) {
+        if self.reaper_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let idle = Arc::downgrade(&self.idle);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(500));
+            let Some(idle) = idle.upgrade() else { break };
+            {
+                let mut pool = idle.lock().unwrap_or_else(|e| e.into_inner());
+                if pool.stopped {
+                    break;
+                }
+                let keys: Vec<_> = pool
+                    .sessions
+                    .iter()
+                    .filter(|(_, s)| s.since.elapsed() >= IDLE_TIMEOUT || !s.alive())
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                let expired = keys
+                    .into_iter()
+                    .filter_map(|key| pool.sessions.remove(&key))
+                    .collect::<Vec<_>>();
+                // Finish cleanup before another start can load the same thread.
+                drop(expired);
+            }
+        });
     }
 }
 
@@ -340,6 +462,13 @@ struct MainWebviewSink {
 
 impl ChatEventSink for MainWebviewSink {
     fn emit(&self, event: CodexChatEvent) {
+        crate::shared_memory::observe(
+            &self.app,
+            &event.run_id,
+            &event.provider_id,
+            &event.kind,
+            &event.data,
+        );
         if let Some(window) = self.app.get_webview_window("main") {
             let _ = window.emit("conversation-chat-event", event);
         }
@@ -609,6 +738,7 @@ struct ApprovalContext {
     turn_timed_out: Arc<AtomicBool>,
     pending: Arc<Mutex<Option<String>>>,
     rx: Receiver<ApprovalDecision>,
+    deadline: Instant,
 }
 
 /// 等用户按下"允许"或"拒绝"。
@@ -656,7 +786,7 @@ fn wait_for_user_decision(
             "command": command,
         }),
     );
-    let deadline = Instant::now() + TURN_TIMEOUT;
+    let deadline = context.deadline;
     let outcome = loop {
         if context.cancelled.load(Ordering::SeqCst) {
             break Err(String::new());
@@ -930,6 +1060,9 @@ struct ProtocolContext {
     // 「请求批准」这一档才有；其余档位仍走原来的自动应答。
     approval_rx: Option<Receiver<ApprovalDecision>>,
     pending_approval: Arc<Mutex<Option<String>>>,
+    idle: Arc<Mutex<SessionPool>>,
+    signature: String,
+    request_base: i64,
 }
 
 fn mark_finished(finished: &AtomicBool, completion: &Arc<(Mutex<bool>, Condvar)>) {
@@ -941,6 +1074,7 @@ fn mark_finished(finished: &AtomicBool, completion: &Arc<(Mutex<bool>, Condvar)>
     }
 }
 
+#[cfg(test)]
 fn wait_for_completion(completion: &Arc<(Mutex<bool>, Condvar)>, timeout: Duration) -> bool {
     let (lock, wake) = &**completion;
     let Ok(done) = lock.lock() else {
@@ -1092,7 +1226,7 @@ pub(crate) fn bind_reserved_process(
     Ok(run.cancelled.load(Ordering::SeqCst))
 }
 
-fn run_protocol(stdin: ChildStdin, stdout: ChildStdout, context: ProtocolContext) {
+fn run_protocol(stdin: ChildStdin, lines: ProtocolLines, context: ProtocolContext) {
     let panic_sink = context.event_sink.clone();
     let panic_active = context.active.clone();
     let panic_process = context.process.clone();
@@ -1103,7 +1237,7 @@ fn run_protocol(stdin: ChildStdin, stdout: ChildStdout, context: ProtocolContext
     let panic_startup_signal = context.startup_signal.clone();
     let panic_run_id = context.run_id.clone();
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_protocol_inner(stdin, stdout, context)
+        run_protocol_inner(stdin, lines, context)
     }))
     .is_err()
     {
@@ -1124,7 +1258,33 @@ fn run_protocol(stdin: ChildStdin, stdout: ChildStdout, context: ProtocolContext
     }
 }
 
-fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: ProtocolContext) {
+fn use_official_native_transport(message: &Value) -> bool {
+    let Some(config) = message.pointer("/result/config").filter(|v| v.is_object()) else {
+        return false;
+    };
+    let provider = config
+        .get("model_provider")
+        .and_then(Value::as_str)
+        .unwrap_or("openai");
+    provider == "openai"
+        && [
+            ("openai_base_url", "https://api.openai.com/v1"),
+            ("chatgpt_base_url", "https://chatgpt.com/backend-api"),
+        ]
+        .iter()
+        .all(|(key, official)| {
+            config
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_none_or(|s| s.trim().is_empty() || s.trim_end_matches('/') == *official)
+        })
+}
+
+fn run_protocol_inner(
+    mut stdin: ChildStdin,
+    line_receiver: ProtocolLines,
+    context: ProtocolContext,
+) {
     let ProtocolContext {
         event_sink,
         active,
@@ -1145,7 +1305,13 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         model,
         approval_rx,
         pending_approval,
+        idle,
+        signature,
+        request_base,
     } = context;
+    let started_at = Instant::now();
+    let reused = request_base != 0;
+    let mut current_turn_id = String::new();
 
     // Codex 自己的档位：只读就是纯沙箱只读；「帮我批准」把审批交给它自己的
     // 自动审核（协议里是 approvalsReviewer=auto_review），无头下不需要人应答。
@@ -1172,22 +1338,47 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         turn_timed_out: turn_timed_out.clone(),
         pending: pending_approval.clone(),
         rx,
+        deadline: started_at + TURN_TIMEOUT,
     });
     // 没有通道就退回自动应答，绝不能变成"没人应答却当成批准"。
     let ask_user = ask_user && context_for_approval.is_some();
     let sandbox_mode = codex_sandbox_mode(&mode, allow_write);
 
-    let init = json!({
-        "method": "initialize",
-        "id": 1,
-        "params": {
-            "clientInfo": {
-                "name": "roster",
-                "title": "Roster",
-                "version": env!("CARGO_PKG_VERSION")
+    let make_turn = |thread_id: &str| {
+        json!({
+            "method": "turn/start", "id": request_base + 3,
+            "params": {
+                "threadId": thread_id,
+                "input": [{ "type": "text", "text": prompt }],
+                "cwd": cwd,
+                "approvalPolicy": approval_policy,
+                "approvalsReviewer": approvals_reviewer,
+                "sandboxPolicy": codex_sandbox_policy(&mode, allow_write, &cwd),
+                "summary": "concise", "personality": "friendly"
             }
-        }
-    });
+        })
+    };
+    let init = if reused {
+        emit_event(
+            event_sink.as_ref(),
+            &run_id,
+            "thread",
+            json!({"threadId": requested_thread_id}),
+        );
+        make_turn(&requested_thread_id)
+    } else {
+        json!({
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "clientInfo": {
+                    "name": "roster",
+                    "title": "Roster",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }
+        })
+    };
     if let Err(error) = send_json(&mut stdin, &init) {
         emit_event(
             event_sink.as_ref(),
@@ -1202,29 +1393,27 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         return;
     }
 
-    // A descendant can retain stdout after the app-server leader exits. Keep
-    // blocking reads off the coordinator thread so it can observe that exit
-    // and finish the turn instead of waiting until the global timeout.
-    let (line_sender, line_receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        loop {
-            let line = read_protocol_line(&mut reader);
-            let done = !matches!(line, Ok(Some(_)));
-            if line_sender.send(line).is_err() || done {
-                break;
-            }
-        }
-    });
     let mut reported_error = false;
     let mut completed = false;
     let mut completed_data = None;
-    let mut thread_id = String::new();
+    let mut thread_id = if reused {
+        requested_thread_id.clone()
+    } else {
+        String::new()
+    };
     let mut assistant_bytes = 0usize;
     let mut assistant_messages = AssistantMessageState::default();
     let mut normalized_events = 0usize;
     let mut budget = ProtocolBudget::default();
     loop {
+        if started_at.elapsed() >= TURN_TIMEOUT {
+            turn_timed_out.store(true, Ordering::SeqCst);
+            break;
+        }
+        if current_turn_id.is_empty() && started_at.elapsed() >= STARTUP_TIMEOUT {
+            timed_out.store(true, Ordering::SeqCst);
+            break;
+        }
         if cancelled.load(Ordering::SeqCst) || turn_timed_out.load(Ordering::SeqCst) {
             break;
         }
@@ -1271,6 +1460,25 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         let Ok(message) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        // An idle server may still have delayed notifications from the previous
+        // turn. Never attribute them (especially completed/approvals) to a new run.
+        if message.get("method").is_some() {
+            let message_thread = message.pointer("/params/threadId").and_then(Value::as_str);
+            let message_turn = message
+                .pointer("/params/turnId")
+                .or_else(|| message.pointer("/params/turn/id"))
+                .and_then(Value::as_str);
+            let stale = message_thread.is_some_and(|id| !thread_id.is_empty() && id != thread_id)
+                || message_turn
+                    .is_some_and(|id| !current_turn_id.is_empty() && id != current_turn_id)
+                || (reused && current_turn_id.is_empty());
+            if stale {
+                if message.get("id").is_some() {
+                    let _ = respond_to_server_request(&mut stdin, &message, false);
+                }
+                continue;
+            }
+        }
         if cancelled.load(Ordering::SeqCst) {
             break;
         }
@@ -1327,7 +1535,7 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
             }
             continue;
         }
-        match response_id(&message) {
+        match response_id(&message).and_then(|id| id.checked_sub(request_base)) {
             Some(1) => {
                 if let Some(error) = response_error(&message, "Codex 握手失败") {
                     emit_event(
@@ -1350,6 +1558,21 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                 {
                     break;
                 }
+                if send_json(
+                    &mut stdin,
+                    &json!({
+                        "id": 10, "method": "config/read", "params": { "cwd": cwd }
+                    }),
+                )
+                .is_err()
+                {
+                    break;
+                }
+            }
+            Some(10) => {
+                // A failed/unsupported config read preserves Codex's original route.
+                let use_native = use_official_native_transport(&message)
+                    && std::env::var_os("OPENAI_BASE_URL").is_none();
                 let mut request = if requested_thread_id.is_empty() {
                     json!({
                         "method": "thread/start",
@@ -1369,6 +1592,9 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                         "id": 2,
                         "params": {
                             "threadId": requested_thread_id,
+                            // History is already loaded through preview_conversation_transcript.
+                            // Full thread.turns replay can exceed the transport bound.
+                            "excludeTurns": true,
                             "cwd": cwd,
                             "approvalPolicy": approval_policy,
                             "approvalsReviewer": approvals_reviewer,
@@ -1379,6 +1605,12 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                 };
                 if !model.is_empty() {
                     request["params"]["model"] = json!(model);
+                }
+                if use_native {
+                    request["params"]["modelProvider"] = json!(NATIVE_PROVIDER_ID);
+                    crate::log_info!(
+                        "Codex 对话使用原生传输：WebSocket 优先，失败由 CLI 快速回退 HTTP"
+                    );
                 }
                 if let Err(error) = send_json(&mut stdin, &request) {
                     emit_event(
@@ -1423,21 +1655,7 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                     "thread",
                     json!({ "threadId": thread_id }),
                 );
-                let sandbox_policy = codex_sandbox_policy(&mode, allow_write, &cwd);
-                let turn = json!({
-                    "method": "turn/start",
-                    "id": 3,
-                    "params": {
-                        "threadId": thread_id,
-                        "input": [{ "type": "text", "text": prompt }],
-                        "cwd": cwd,
-                        "approvalPolicy": approval_policy,
-                        "approvalsReviewer": approvals_reviewer,
-                        "sandboxPolicy": sandbox_policy,
-                        "summary": "concise",
-                        "personality": "friendly"
-                    }
-                });
+                let turn = make_turn(&thread_id);
                 if let Err(error) = send_json(&mut stdin, &turn) {
                     emit_event(
                         event_sink.as_ref(),
@@ -1474,6 +1692,16 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
                     reported_error = true;
                     break;
                 }
+                current_turn_id = turn_id.to_string();
+                crate::log_info!(
+                    "Codex 对话就绪：{} · 准备耗时 {} ms",
+                    if reused {
+                        "复用常驻会话"
+                    } else {
+                        "首次加载会话"
+                    },
+                    started_at.elapsed().as_millis()
+                );
                 let _ = startup_signal.send(());
                 emit_event(
                     event_sink.as_ref(),
@@ -1568,6 +1796,58 @@ fn run_protocol_inner(mut stdin: ChildStdin, stdout: ChildStdout, context: Proto
         }
     }
 
+    if completed && !cancelled.load(Ordering::SeqCst) {
+        // Transfer ownership before releasing the active slot and emitting
+        // completion, so an immediately queued next turn can reuse this process.
+        let mut runs = active.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pool = idle.lock().unwrap_or_else(|e| e.into_inner());
+        if !pool.stopped && !pool.suspended && !cancelled.load(Ordering::SeqCst) {
+            mark_finished(&finished, &completion);
+            let session = IdleSession {
+                stdin: Some(stdin),
+                lines: Some(line_receiver),
+                process,
+                process_tree,
+                thread_id,
+                signature,
+                next_request_id: request_base + 100,
+                since: Instant::now(),
+            };
+            let replaced = pool.sessions.insert(cwd, session);
+            let evicted = if pool.sessions.len() > MAX_ACTIVE_RUNS {
+                let oldest = pool
+                    .sessions
+                    .iter()
+                    .min_by_key(|(_, s)| s.since)
+                    .map(|(key, _)| key.clone());
+                oldest.and_then(|key| pool.sessions.remove(&key))
+            } else {
+                None
+            };
+            runs.remove(&run_id);
+            drop(replaced);
+            drop(evicted);
+            drop(pool);
+            drop(runs);
+            crate::log_info!(
+                "Codex 对话完成：{} · 本轮耗时 {} ms",
+                if reused {
+                    "复用常驻会话"
+                } else {
+                    "首次加载会话"
+                },
+                started_at.elapsed().as_millis()
+            );
+            emit_event(
+                event_sink.as_ref(),
+                &run_id,
+                "completed",
+                completed_data.unwrap_or_else(|| json!({"status": "completed"})),
+            );
+            return;
+        }
+    }
+
     // EOF on stdin lets a normally completed app-server persist its thread.
     // Drop the writer before graceful cleanup: otherwise the child keeps
     // waiting for input until the grace period expires and we terminate it.
@@ -1633,6 +1913,7 @@ fn start_prepared(
     let cancelled = reserve_run(state, &project_key, &run_id)?;
 
     command.arg("app-server").arg("--stdio");
+    command.args(["-c", NATIVE_PROVIDER_CONFIG]);
     if !effort.is_empty() {
         command.args(["-c", &format!("model_reasoning_effort={effort}")]);
     }
@@ -1642,56 +1923,131 @@ fn start_prepared(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::proxy_settings::apply_to_std_command(&mut command);
+    crate::proxy_settings::apply_codex_system_proxy(&mut command);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            release_run(state, &run_id);
-            return Err(format!("启动 Codex 对话服务失败：{error}"));
+    // Compare launch settings without logging environment/config values. A
+    // changed permission/model/effort/proxy/config requires a fresh server.
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    command.get_program().hash(&mut hash);
+    command.get_args().collect::<Vec<_>>().hash(&mut hash);
+    command.get_envs().collect::<Vec<_>>().hash(&mut hash);
+    (&mode, allow_write, &model, &effort).hash(&mut hash);
+    for path in [
+        dirs::home_dir().map(|p| p.join(".codex/config.toml")),
+        Some(cwd.join(".codex/config.toml")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(meta) = std::fs::metadata(path) {
+            (meta.len(), meta.modified().ok()).hash(&mut hash);
         }
-    };
-    let process_tree = match register_process_tree(&child) {
-        Ok(process_tree) => process_tree,
-        Err(error) => {
-            stop_child(&mut child, false);
-            release_run(state, &run_id);
-            return Err(error);
-        }
-    };
-    let stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            process_tree.terminate();
-            stop_child(&mut child, false);
-            release_run(state, &run_id);
-            return Err("无法写入 Codex 对话服务".into());
-        }
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            process_tree.terminate();
-            stop_child(&mut child, false);
-            release_run(state, &run_id);
-            return Err("无法读取 Codex 对话服务".into());
-        }
-    };
-    if let Some(mut stderr) = child.stderr.take() {
-        std::thread::spawn(move || {
-            let mut sink = std::io::sink();
-            let _ = std::io::copy(&mut stderr, &mut sink);
-        });
     }
-    let process = Arc::new(Mutex::new(child));
+    let signature = hash.finish().to_string();
+    let (cached, evicted) = {
+        let mut pool = state.idle.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.stopped {
+            drop(pool);
+            release_run(state, &run_id);
+            return Err("应用正在退出".into());
+        }
+        let cached = pool.sessions.remove(&cwd);
+        let evicted = if pool.sessions.len() >= MAX_ACTIVE_RUNS {
+            let oldest = pool
+                .sessions
+                .iter()
+                .min_by_key(|(_, s)| s.since)
+                .map(|(p, _)| p.clone());
+            oldest.and_then(|key| pool.sessions.remove(&key))
+        } else {
+            None
+        };
+        (cached, evicted)
+    };
+    drop(evicted);
+    let cached = cached.filter(|s| {
+        !thread_id.is_empty()
+            && s.thread_id == thread_id
+            && s.signature == signature
+            && s.since.elapsed() < IDLE_TIMEOUT
+            && s.alive()
+    });
+    state.start_idle_reaper();
+    let (stdin, lines, process, process_tree, request_base) = if let Some(mut cached) = cached {
+        let stdin = cached.stdin.take().expect("idle writer");
+        let lines = cached.lines.take().expect("idle reader");
+        (
+            stdin,
+            lines,
+            cached.process.clone(),
+            cached.process_tree.clone(),
+            cached.next_request_id,
+        )
+    } else {
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                release_run(state, &run_id);
+                return Err(format!("启动 Codex 对话服务失败：{error}"));
+            }
+        };
+        let process_tree = match register_process_tree(&child) {
+            Ok(process_tree) => process_tree,
+            Err(error) => {
+                stop_child(&mut child, false);
+                release_run(state, &run_id);
+                return Err(error);
+            }
+        };
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                process_tree.terminate();
+                stop_child(&mut child, false);
+                release_run(state, &run_id);
+                return Err("无法写入 Codex 对话服务".into());
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                process_tree.terminate();
+                stop_child(&mut child, false);
+                release_run(state, &run_id);
+                return Err("无法读取 Codex 对话服务".into());
+            }
+        };
+        if let Some(mut stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let mut sink = std::io::sink();
+                let _ = std::io::copy(&mut stderr, &mut sink);
+            });
+        }
+        let process = Arc::new(Mutex::new(child));
+        // Bounded even while idle: unsolicited output cannot accumulate without limit.
+        let (line_sender, lines) = mpsc::sync_channel(8);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let line = read_protocol_line(&mut reader);
+                let done = !matches!(line, Ok(Some(_)));
+                if line_sender.send(line).is_err() || done {
+                    break;
+                }
+            }
+        });
+        (stdin, lines, process, process_tree, 0)
+    };
     let finished = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
     let turn_timed_out = Arc::new(AtomicBool::new(false));
     let completion = Arc::new((Mutex::new(false), Condvar::new()));
-    let (startup_signal, startup_wait) = std::sync::mpsc::channel();
+    let (startup_signal, _startup_wait) = std::sync::mpsc::channel();
     let cancelled_during_start =
         match bind_reserved_process(state, &run_id, process.clone(), process_tree.clone()) {
             Ok(cancelled) => cancelled,
@@ -1743,37 +2099,13 @@ fn start_prepared(
         model,
         approval_rx,
         pending_approval: pending_approval.clone(),
+        idle: state.idle.clone(),
+        signature,
+        request_base,
     };
-    std::thread::spawn(move || run_protocol(stdin, stdout, context));
-    let startup_process = process.clone();
-    let startup_process_tree = process_tree.clone();
-    let startup_cancelled = cancelled.clone();
-    std::thread::spawn(move || {
-        if startup_wait.recv_timeout(STARTUP_TIMEOUT).is_ok()
-            || finished.load(Ordering::SeqCst)
-            || startup_cancelled.load(Ordering::SeqCst)
-        {
-            return;
-        }
-        if finished.load(Ordering::SeqCst) || startup_cancelled.load(Ordering::SeqCst) {
-            return;
-        }
-        timed_out.store(true, Ordering::SeqCst);
-        startup_process_tree.terminate();
-        if let Ok(mut child) = startup_process.lock() {
-            stop_child(&mut child, false);
-        }
-    });
-    std::thread::spawn(move || {
-        if wait_for_completion(&completion, TURN_TIMEOUT) || cancelled.load(Ordering::SeqCst) {
-            return;
-        }
-        turn_timed_out.store(true, Ordering::SeqCst);
-        process_tree.terminate();
-        if let Ok(mut child) = process.lock() {
-            stop_child(&mut child, false);
-        }
-    });
+    // Deadlines are owned by this turn's coordinator. A detached old watchdog
+    // must never terminate a server that is already serving the next turn.
+    std::thread::spawn(move || run_protocol(stdin, lines, context));
     Ok(CodexChatStartResult { run_id })
 }
 
@@ -1832,17 +2164,18 @@ pub fn start(
 
 pub fn cancel(state: &CodexChatState, run_id: &str) -> Result<(), String> {
     validate_run_id(run_id)?;
-    let Some(run) = state
-        .active
-        .lock()
-        .map_err(|error| error.to_string())?
-        .get(run_id)
-        .cloned()
-    else {
+    let run = {
+        let active = state.active.lock().map_err(|error| error.to_string())?;
+        let run = active.get(run_id).cloned();
+        if let Some(run) = &run {
+            run.cancelled.store(true, Ordering::SeqCst);
+        }
+        run
+    };
+    let Some(run) = run else {
         // 完成通知前会先回收进程并移出 active；取消必须幂等，避免这个窗口误报失败。
         return Ok(());
     };
-    run.cancelled.store(true, Ordering::SeqCst);
     if let Some(process_tree) = run.process_tree {
         process_tree.terminate();
     }
@@ -2533,6 +2866,49 @@ mod tests {
     }
 
     #[test]
+    fn native_transport_only_selects_the_default_official_route() {
+        assert!(use_official_native_transport(&json!({"result":{"config":{
+            "model_provider":null, "openai_base_url":null,
+            "chatgpt_base_url":"https://chatgpt.com/backend-api/"
+        }}})));
+        assert!(use_official_native_transport(
+            &json!({"result":{"config":{}}})
+        ));
+        assert!(use_official_native_transport(
+            &json!({"result":{"config":{"model_provider":"openai"}}})
+        ));
+        for config in [
+            json!({"model_provider":"custom"}),
+            json!({"openai_base_url":"https://example.test/v1"}),
+            json!({"chatgpt_base_url":"https://example.test/backend"}),
+        ] {
+            assert!(!use_official_native_transport(
+                &json!({"result":{"config":config}})
+            ));
+        }
+        assert!(!use_official_native_transport(
+            &json!({"error":{"code":-32601}})
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_server_preserves_custom_or_unknown_config_routes() {
+        for scenario in ["custom-provider", "config-unsupported"] {
+            let root = tempfile::tempdir().unwrap();
+            let cwd = root.path().canonicalize().unwrap();
+            let log = cwd.join("requests.jsonl");
+            let state = CodexChatState::default();
+            let receiver = contract_start(&state, &cwd, &log, scenario, "", false);
+            let events = receive_until_kind(&receiver, "completed");
+            assert!(events.iter().all(|e| e.kind != "error"));
+            let requests = read_fake_requests(&log);
+            assert_eq!(requests[3]["method"], "thread/start");
+            assert!(requests[3].pointer("/params/modelProvider").is_none());
+        }
+    }
+
+    #[test]
     fn cancelling_an_already_finished_run_is_idempotent() {
         assert!(cancel(&CodexChatState::default(), "chat-finished").is_ok());
     }
@@ -2558,7 +2934,9 @@ mod tests {
         }));
 
         let requests = read_fake_requests(&log_path);
-        assert_eq!(requests.len(), 7);
+        assert_eq!(requests.len(), 8);
+        assert_eq!(requests[2]["method"], "config/read");
+        assert_eq!(requests[3]["params"]["modelProvider"], NATIVE_PROVIDER_ID);
         assert_eq!(
             requests[0].get("method").and_then(Value::as_str),
             Some("initialize")
@@ -2568,41 +2946,41 @@ mod tests {
             Some("initialized")
         );
         assert_eq!(
-            requests[2].get("method").and_then(Value::as_str),
+            requests[3].get("method").and_then(Value::as_str),
             Some("thread/start")
         );
         assert_eq!(
-            requests[2]
+            requests[3]
                 .pointer("/params/sandbox")
                 .and_then(Value::as_str),
             Some("read-only")
         );
         assert_eq!(
-            requests[3].get("method").and_then(Value::as_str),
+            requests[4].get("method").and_then(Value::as_str),
             Some("turn/start")
         );
         assert_eq!(
-            requests[3]
+            requests[4]
                 .pointer("/params/sandboxPolicy/type")
                 .and_then(Value::as_str),
             Some("readOnly")
         );
         assert_eq!(
-            requests[3]
+            requests[4]
                 .pointer("/params/input/0/text")
                 .and_then(Value::as_str),
             Some("检查项目状态")
         );
         assert_eq!(
-            requests[4],
+            requests[5],
             json!({ "id": 101, "result": { "decision": "decline" } })
         );
         assert_eq!(
-            requests[5],
+            requests[6],
             json!({ "id": 102, "result": { "decision": "decline" } })
         );
         assert_eq!(
-            requests[6],
+            requests[7],
             json!({ "id": 103, "result": { "answers": {} } })
         );
     }
@@ -2619,47 +2997,51 @@ mod tests {
         let events = receive_until_kind(&receiver, "completed");
         assert!(events.iter().all(|event| event.kind != "error"));
         let requests = read_fake_requests(&log_path);
-        assert_eq!(requests.len(), 7);
+        assert_eq!(requests.len(), 8);
         assert_eq!(
-            requests[2].get("method").and_then(Value::as_str),
+            requests[3].get("method").and_then(Value::as_str),
             Some("thread/resume")
         );
         assert_eq!(
-            requests[2]
+            requests[3].pointer("/params/excludeTurns"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            requests[3]
                 .pointer("/params/threadId")
                 .and_then(Value::as_str),
             Some("thread-existing-1")
         );
         assert_eq!(
-            requests[2]
+            requests[3]
                 .pointer("/params/sandbox")
                 .and_then(Value::as_str),
             Some("workspace-write")
         );
         assert_eq!(
-            requests[3]
+            requests[4]
                 .pointer("/params/sandboxPolicy/type")
                 .and_then(Value::as_str),
             Some("workspaceWrite")
         );
         assert_eq!(
-            requests[3]
+            requests[4]
                 .pointer("/params/sandboxPolicy/networkAccess")
                 .and_then(Value::as_bool),
             Some(false)
         );
         assert_eq!(
-            requests[3]
+            requests[4]
                 .pointer("/params/sandboxPolicy/writableRoots/0")
                 .and_then(Value::as_str),
             Some(cwd.to_string_lossy().as_ref())
         );
         assert_eq!(
-            requests[4],
+            requests[5],
             json!({ "id": 101, "result": { "decision": "accept" } })
         );
         assert_eq!(
-            requests[5],
+            requests[6],
             json!({ "id": 102, "result": { "decision": "accept" } })
         );
     }
@@ -2683,7 +3065,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn completed_turn_closes_stdin_before_graceful_cleanup() {
+    fn completed_turn_stays_alive_until_explicit_release() {
         let root = tempfile::tempdir().expect("temp project");
         let cwd = std::fs::canonicalize(root.path()).expect("canonical project");
         let log_path = cwd.join("stdin-eof-requests.jsonl");
@@ -2692,13 +3074,334 @@ mod tests {
 
         let events = receive_until_kind(&receiver, "completed");
         assert!(events.iter().all(|event| event.kind != "error"));
+        assert!(!read_fake_requests(&log_path)
+            .iter()
+            .any(|r| r["observed"] == "stdin-eof"));
+        assert_eq!(state.idle.lock().unwrap().sessions.len(), 1);
+        state.release_idle(Some(&cwd));
         assert!(
             read_fake_requests(&log_path)
                 .iter()
                 .any(|request| request.get("observed").and_then(Value::as_str) == Some("stdin-eof")),
-            "completed App Server should observe stdin EOF before graceful cleanup"
+            "released App Server should observe stdin EOF before graceful cleanup"
         );
         assert!(state.active.lock().expect("active runs").is_empty());
+    }
+
+    #[cfg(unix)]
+    fn resident_test_turn(
+        state: &CodexChatState,
+        cwd: &Path,
+        scenario: &str,
+        run_id: &str,
+        thread_id: &str,
+        mode: &str,
+    ) -> Receiver<CodexChatEvent> {
+        let (sender, receiver) = mpsc::channel();
+        start_prepared(
+            Arc::new(TestEventSink(sender)),
+            state,
+            PreparedStart {
+                run_id: run_id.into(),
+                thread_id: thread_id.into(),
+                prompt: "测试".into(),
+                allow_write: mode == "full-access",
+                mode: mode.into(),
+                model: String::new(),
+                effort: String::new(),
+                cwd: cwd.into(),
+            },
+            fake_app_server_command(&cwd.join("resident.jsonl"), scenario),
+        )
+        .unwrap();
+        receiver
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_turns_reuse_process_without_replaying_history_or_stale_events() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path();
+        let state = CodexChatState::default();
+        let first = resident_test_turn(&state, cwd, "persistent", "first", "", "");
+        receive_until_kind(&first, "completed");
+        let pid = state.idle.lock().unwrap().sessions[cwd]
+            .process
+            .lock()
+            .unwrap()
+            .id();
+        for number in 2..=3 {
+            let run_id = format!("run-{number}");
+            let receiver =
+                resident_test_turn(&state, cwd, "persistent", &run_id, "thread-contract-1", "");
+            let events = receive_until_kind(&receiver, "completed");
+            assert!(events
+                .iter()
+                .all(|e| e.run_id == run_id && e.kind != "error"));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.kind == "assistant_delta")
+                    .map(|e| e.data["text"].as_str().unwrap_or(""))
+                    .collect::<String>(),
+                "常驻后续回复"
+            );
+            assert_eq!(
+                events.iter().find(|e| e.kind == "turn").unwrap().data["turnId"],
+                format!("turn-contract-{number}")
+            );
+            assert_eq!(
+                state.idle.lock().unwrap().sessions[cwd]
+                    .process
+                    .lock()
+                    .unwrap()
+                    .id(),
+                pid
+            );
+            assert!(state.active.lock().unwrap().is_empty());
+            cancel(&state, &run_id).unwrap(); // late cancel must not kill the idle/next run
+        }
+        let requests = read_fake_requests(&cwd.join("resident.jsonl"));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "initialize")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "thread/start")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "thread/resume")
+                .count(),
+            0
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "turn/start")
+                .count(),
+            3
+        );
+        state.shutdown();
+        assert!(!process_group_exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_cancel_and_crash_evict_server_without_resending_prompt() {
+        for scenario in ["persistent-hang", "persistent-die"] {
+            let root = tempfile::tempdir().unwrap();
+            let cwd = root.path();
+            let state = CodexChatState::default();
+            receive_until_kind(
+                &resident_test_turn(&state, cwd, scenario, "first", "", ""),
+                "completed",
+            );
+            let pid = state.idle.lock().unwrap().sessions[cwd]
+                .process
+                .lock()
+                .unwrap()
+                .id();
+            let second =
+                resident_test_turn(&state, cwd, scenario, "second", "thread-contract-1", "");
+            if scenario == "persistent-hang" {
+                receive_until_kind(&second, "assistant_delta");
+                cancel(&state, "second").unwrap();
+                receive_until_kind(&second, "cancelled");
+            } else {
+                receive_until_kind(&second, "error");
+            }
+            assert!(!process_group_exists(pid));
+            assert!(state.idle.lock().unwrap().sessions.is_empty());
+            assert!(state.active.lock().unwrap().is_empty());
+            // User retry is a new request, not an automatic replay of a possibly executed turn.
+            receive_until_kind(
+                &resident_test_turn(&state, cwd, scenario, "retry", "thread-contract-1", ""),
+                "completed",
+            );
+            assert_ne!(
+                state.idle.lock().unwrap().sessions[cwd]
+                    .process
+                    .lock()
+                    .unwrap()
+                    .id(),
+                pid
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_configuration_thread_and_idle_expiry_force_reload() {
+        for change in ["permission", "thread", "expiry"] {
+            let root = tempfile::tempdir().unwrap();
+            let cwd = root.path();
+            let state = CodexChatState::default();
+            receive_until_kind(
+                &resident_test_turn(&state, cwd, "persistent", "first", "", "full-access"),
+                "completed",
+            );
+            let pid = state.idle.lock().unwrap().sessions[cwd]
+                .process
+                .lock()
+                .unwrap()
+                .id();
+            if change == "expiry" {
+                state
+                    .idle
+                    .lock()
+                    .unwrap()
+                    .sessions
+                    .get_mut(cwd)
+                    .unwrap()
+                    .since = Instant::now() - IDLE_TIMEOUT;
+            }
+            let thread = if change == "thread" {
+                "different-thread"
+            } else {
+                "thread-contract-1"
+            };
+            let mode = if change == "permission" {
+                "read-only"
+            } else {
+                "full-access"
+            };
+            receive_until_kind(
+                &resident_test_turn(&state, cwd, "persistent", "second", thread, mode),
+                "completed",
+            );
+            assert_ne!(
+                state.idle.lock().unwrap().sessions[cwd]
+                    .process
+                    .lock()
+                    .unwrap()
+                    .id(),
+                pid
+            );
+            assert!(!process_group_exists(pid));
+            let requests = read_fake_requests(&cwd.join("resident.jsonl"));
+            assert_eq!(requests[3]["method"], "thread/resume");
+            if change == "permission" {
+                assert_eq!(requests[4]["params"]["sandboxPolicy"]["type"], "readOnly");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_pool_is_bounded_and_developer_mode_releases_idle_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let state = CodexChatState::default();
+        let mut pids = Vec::new();
+        for number in 0..6 {
+            let cwd = root.path().join(number.to_string());
+            std::fs::create_dir(&cwd).unwrap();
+            receive_until_kind(
+                &resident_test_turn(&state, &cwd, "persistent", &format!("run-{number}"), "", ""),
+                "completed",
+            );
+            let pool = state.idle.lock().unwrap();
+            assert!(pool.sessions.len() <= MAX_ACTIVE_RUNS);
+            pids.push(pool.sessions[&cwd].process.lock().unwrap().id());
+        }
+        assert!(!process_group_exists(pids[0]));
+        state.set_resident_enabled(false);
+        assert!(state.idle.lock().unwrap().sessions.is_empty());
+        assert!(pids.iter().all(|pid| !process_group_exists(*pid)));
+        // A turn finishing after the workspace switch must not repopulate the pool.
+        receive_until_kind(
+            &resident_test_turn(
+                &state,
+                &root.path().join("0"),
+                "persistent",
+                "disabled",
+                "",
+                "",
+            ),
+            "completed",
+        );
+        assert!(state.idle.lock().unwrap().sessions.is_empty());
+        state.set_resident_enabled(true);
+        receive_until_kind(
+            &resident_test_turn(
+                &state,
+                &root.path().join("0"),
+                "persistent",
+                "enabled",
+                "",
+                "",
+            ),
+            "completed",
+        );
+        assert_eq!(state.idle.lock().unwrap().sessions.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "真实本机 Codex 两轮只读请求，消耗少量订阅用量；仅手动运行"]
+    fn probe_resident_codex_two_turns() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = std::fs::canonicalize(root.path()).unwrap();
+        let state = CodexChatState::default();
+        let bin = crate::cli_detect::resolve_registered_cli_bin("codex").unwrap();
+        let mut thread_id = String::new();
+        let mut pid = None;
+        for number in 1..=2 {
+            let (sender, receiver) = mpsc::channel();
+            let started = Instant::now();
+            start_prepared(
+                Arc::new(TestEventSink(sender)),
+                &state,
+                PreparedStart {
+                    run_id: format!("live-probe-{number}"),
+                    thread_id: thread_id.clone(),
+                    prompt: "只回复连接正常。不要使用任何工具，不要读取或修改任何文件。".into(),
+                    allow_write: false,
+                    mode: "read-only".into(),
+                    model: "gpt-6-astra".into(),
+                    effort: "low".into(),
+                    cwd: cwd.clone(),
+                },
+                Command::new(&bin),
+            )
+            .unwrap();
+            loop {
+                let event = receiver
+                    .recv_timeout(Duration::from_secs(120))
+                    .expect("live turn timed out");
+                assert_ne!(event.kind, "error", "live probe failed: {:?}", event.data);
+                if event.kind == "thread" {
+                    thread_id = event.data["threadId"].as_str().unwrap().into();
+                }
+                if event.kind == "completed" {
+                    break;
+                }
+            }
+            let current_pid = state.idle.lock().unwrap().sessions[&cwd]
+                .process
+                .lock()
+                .unwrap()
+                .id();
+            if let Some(pid) = pid {
+                assert_eq!(current_pid, pid, "second turn must reuse the real server");
+            }
+            pid = Some(current_pid);
+            eprintln!(
+                "resident probe round={number} elapsed_ms={} reused={}",
+                started.elapsed().as_millis(),
+                number > 1
+            );
+        }
+        state.shutdown();
+        assert!(!process_group_exists(pid.unwrap()));
     }
 
     #[cfg(unix)]

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "dev": "tauri dev --config src-tauri/tauri.debug.conf.json",
+    "build:dev": "tauri build --debug --bundles app --config src-tauri/tauri.debug.conf.json"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

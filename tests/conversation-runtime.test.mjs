@@ -12,6 +12,28 @@ import {
 const root = new URL('../', import.meta.url);
 const read = path => readFile(new URL(path, root), 'utf8');
 
+test('六家其他 CLI 接入常驻结构化协议并共享退出清理', async () => {
+  const router = await read('src-tauri/src/conversation_chat.rs');
+  const resident = await read('src-tauri/src/conversation_chat/resident.rs');
+  const state = await read('src-tauri/src/codex_chat.rs');
+  assert.match(router, /resident::supports\(spec.id\)[\s\S]*?resident::start/);
+  for (const id of ['claude', 'grok', 'agy', 'qwen', 'opencode', 'mimo']) assert.ok(resident.includes(`"${id}"`));
+  assert.match(resident, /sync_channel\(8\)/);
+  assert.match(resident, /"--input-format", "stream-json"/);
+  assert.match(resident, /"session\/prompt"/);
+  assert.match(state, /other_resident\.set_enabled\(enabled\)/);
+  assert.match(state, /other_resident\.shutdown\(\)/);
+});
+
+test('切换开发模式释放空闲 Codex 服务，回到对话模式再启用复用', async () => {
+  const main = await read('src/main.js');
+  const backend = await read('src-tauri/src/lib.rs');
+  assert.match(main, /beforeDeveloper: async \(\) => \{\s*await invoke\('conversation_chat_release_idle', \{ enabled: false \}\)/);
+  assert.match(main, /beforeConversation: async \(\) => \{\s*await invoke\('conversation_chat_release_idle', \{ enabled: true \}\)/);
+  assert.match(backend, /async fn conversation_chat_release_idle[\s\S]*?set_resident_enabled\(enabled\)/);
+  assert.match(backend, /RunEvent::Exit\)[\s\S]*?\.shutdown\(\)/);
+});
+
 test('对话工作台具有项目、历史、消息、输入和进度三区结构', async () => {
   const html = await read('src/index.html');
   for (const id of [
@@ -59,7 +81,7 @@ test('对话工作台补齐片段管理、交接与无项目入口', async () =>
   ]);
   assert.match(html, /id="conversation-handoff-note"/);
   assert.match(html, /id="snippet-modal-overlay" data-app-global-overlay/);
-  assert.match(conversation, /管理片段…/);
+  assert.match(conversation, /管理常用指令…/);
   assert.match(conversation, /onManageSnippets\?\.\(\)/);
   assert.match(conversation, /改回 \$\{source\.label\}/);
   assert.match(conversation, /conversation-create-project/);
@@ -72,6 +94,19 @@ test('对话工作台补齐片段管理、交接与无项目入口', async () =>
   assert.match(conversation, /invoke\('open_folder_dialog'\)/);
   assert.match(css, /\.conversation-starter-list button:disabled/);
   assert.match(css, /\.conversation-compact-action/);
+});
+
+test('空常用指令不占输入框，管理与图片入口收进加号菜单', async () => {
+  const [html, conversation, css] = await Promise.all([read('src/index.html'), read('src/conversation-mode.js'), read('src/styles.css')]);
+  assert.match(html, /id="conversation-snippet-picker"[^>]*hidden/);
+  assert.match(conversation, /dom\.snippetPicker\.hidden = snippets\.length === 0/);
+  assert.match(html, /id="conversation-more-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="conversation-more-menu"/);
+  assert.match(html, /id="conversation-more-menu"[\s\S]*?id="conversation-attach-image"[\s\S]*?id="conversation-manage-snippets"/);
+  assert.match(conversation, /dom\.manageSnippets\?\.addEventListener\('click',[\s\S]*?onManageSnippets\?\.\(\)/);
+  assert.match(conversation, /event\.key === 'Escape'[\s\S]*?closeComposerMore\(true\)/);
+  assert.match(conversation, /dom\.composerMore\?\.addEventListener\('focusout'/);
+  assert.match(css, /\.conversation-snippet-picker\[hidden\]/);
+  assert.doesNotMatch(conversation, /暂无片段/);
 });
 
 test('额度显示在顶栏助手徽标旁，不再挂在侧栏底部', async () => {

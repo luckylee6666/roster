@@ -122,12 +122,18 @@
                       aria-describedby="conversation-composer-hint conversation-safety-note"
                       data-app-view-focus></textarea>
             <div class="conversation-composer-foot">
-              <button id="conversation-attach-image" class="conversation-compact-action conversation-attach-image" type="button" title="添加图片，也可以直接拖进来" aria-label="添加图片" disabled>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M21 12.5V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8"/><path d="M3 15l4-4 4 4 3-3 3 3"/><circle cx="8.5" cy="9" r="1.3"/></svg>
-              </button>
-              <label class="conversation-snippet-picker" for="conversation-snippet-select" title="把常用片段放入输入框">
-                <select id="conversation-snippet-select" aria-label="选择常用片段" disabled>
-                  <option value="">常用片段</option>
+              <div class="conversation-compose-more" id="conversation-compose-more">
+                <button id="conversation-more-toggle" class="conversation-compact-action conversation-attach-image" type="button" title="添加与更多" aria-label="添加与更多" aria-expanded="false" aria-controls="conversation-more-menu">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+                <div id="conversation-more-menu" class="conversation-more-menu" hidden role="group" aria-label="更多操作">
+                  <button id="conversation-attach-image" type="button" disabled>添加图片</button>
+                  <button id="conversation-manage-snippets" type="button">管理常用指令…</button>
+                </div>
+              </div>
+              <label id="conversation-snippet-picker" class="conversation-snippet-picker" for="conversation-snippet-select" title="把常用指令放入输入框，不会自动发送" hidden>
+                <select id="conversation-snippet-select" aria-label="选择常用指令" disabled>
+                  <option value="">常用指令</option>
                 </select>
               </label>
               
@@ -165,6 +171,9 @@
           <div id="conversation-project-context" class="conversation-project-context" data-state="empty" aria-live="polite">
             <p class="conversation-rail-empty">选择项目后，这里会显示分支、改动和最近提交</p>
           </div>
+        </section>
+        <section class="conversation-rail-section">
+          <div class="conversation-memory-indicator"><span>项目记忆</span><span id="conversation-memory-status">自动</span></div>
         </section>
         <section class="conversation-rail-section conversation-history-section">
           <div class="conversation-rail-title">
@@ -656,7 +665,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h11M12 4l3 3-3 3M20 17H9M12 14l-3 3 3 3"/><path d="M4 7v4M20 13v4"/></svg>
           </button>
           <button class="term-tool-btn" id="terminal-memory-btn" type="button"
-                  title="项目记忆：挂载 .memory，给所有 AI 同一份正本" aria-haspopup="menu" aria-expanded="false">
+                  title="项目共享记忆：查看、编辑和恢复项目资料" aria-label="项目共享记忆" aria-haspopup="dialog" aria-expanded="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.2 4.5h9.6A2.2 2.2 0 0118 6.7v12.1c0 .8-.9 1.3-1.6.9l-2.7-1.7a2 2 0 00-2.1 0l-2.7 1.7c-.7.4-1.6-.1-1.6-.9V6.7A2.2 2.2 0 016.2 4.5z"/><path d="M9 8.4h6M9 11.4h4.2"/></svg>
           </button>
           <div class="workspace-mode-wrap">
@@ -1004,13 +1013,13 @@
       <div class="modal-wrap">
         <div class="modal modal-lg">
           <div class="modal-header">
-            <span class="modal-title">Prompt 片段库</span>
+            <span class="modal-title">常用指令</span>
             <button class="modal-x" id="snippet-modal-close">&times;</button>
           </div>
           <div class="modal-body">
             <div class="snippet-editor">
               <input class="form-input" type="text" id="snippet-title" placeholder="标题（如：更新记忆）" maxlength="60" />
-              <textarea class="form-input" id="snippet-content" rows="4" placeholder="片段内容，选择后会放入当前工作台的输入框，可先检查再发送"></textarea>
+              <textarea class="form-input" id="snippet-content" rows="4" placeholder="指令内容，选择后会放入当前工作台的输入框，可先检查再发送"></textarea>
               <div class="snippet-sched-row">
                 <span class="snippet-sched-label">🕐 定时发送</span>
                 <select class="form-select" id="snippet-sched-mode">
@@ -1029,14 +1038,38 @@
               <div class="snippet-editor-actions">
                 <span class="snippet-edit-hint" id="snippet-edit-hint"></span>
                 <button class="btn btn-default btn-sm" id="snippet-clear-btn">清空</button>
-                <button class="btn btn-primary btn-sm" id="snippet-save-btn">保存片段</button>
+                <button class="btn btn-primary btn-sm" id="snippet-save-btn">保存指令</button>
               </div>
             </div>
             <div class="snippet-list" id="snippet-list"></div>
-            <div class="server-empty" id="snippet-empty">暂无片段，在上方填写后「保存片段」</div>
+            <div class="server-empty" id="snippet-empty">暂无常用指令，在上方填写后「保存指令」</div>
           </div>
         </div>
       </div>
+    </div>
+
+    <div id="shared-memory-overlay" class="modal-mask" data-app-global-overlay>
+      <div class="modal-wrap"><div class="modal modal-lg shared-memory-dialog" role="dialog" aria-modal="true" aria-labelledby="shared-memory-title">
+        <div class="modal-header"><span id="shared-memory-title" class="modal-title">项目共享记忆</span><button id="shared-memory-close" class="modal-x" type="button" aria-label="关闭项目共享记忆">&times;</button></div>
+        <div class="modal-body">
+          <h3 id="shared-memory-project"></h3>
+          <label class="shared-memory-switch"><input id="shared-memory-enabled" type="checkbox"> 让这个项目的助手共享记忆</label>
+          <p class="shared-memory-note">切换助手时，也能带上相关项目记忆。内容会发给所选模型，请勿存放密码或敏感资料。</p>
+          <p id="shared-memory-summary" class="shared-memory-summary">正在读取记忆…</p>
+          <ul id="shared-memory-overview" class="shared-memory-overview"></ul>
+          <p id="shared-memory-feedback" class="shared-memory-note" role="status"></p>
+          <details id="shared-memory-advanced" class="shared-memory-advanced">
+          <summary>高级管理</summary>
+          <p id="shared-memory-directory" class="shared-memory-note"></p>
+          <div class="shared-memory-actions"><select id="shared-memory-files" class="form-select" aria-label="选择记忆专题"></select><button id="shared-memory-new" class="btn btn-default" type="button">新建</button><button id="shared-memory-reload" class="btn btn-default" type="button">重新读取</button></div>
+          <input id="shared-memory-name" class="form-input" aria-label="记忆文件名" placeholder="MEMORY.md、主题名.md 或 inbox/待整理.md" maxlength="120">
+          <textarea id="shared-memory-content" class="form-input shared-memory-editor" aria-label="记忆正文" placeholder="只保存已确认、可复用的项目事实与决策。待确认内容放 inbox/。"></textarea>
+          <p id="shared-memory-message" class="shared-memory-note" role="status"></p>
+          <div class="shared-memory-actions"><select id="shared-memory-backups" class="form-select" aria-label="记忆历史版本"></select><button id="shared-memory-restore" class="btn btn-default" type="button">载入历史版本</button><button id="shared-memory-save" class="btn btn-primary" type="button">确认保存</button></div>
+          <p class="shared-memory-note">关闭共享不能撤回已发送的上下文。编辑仅限该项目的 Markdown 记忆，与代码权限分开；旧版本自动备份，最多 100 份。保存会检查外部改动，但不承诺跨进程绝对事务隔离。不自动整理或合并各家 CLI 私有记忆。</p>
+          </details>
+        </div>
+      </div></div>
     </div>
 
     <!-- 全局确认：对话/开发两种模式都会使用，不能放在会被 hidden + inert 的 development-overlays 内 -->

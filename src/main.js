@@ -93,6 +93,7 @@ import {
   readAppShellPreference,
 } from './app-shell-utils.js';
 import { installConversationMode } from './conversation-mode.js';
+import { installSharedMemory, sharedMemoryMigration } from './shared-memory.js';
 import { installThemeMode } from './theme-mode.js';
 import {
   createShellScriptCommand,
@@ -112,12 +113,8 @@ import {
 } from './terminal-pane-layout.js';
 import {
   PROJECT_MEMORY_UNIFY_STORAGE_KEY,
-  isProjectMemoryUnifyEnabled,
-  loadProjectMemoryUnifyPaths,
   memoryBannerText,
   normalizeProjectMemoryCwd,
-  setProjectMemoryUnifyEnabled,
-  shouldAutoMountProjectMemory,
   shouldMountProjectMemory,
 } from './project-memory-utils.js';
 import { createTerminalSessionCloseCoordinator } from './terminal-session-close.js';
@@ -269,6 +266,7 @@ const el = {
 const initialAppView = normalizeAppView(document.documentElement.dataset.appView);
 let appViewController = null;
 let conversationController = null;
+let sharedMemoryController = null;
 let terminalRestoreOffered = false;
 
 function currentAppView() {
@@ -312,6 +310,13 @@ function installApplicationSurfaces() {
     storage: localStorage,
     button: document.getElementById('conversation-theme-switch'),
   });
+  sharedMemoryController = installSharedMemory({
+    document, invoke, confirm: requestConfirm, notify: msg,
+    onFloating: open => {
+      termEl.memoryBtn?.setAttribute('aria-expanded', String(open));
+      return workspaceController?.setFloatingUiOpen('shared-memory', open);
+    },
+  });
   conversationController = installConversationMode({
     document,
     storage: localStorage,
@@ -323,6 +328,9 @@ function installApplicationSurfaces() {
     onOpenFolder: openConversationProjectFolder,
     onRefreshProject: refreshConversationProject,
     onManageSnippets: openSnippetModal,
+    onProjectPreference: id => sharedMemoryController?.setProject(projects.find(p => p.id === id)),
+    onMemoryRead: (projectId, receipt) => sharedMemoryController?.record(projectId, receipt),
+    onMemorySaved: (projectId, result) => sharedMemoryController?.saved(projectId, result),
     onReloadProjects: () => load(),
     confirm: requestConfirm,
   });
@@ -335,16 +343,24 @@ function installApplicationSurfaces() {
     storage: localStorage,
     initialView: initialAppView,
     beforeConversation: async () => {
+      await invoke('conversation_chat_release_idle', { enabled: true });
       const hidden = await workspaceController?.setAppVisible(false);
-      if (hidden === false) return false;
+      if (hidden === false) {
+        await invoke('conversation_chat_release_idle', { enabled: false });
+        return false;
+      }
       cleanupTreeDrag();
       setTerminalPaneDragTarget(null);
       characterTheme?.setDockOpen(false);
       return true;
     },
     beforeDeveloper: async () => {
+      await invoke('conversation_chat_release_idle', { enabled: false });
       const visible = await workspaceController?.setAppVisible(true);
-      if (visible === false) return false;
+      if (visible === false) {
+        await invoke('conversation_chat_release_idle', { enabled: true });
+        return false;
+      }
       offerTerminalSessionRestore();
       requestAnimationFrame(() => {
         characterTheme?.setDockOpen(termEl.dock.classList.contains('active'));
@@ -397,6 +413,10 @@ async function bindNativeEscListener() {
 async function load() {
   try {
     projects = await invoke('get_projects');
+    let legacyMemory = null;
+    try { legacyMemory = localStorage.getItem(PROJECT_MEMORY_UNIFY_STORAGE_KEY); } catch { legacyMemory = '{}'; }
+    try { await invoke('shared_memory_initialize', sharedMemoryMigration(projects, legacyMemory)); }
+    catch { msg('项目记忆暂不可用，其他功能可正常使用', 'info'); }
     servers = await invoke('get_servers');
     try { snippets = await invoke('get_snippets'); } catch (_) { snippets = []; }
     renderGroups();
@@ -3989,119 +4009,12 @@ function closeSnippetMenu() {
 
 let memoryMenuRevision = 0;
 let memoryMenuOpening = false;
-let memoryMenuState = null;
-let memoryUnifyOp = 0;
 
 function shortHomePath(path) {
   const value = String(path || '');
   return value.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
 }
 
-function readMemoryUnifyPaths() {
-  try {
-    return loadProjectMemoryUnifyPaths(localStorage.getItem(PROJECT_MEMORY_UNIFY_STORAGE_KEY));
-  } catch {
-    return [];
-  }
-}
-
-function persistMemoryUnifyPaths(paths) {
-  try {
-    localStorage.setItem(PROJECT_MEMORY_UNIFY_STORAGE_KEY, JSON.stringify({ paths }));
-  } catch (_) {}
-}
-
-function renderMemoryMenu(state, cwd) {
-  const menu = termEl.memoryMenu;
-  if (!cwd) {
-    menu.innerHTML = '<div class="memory-menu-empty">当前终端没有项目目录</div>';
-    return;
-  }
-  const unifyOn = isProjectMemoryUnifyEnabled(cwd, readMemoryUnifyPaths());
-  if (unifyOn && !state) {
-    menu.innerHTML = '<div class="memory-menu-empty">正在挂载项目记忆…</div>';
-    return;
-  }
-  const statusClass = unifyOn
-    ? (state?.mounted ? '' : (state?.warning ? 'is-warn' : 'is-empty'))
-    : 'is-empty';
-  const statusText = unifyOn ? (state?.mounted ? '已挂载' : (state?.warning ? '异常' : '未挂载')) : '未开启';
-  const topics = Array.isArray(state?.topics) ? state.topics : [];
-  const topicHtml = unifyOn
-    ? (topics.length
-      ? `<div class="memory-menu-label">索引</div><div class="memory-menu-topics">${
-        topics.map(topic => `<div class="memory-menu-topic" title="${escAttr(topic.file || '')}">${esc(topic.title)}</div>`).join('')
-      }</div>`
-      : '<div class="memory-menu-label">索引</div><div class="memory-menu-path">还没有专题。说「更新记忆」后会出现在这里。</div>')
-    : '<p class="memory-menu-path">默认不强制。打开后，从这个目录启动的 Claude / Codex / Grok / OpenCode 才会共用 Claude 那份记忆。</p>';
-  const inbox = unifyOn && Number(state?.inboxCount) > 0
-    ? `<div class="memory-menu-path">inbox ${esc(String(state.inboxCount))} 条待合并</div>`
-    : '';
-  const warning = unifyOn && state?.warning ? `<p class="memory-menu-note">${esc(state.warning)}</p>` : '';
-  menu.innerHTML =
-    `<div class="memory-menu-head"><span class="memory-menu-title">项目记忆</span><span class="memory-menu-status ${statusClass}">${statusText}</span></div>` +
-    `<label class="memory-menu-switch"><input type="checkbox" id="memory-unify-toggle"${unifyOn ? ' checked' : ''}>统一记忆到 Claude</label>` +
-    (unifyOn
-      ? `<p class="memory-menu-path" title="${escAttr(state?.memoryPath || cwd)}">${esc(shortHomePath(state?.memoryPath || cwd))}</p>`
-      : '') +
-    warning +
-    topicHtml +
-    inbox +
-    (unifyOn
-      ? `<div class="memory-menu-actions">` +
-          `<button class="btn btn-default" type="button" data-memory-act="open"${state?.memoryPath ? '' : ' disabled'}>打开目录</button>` +
-          `<button class="btn btn-primary" type="button" data-memory-act="remount">重新挂载</button>` +
-        `</div>`
-      : '');
-  const toggle = menu.querySelector('#memory-unify-toggle');
-  if (toggle) {
-    toggle.onchange = async () => {
-      const wanted = toggle.checked;
-      const revision = memoryMenuRevision;
-      const op = ++memoryUnifyOp;
-      toggle.disabled = true;
-      const session = activeSession ? sessions.get(activeSession) : null;
-      try {
-        if (wanted) {
-          const next = await mountProjectMemory(cwd, session);
-          if (revision !== memoryMenuRevision || op !== memoryUnifyOp) return;
-          if (next?.mounted) {
-            persistMemoryUnifyPaths(setProjectMemoryUnifyEnabled(cwd, true, readMemoryUnifyPaths()));
-          } else if (next?.warning) {
-            msg(next.warning, 'error');
-          }
-          memoryMenuState = next;
-          renderMemoryMenu(next, cwd);
-          return;
-        }
-        await invoke('detach_project_memory', { path: cwd });
-        if (revision !== memoryMenuRevision || op !== memoryUnifyOp) return;
-        persistMemoryUnifyPaths(setProjectMemoryUnifyEnabled(cwd, false, readMemoryUnifyPaths()));
-        if (session) session.memory = null;
-        memoryMenuState = null;
-        renderMemoryMenu(null, cwd);
-      } catch (error) {
-        if (revision !== memoryMenuRevision || op !== memoryUnifyOp) return;
-        msg((wanted ? '挂载' : '关闭') + '统一记忆失败: ' + (error?.message || error), 'error');
-        renderMemoryMenu(session?.memory || null, cwd);
-      }
-    };
-  }
-  menu.querySelectorAll('[data-memory-act]').forEach(button => {
-    button.onclick = async () => {
-      if (button.dataset.memoryAct === 'open' && state?.memoryPath) {
-        try { await invoke('open_folder', { path: state.memoryPath }); }
-        catch (error) { msg('打开记忆目录失败: ' + (error?.message || error), 'error'); }
-        return;
-      }
-      if (button.dataset.memoryAct === 'remount') {
-        const next = await mountProjectMemory(cwd);
-        memoryMenuState = next;
-        renderMemoryMenu(next, cwd);
-      }
-    };
-  });
-}
 
 async function mountProjectMemory(cwd, session = null) {
   if (!shouldMountProjectMemory(cwd)) return null;
@@ -4124,34 +4037,11 @@ function writeMemoryBanner(term, state) {
 }
 
 async function openMemoryMenu(anchorEl) {
-  const revision = ++memoryMenuRevision;
-  memoryMenuOpening = true;
-  const webviewHidden = await workspaceController?.setFloatingUiOpen('memory-menu', true);
-  if (revision !== memoryMenuRevision) return;
-  if (webviewHidden === false) {
-    memoryMenuOpening = false;
-    return;
-  }
-  memoryMenuOpening = false;
   const session = activeSession ? sessions.get(activeSession) : null;
-  const cwd = session?.cwd || '';
-  termEl.memoryMenu.classList.add('active');
-  termEl.memoryBtn.setAttribute('aria-expanded', 'true');
-  renderMemoryMenu(session?.memory || null, cwd);
-  if (cwd && isProjectMemoryUnifyEnabled(cwd, readMemoryUnifyPaths())) {
-    const state = await mountProjectMemory(cwd, session);
-    if (revision !== memoryMenuRevision) return;
-    memoryMenuState = state;
-    renderMemoryMenu(state, cwd);
-  }
-  const r = anchorEl.getBoundingClientRect();
-  const left = Math.max(8, r.right - termEl.memoryMenu.offsetWidth);
-  let top = r.bottom + 6;
-  if (top + termEl.memoryMenu.offsetHeight > window.innerHeight - 8) {
-    top = r.top - termEl.memoryMenu.offsetHeight - 6;
-  }
-  termEl.memoryMenu.style.left = left + 'px';
-  termEl.memoryMenu.style.top = top + 'px';
+  const cwd = String(session?.cwd || '').replace(/[\\/]+$/, '');
+  const project = projects.find(p => String(p.localPath || '').replace(/[\\/]+$/, '') === cwd);
+  if (!project) { msg('请先把当前目录登记为项目，再管理项目共享记忆', 'info'); return; }
+  await sharedMemoryController?.open(project);
 }
 
 function toggleMemoryMenu(anchorEl) {
@@ -5080,8 +4970,10 @@ function requestDiscardChangesAndExit(kind) {
   if (exitPromptPending || el.confirm.classList.contains('active')) return;
   exitPromptPending = true;
   showConfirm({
-    title: '文件修改尚未保存',
-    message: fileEditorSaving
+    title: '修改尚未保存',
+    message: sharedMemoryController?.hasUnsavedChanges()
+      ? '项目共享记忆仍有未保存的草稿或正在保存。确定放弃并退出吗？'
+      : fileEditorSaving
       ? '文件仍在保存中。现在退出可能丢失本次修改，确定退出吗？'
       : `对 ${previewTextState?.name || '当前文件'} 的修改尚未保存，确定退出吗？`,
     confirmText: '放弃修改并退出',
@@ -5095,7 +4987,7 @@ async function setupEditorExitGuard() {
   currentAppWindow = tauri.window.getCurrentWindow();
   await currentAppWindow.onCloseRequested(async event => {
     if (allowWindowClose) return;
-    if (hasUnsavedFileChanges()) {
+    if (hasUnsavedFileChanges() || sharedMemoryController?.hasUnsavedChanges()) {
       event.preventDefault();
       requestDiscardChangesAndExit('window');
       return;
@@ -5109,7 +5001,7 @@ async function setupEditorExitGuard() {
     }
   });
   await tauri.event.listen('app-quit-requested', async () => {
-    if (hasUnsavedFileChanges()) {
+    if (hasUnsavedFileChanges() || sharedMemoryController?.hasUnsavedChanges()) {
       requestDiscardChangesAndExit('app');
       return;
     }
@@ -6493,9 +6385,13 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     characterTheme.setState('idle');
     persistSessionLayout();
     fitSession(id);
-    if (shouldAutoMountProjectMemory(cwd, '', readMemoryUnifyPaths())) {
-      const memory = await mountProjectMemory(cwd, session);
-      writeMemoryBanner(term, memory);
+    const memoryProject = projects.find(p => String(p.localPath || '').replace(/[\\/]+$/, '') === String(cwd || '').replace(/[\\/]+$/, ''));
+    if (memoryProject) {
+      const shared = await invoke('shared_memory_state', { projectId: memoryProject.id });
+      if (shared.enabled) {
+        const memory = await mountProjectMemory(cwd, session);
+        writeMemoryBanner(term, memory);
+      }
     }
     let proxyHook = '';
     try {

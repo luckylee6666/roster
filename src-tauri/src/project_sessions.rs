@@ -15,6 +15,9 @@ const HANDOFF_FILE_READ_LIMIT: u64 = 512 * 1024;
 const HANDOFF_MESSAGE_LIMIT: usize = 24;
 const HANDOFF_TEXT_LIMIT: usize = 18_000;
 const TRANSCRIPT_FILE_READ_LIMIT: u64 = 32 * 1024 * 1024;
+// Codex appends compaction/guardian state without removing original messages.
+// Leave bounded headroom so a compaction does not immediately hide old chat.
+const CODEX_TRANSCRIPT_FILE_READ_LIMIT: u64 = 64 * 1024 * 1024;
 const TRANSCRIPT_MESSAGE_LIMIT: usize = 500;
 const TRANSCRIPT_TEXT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const TRANSCRIPT_INLINE_IMAGE_LIMIT: usize = 8 * 1024 * 1024;
@@ -1110,6 +1113,7 @@ fn strip_handoff_tagged_blocks(text: &str) -> String {
 }
 
 fn sanitize_handoff_text(text: &str) -> String {
+    let text = crate::shared_memory::strip_context(text);
     let cleaned = strip_handoff_tagged_blocks(text);
     let filtered = cleaned
         .chars()
@@ -2418,7 +2422,7 @@ fn source_transcript_messages(
         }
         "codex" => {
             let path = find_codex_session_path(home, cwd, session_id)?;
-            let (buf, truncated) = read_lossy_tail(&path, TRANSCRIPT_FILE_READ_LIMIT)?;
+            let (buf, truncated) = read_lossy_tail(&path, CODEX_TRANSCRIPT_FILE_READ_LIMIT)?;
             (jsonl_transcript_candidates(&buf, "codex"), truncated)
         }
         "grok" => {
@@ -3943,6 +3947,33 @@ mod tests {
         assert!(transcript.messages[0].attachments[0]
             .data_url
             .starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn codex_compaction_record_does_not_hide_earlier_visible_messages() {
+        use std::io::Write;
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/compaction-history";
+        let directory = home.join(".codex/sessions/2026/09/07");
+        fs::create_dir_all(&directory).unwrap();
+        let mut file = fs::File::create(directory.join("rollout-compaction.jsonl")).unwrap();
+        writeln!(file, "{}", serde_json::json!({"type":"session_meta","payload":{"session_id":"compaction-history","cwd":cwd,"timestamp":"2026-09-07T07:00:00Z","thread_source":"user"}})).unwrap();
+        writeln!(file, "{}", serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"最早的原始消息"}]}})).unwrap();
+        file.write_all(b"{\"type\":\"compacted\",\"payload\":{\"message\":\"")
+            .unwrap();
+        let padding = vec![b'x'; 1024 * 1024];
+        for _ in 0..32 {
+            file.write_all(&padding).unwrap();
+        }
+        file.write_all(b"\"}}\n").unwrap();
+        writeln!(file, "{}", serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"最近的回复"}]}})).unwrap();
+        drop(file);
+        let transcript =
+            preview_conversation_transcript_with_home(cwd, "codex", "compaction-history", &home)
+                .unwrap();
+        assert_eq!(transcript.messages.len(), 2);
+        assert_eq!(transcript.messages[0].text, "最早的原始消息");
+        assert_eq!(transcript.messages[1].text, "最近的回复");
     }
 
     #[test]

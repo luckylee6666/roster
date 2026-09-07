@@ -102,7 +102,7 @@ pub fn memory_dir_for_project(home: &Path, cwd: &str) -> PathBuf {
         .join("memory")
 }
 
-fn resolve_memory_dir(home: &Path, project_dir: &Path, raw: &str) -> PathBuf {
+pub(crate) fn resolve_memory_dir(home: &Path, project_dir: &Path, raw: &str) -> PathBuf {
     let mut candidates = vec![raw.to_string()];
     if let Ok(canon) = project_dir.canonicalize() {
         let normalized = normalize_project_cwd(&canon.to_string_lossy());

@@ -45,6 +45,24 @@ test('通用 CLI delta 合并到当前回答，并保留回答来源', () => {
   assert.equal(state.messages.at(-1).pending, false);
 });
 
+test('连接恢复或完成后清除重试提示，普通通知仍保留', () => {
+  const initial = startConversationTurn(createConversationState({ projectId: 'p1', providerId: 'codex' }), {
+    runId: 'retry-1', projectId: 'p1', providerId: 'codex', prompt: '你好',
+  });
+  const apply = (state, kind, data) => applyConversationChatEvent(state, {
+    runId: 'retry-1', providerId: 'codex', kind, data,
+  });
+  const retrying = apply(initial, 'notice', { message: 'Reconnecting... 5/5', willRetry: true });
+  assert.equal(retrying.notice, 'Reconnecting... 5/5');
+  const streaming = apply(retrying, 'assistant_delta', { text: '你好' });
+  assert.equal(streaming.notice, '');
+  assert.equal(streaming.messages.at(-1).text, '你好');
+  assert.equal(apply(retrying, 'completed', { status: 'completed' }).notice, '');
+  assert.equal(apply(retrying, 'assistant_message', { text: '你好' }).notice, '');
+  const ordinary = apply(initial, 'notice', { message: '模型已切换', willRetry: false });
+  assert.equal(apply(ordinary, 'completed', { status: 'completed' }).notice, '模型已切换');
+});
+
 test('旧运行事件不能污染当前对话，未知事件安全忽略', () => {
   const state = startConversationTurn(createConversationState({ projectId: 'p1' }), {
     runId: 'chat-new', projectId: 'p1', prompt: '开始',

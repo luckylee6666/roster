@@ -74,6 +74,7 @@ export function createConversationState({
     activities: [],
     plan: [],
     notice: '',
+    noticeRetry: false,
     error: '',
     // Codex「请求批准」档下、正在等你拍板的那一条。同一时刻只会有一条：
     // 协议线程在等答复期间不会再发新的请求。
@@ -174,6 +175,7 @@ export function startConversationTurn(state, {
     runProviderId: provider,
     turnId: '',
     status: 'starting',
+    noticeRetry: false,
     notice: '',
     error: '',
     activities: [],
@@ -232,6 +234,10 @@ function upsertActivity(activities, next) {
   return result;
 }
 
+function clearRetryNotice(state) {
+  return state.noticeRetry ? { ...state, notice: '', noticeRetry: false } : state;
+}
+
 export function applyConversationChatEvent(state, envelope) {
   const eventProvider = normalizedTool(envelope?.providerId);
   const cancellationWinsTerminalRace = envelope?.kind === 'cancelled'
@@ -261,7 +267,7 @@ export function applyConversationChatEvent(state, envelope) {
       };
     case 'assistant_delta': {
       if (typeof data.text !== 'string' || !data.text) return state;
-      return updateAssistant(state, message => ({
+      return updateAssistant(clearRetryNotice(state), message => ({
         ...message,
         text: `${message.text || ''}${data.text}`,
         pending: true,
@@ -269,14 +275,14 @@ export function applyConversationChatEvent(state, envelope) {
     }
     case 'assistant_message': {
       if (typeof data.text !== 'string') return state;
-      return updateAssistant(state, message => ({ ...message, text: data.text, pending: false }));
+      return updateAssistant(clearRetryNotice(state), message => ({ ...message, text: data.text, pending: false }));
     }
     case 'activity':
       return { ...state, activities: upsertActivity(state.activities, data) };
     case 'plan':
       return { ...state, plan: Array.isArray(data.items) ? data.items.slice(0, 32) : [] };
     case 'notice':
-      return { ...state, notice: typeof data.message === 'string' ? data.message : '' };
+      return { ...state, notice: typeof data.message === 'string' ? data.message : '', noticeRetry: data.willRetry === true };
     case 'approval': {
       const approvalId = typeof data.approvalId === 'string' ? data.approvalId : '';
       if (!approvalId) return state;
@@ -299,7 +305,7 @@ export function applyConversationChatEvent(state, envelope) {
     }
     case 'completed': {
       const failed = data.status !== 'completed';
-      const next = updateAssistant(state, message => ({ ...message, pending: false }));
+      const next = updateAssistant(clearRetryNotice(state), message => ({ ...message, pending: false }));
       return {
         ...next,
         status: failed ? 'failed' : 'completed',
@@ -309,7 +315,7 @@ export function applyConversationChatEvent(state, envelope) {
     }
     case 'cancelled': {
       const next = updateAssistant(state, message => ({ ...message, pending: false }));
-      return { ...next, status: 'cancelled', notice: '已停止这次处理', approval: null };
+      return { ...next, status: 'cancelled', notice: '已停止这次处理', noticeRetry: false, approval: null };
     }
     case 'error': {
       const next = updateAssistant(state, message => ({ ...message, pending: false }));

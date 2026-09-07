@@ -14,7 +14,7 @@ Latest release: **v1.4.1** — real-time Grok usage refresh, conversation histor
 
 ## Features
 
-Only one Roster instance may use the same data directory. Quit the existing app before switching between installed and Debug builds; older releases do not participate in this lock.
+Only one instance may use each data directory. `pnpm dev` or `pnpm build:dev` creates **Roster Dev** (`com.lucky.roster.dev`), using `~/.roster-dev/` and separate backups/WebView preferences. It can run alongside the installed Roster (`~/.roster/`). The development app copies only the project list on first launch; subsequent app-data changes are independent. Project files and CLI histories still point to their original locations.
 
 - **Two workspaces** — Roster opens in a calm conversation workspace for everyday use; switch to Developer mode at any time for the full terminal, file editing, split panes, and multi-CLI collaboration tools
 - **Structured multi-CLI conversations** — the conversation workspace only offers locally installed assistants and can run all eight registered CLIs: **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**. Their recent sessions share one timeline with source badges, preview/delete, same-tool resume, and cross-CLI takeover. History browsing is independent of the smaller handoff context; saved inline screenshots and project-local image/video links render in place, while local text links open in a read-only conversation overlay. Nested links resolve relative to the open document; line links show source with the target line highlighted
@@ -58,6 +58,20 @@ Only one Roster instance may use the same data directory. Quit the existing app 
 ## Using the conversation workspace
 
 The conversation workspace is the default view. It is designed for people who want to work on a project through normal language without managing a terminal.
+
+Use the composer’s **+** menu to attach images or manage **Common instructions**. The quick selector appears only after instructions are saved; choosing one fills the draft without sending it.
+
+### Project shared memory
+
+Conversation mode only shows an automatic project-memory indicator; normal use needs no manual file management. Enabled projects automatically read relevant context and record short progress excerpts from substantive, successfully ended turns. Existing per-project Claude memory directories are retained. Legacy opt-ins migrate conservatively: projects absent from an existing list stay off; without a legacy record, only existing `.memory` links opt in. New projects default on. Private CLI memories are not merged.
+
+Ordinary requests receive index/topic excerpts and the two latest automatic progress records (12 KiB total, 4 KiB per section). The indicator tooltip shows the read receipt. Automatic progress is bounded to 20 records/48 KiB in `inbox/.roster-recent.json`, with source and timestamp, explicitly unverified; curated topics remain untouched. Ordinary inbox drafts, failed/cancelled CLI runs, smalltalk and obvious credential-bearing excerpts are excluded. Slash commands retain native semantics. CLI permissions stay unchanged; disabling cannot retract previously sent context.
+
+Optional editing and recovery remain under Developer mode’s shared-memory advanced controls, separate from code permissions (64 KiB per Markdown file, conflict checks, up to 100 backups). They are not required for normal conversation. Automatic excerpts are not promoted to verified facts, and original CLI chat history is retained. Shared context can reach the selected model service; do not store credentials or material that must not cross services.
+
+All seven CLI adapters now reuse resident structured sessions: Codex uses App Server; Claude, agy and Qwen use bidirectional JSON input; Grok, OpenCode and MiMo Code use ACP over stdio. Consecutive turns reuse the same process and thread when project and launch settings match. Codex keeps up to four idle servers; the other six share a separate pool of up to four, with a 30-minute idle limit. Cancellation/errors, changed settings, switching to Developer mode, deleting history and application exit release sessions. Active turns remain limited to four application-wide. The first message still loads history, and model/network latency can remain even with process reuse. A valid CLI login/subscription is still required.
+
+On macOS, the Codex subprocess inherits the configured system HTTPS proxy unless an explicit Roster/process proxy overrides it (PAC is not evaluated). Official connections prefer native WebSockets with a short retry budget and automatic HTTP fallback. No credentials are read and TLS verification stays enabled. Very large histories can still be slow; context compaction requires an explicit user decision.
 
 - Install and sign in to at least one supported CLI. The participant picker only shows locally installed structured adapters for **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**
 - Choose a project on the left. The recent timeline combines Claude, Grok, Codex, OpenCode, Gemini, agy, Qwen, and MiMo Code with an explicit source badge. Reopen a row to continue with its CLI, or choose another participant to take over using a filtered natural-language handoff; source IDs are never passed as target resume IDs
@@ -146,7 +160,7 @@ pnpm install
 ## Run in development
 
 ```bash
-pnpm tauri dev
+pnpm dev
 ```
 
 ## Build

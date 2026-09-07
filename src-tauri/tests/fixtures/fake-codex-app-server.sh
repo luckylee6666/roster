@@ -39,9 +39,26 @@ read_request initialize
 printf '%s\n' '{"id":1,"result":{"serverInfo":{"name":"fake-codex"}}}'
 
 read_request initialized
+read_request config
+case "$scenario" in
+  custom-provider) printf '%s\n' '{"id":10,"result":{"config":{"model_provider":"custom"}}}' ;;
+  config-unsupported) printf '%s\n' '{"id":10,"error":{"code":-32601,"message":"unsupported"}}' ;;
+  *) printf '%s\n' '{"id":10,"result":{"config":{"model_provider":"openai"}}}' ;;
+esac
 read_request thread
 if [ "$scenario" = "resume" ]; then
   thread_id=thread-existing-1
+  # Replay of this simulated long thread exceeds the 1 MiB transport bound.
+  # Metadata-only resume must avoid sending those stored turns.
+  case "$request_line" in
+    *'"excludeTurns":true'*) ;;
+    *)
+      printf '{"id":2,"result":{"thread":{"id":"%s","turns":[{"text":"' "$thread_id"
+      dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\000' x
+      printf '"}]}}}\n'
+      exit 0
+      ;;
+  esac
 else
   thread_id=thread-contract-1
 fi
@@ -101,6 +118,27 @@ if [ "$scenario" = "leader-exit-with-child-no-completed" ]; then
 fi
 
 printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn-contract-1","status":"completed"}}}'
+
+case "$scenario" in
+  persistent*)
+    turn_number=1
+    while IFS= read -r request_line; do
+      printf '%s\n' "$request_line" >>"$log_path"
+      request_id=$(printf '%s' "$request_line" | sed -E 's/.*"id":([0-9]+).*/\1/')
+      # Delayed traffic must not complete or add text to the next UI run.
+      printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-contract-%s","status":"completed"}}}\n' "$thread_id" "$turn_number"
+      turn_number=$((turn_number + 1))
+      printf '{"id":%s,"result":{"turn":{"id":"turn-contract-%s"}}}\n' "$request_id" "$turn_number"
+      printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"turn-contract-1","delta":"不应显示的旧消息"}}\n' "$thread_id"
+      if [ "$scenario" = "persistent-die" ]; then exit 0; fi
+      printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"turn-contract-%s","delta":"常驻后续回复"}}\n' "$thread_id" "$turn_number"
+      if [ "$scenario" = "persistent-hang" ]; then
+        while :; do sleep 1; done
+      fi
+      printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-contract-%s","status":"completed"}}}\n' "$thread_id" "$turn_number"
+    done
+    ;;
+esac
 
 if [ "$scenario" = "wait-stdin-eof" ]; then
   # A normal App Server exits only after its client closes the writer. Keep

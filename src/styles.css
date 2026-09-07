@@ -6367,6 +6367,52 @@ html[data-app-view="developer"] #conversation-surface {
   white-space: nowrap;
 }
 
+.conversation-compose-more { position: relative; flex-shrink: 0; }
+.shared-memory-note { color: var(--chat-faint, #888); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; margin: 10px 0; }
+.shared-memory-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.shared-memory-actions select { flex: 1; min-width: 160px; }
+.shared-memory-editor { min-height: 230px; margin-top: 10px; resize: vertical; font-family: ui-monospace, monospace; }
+.shared-memory-dialog { width: min(620px, calc(100vw - 32px)); }
+.shared-memory-switch { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+.shared-memory-summary { font-size: 13px; font-weight: 600; margin: 22px 0 10px; }
+.shared-memory-overview { list-style: none; padding: 0; margin: 0; max-height: 240px; overflow: auto; }
+.shared-memory-overview li { margin-bottom: 8px; padding: 12px; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.shared-memory-advanced { border-top: 1px solid var(--border, #e5e7eb); margin-top: 20px; padding-top: 14px; }
+.shared-memory-advanced > summary { cursor: pointer; color: var(--text-secondary, #777); font-size: 12px; }
+.conversation-memory-indicator { display: flex; justify-content: space-between; gap: 12px; color: var(--chat-faint); font-size: 12px; }
+.conversation-more-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  min-width: 158px;
+  padding: 5px;
+  border: 1px solid var(--chat-control-line);
+  border-radius: 10px;
+  background: var(--chat-panel);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .12);
+}
+.conversation-more-menu[hidden], .conversation-snippet-picker[hidden] { display: none; }
+.conversation-more-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--chat-control-ink);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.conversation-more-menu button:hover, .conversation-more-menu button:focus-visible {
+  background: var(--chat-panel-soft);
+  outline: 2px solid var(--chat-focus-line);
+  outline-offset: -2px;
+}
+.conversation-more-menu button:disabled { opacity: .45; cursor: not-allowed; }
+.conversation-more-menu button[hidden] { display: none; }
 .conversation-snippet-picker select {
   width: 96px;
   height: 27px;

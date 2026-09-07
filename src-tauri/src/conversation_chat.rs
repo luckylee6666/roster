@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::codex_chat::{ActiveRun, CodexChatStartInput, CodexChatState};
+mod resident;
+pub(crate) use resident::ResidentPool;
 
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
 const MAX_PROTOCOL_MESSAGES: usize = 16_384;
@@ -149,6 +151,7 @@ fn provider_label(id: &str) -> &'static str {
 }
 
 fn emit(app: &AppHandle, run_id: &str, provider_id: &str, kind: &str, data: Value) {
+    crate::shared_memory::observe(app, run_id, provider_id, kind, &data);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.emit(
             "conversation-chat-event",
@@ -1424,6 +1427,9 @@ fn start_headless(
     spec: &ProviderSpec,
     request: HeadlessStart,
 ) -> Result<ConversationChatStartResult, String> {
+    if resident::supports(spec.id) {
+        return resident::start(app, state, spec, request);
+    }
     let HeadlessStart {
         project_id,
         run_id,
@@ -1648,8 +1654,54 @@ pub fn start(
         &attachments,
         &crate::data_dir().join("media").join("pastes"),
     )?;
-    let prompt = prompt_with_attachments(&prompt, &attachment_paths);
+    let mut prompt = prompt_with_attachments(&prompt, &attachment_paths);
     crate::codex_chat::validate_prompt(&prompt)?;
+    // Resolve memory only from the saved project's canonical scope. Keep CLI
+    // sandbox/customization flags unchanged; this is bounded reference text.
+    let memory_receipt = if let Some(home) = dirs::home_dir() {
+        let memory_state = app.state::<crate::shared_memory::SharedMemoryState>();
+        let _guard = memory_state.0.lock().map_err(|_| "项目共享记忆正在更新")?;
+        let (context, mut receipt) = crate::shared_memory::context(
+            &crate::data_dir(),
+            &home,
+            &canonical_project_path,
+            &prompt,
+        )
+        .unwrap_or_else(|_| {
+            (
+                String::new(),
+                crate::shared_memory::ReadReceipt {
+                    enabled: false,
+                    files: Vec::new(),
+                    bytes: 0,
+                    warning: "共享记忆暂不可读，本轮未附加；对话正常继续".into(),
+                },
+            )
+        });
+        if slash.is_some() {
+            receipt.files.clear();
+            receipt.bytes = 0;
+            receipt.warning = "本次自定义命令不自动附加共享记忆，保留原生命令语义".into();
+        } else if context.len() + prompt.len() <= crate::codex_chat::MAX_PROMPT_BYTES {
+            prompt = format!("{context}{prompt}");
+        } else {
+            receipt.files.clear();
+            receipt.bytes = 0;
+            receipt.warning = "本轮输入较长，未附加共享记忆".into();
+        }
+        Some(receipt)
+    } else {
+        None
+    };
+    if let Some(receipt) = memory_receipt {
+        emit(
+            &app,
+            &run_id,
+            &provider_id,
+            "memory",
+            json!({"projectId":project_id,"receipt":receipt}),
+        );
+    }
 
     if provider_id == "codex" {
         let prompt = codex_prompt_for_slash(prompt, slash.as_ref());
