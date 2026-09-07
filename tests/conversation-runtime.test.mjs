@@ -28,6 +28,8 @@ test('对话工作台具有项目、历史、消息、输入和进度三区结�
     'conversation-send',
     'conversation-plan-list',
     'conversation-activity-list',
+    'conversation-file-preview',
+    'conversation-file-preview-body',
   ]) {
     assert.equal((html.match(new RegExp(`id=["']${id}["']`, 'g')) || []).length, 1, `${id} 应唯一存在`);
   }
@@ -241,12 +243,14 @@ test('对话使用结构化多 CLI IPC 和 DOMPurify，不解析终端 ANSI', as
   assert.match(conversation, /DOMPurify\.sanitize/);
   assert.match(conversation, /preview_conversation_transcript/);
   assert.match(conversation, /read_conversation_project_media/);
+  assert.match(conversation, /read_conversation_link_file/);
   assert.match(conversation, /conversation-message-attachments/);
   assert.doesNotMatch(conversation, /terminal-output|xterm|ANSI/i);
   assert.match(rust, /conversation_chat_start/);
   assert.match(rust, /conversation_chat_cancel/);
   assert.match(rust, /preview_conversation_transcript/);
   assert.match(rust, /read_conversation_project_media/);
+  assert.match(rust, /read_conversation_link_file/);
   assert.match(conversation, /mode: currentMode\(\)/);
   assert.match(codexAdapter, /json!\(\{ "type": "readOnly" \}\)/);
   assert.match(codexAdapter, /get_webview_window\("main"\)/);
@@ -255,6 +259,23 @@ test('对话使用结构化多 CLI IPC 和 DOMPurify，不解析终端 ANSI', as
   assert.match(router, /resolve_registered_cli_bin/);
   assert.doesNotMatch(router, /Command::new\(&input\./);
   assert.match(main, /installConversationMode/);
+});
+
+test('对话内本地文件链接使用只读弹窗预览，不切换开发模式', async () => {
+  const [html, conversation, css] = await Promise.all([
+    read('src/index.html'),
+    read('src/conversation-mode.js'),
+    read('src/styles.css'),
+  ]);
+  assert.match(html, /id="conversation-file-preview" data-app-global-overlay/);
+  assert.match(html, /conversation-file-preview-modal/);
+  assert.match(conversation, /async function openFilePreview/);
+  assert.match(conversation, /invoke\('read_conversation_link_file'/);
+  assert.match(conversation, /dom\.filePreviewBody\?\.addEventListener\('click', handleConversationLink\)/);
+  assert.match(conversation, /dom\.filePreview\?\.addEventListener\('keydown'/);
+  assert.doesNotMatch(conversation, /openFilePreview[\s\S]{0,1200}setView\('developer'/);
+  assert.match(css, /\.conversation-file-preview-modal/);
+  assert.match(css, /\.conversation-file-preview-body/);
 });
 
 test('对话 Markdown 禁止内联样式和未校验 data 图片', async () => {

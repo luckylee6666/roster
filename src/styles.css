@@ -1193,6 +1193,86 @@ body {
 .conversation-attachment-thumb img,
 .conversation-message-attachment { cursor: zoom-in; }
 
+#conversation-file-preview { z-index: 1850; }
+
+.conversation-file-preview-modal {
+  display: grid;
+  width: min(900px, calc(100vw - 48px));
+  max-width: 900px;
+  max-height: min(820px, calc(100vh - 48px));
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.conversation-file-preview-meta {
+  overflow: hidden;
+  padding: 9px 24px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+  background: var(--bg-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-file-preview-body {
+  min-height: 260px;
+  padding: 22px 26px 34px;
+  overflow: auto;
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 1.7;
+  outline: 0;
+}
+
+.conversation-file-preview-body > *:first-child { margin-top: 0; }
+.conversation-file-preview-body > *:last-child { margin-bottom: 0; }
+.conversation-file-preview-body h1 { margin: 22px 0 12px; font-size: 22px; }
+.conversation-file-preview-body h2 { margin: 20px 0 10px; font-size: 18px; }
+.conversation-file-preview-body h3 { margin: 18px 0 8px; font-size: 16px; }
+.conversation-file-preview-body p { margin: 0 0 10px; }
+.conversation-file-preview-body ul,
+.conversation-file-preview-body ol { margin: 8px 0 14px 1.4em; }
+.conversation-file-preview-body a { color: var(--chat-link); }
+.conversation-file-preview-body pre {
+  margin: 12px 0;
+  padding: 14px 16px;
+  overflow: auto;
+  border: 1px solid var(--chat-code-line);
+  border-radius: 9px;
+  color: var(--chat-code-ink);
+  background: var(--chat-code-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.conversation-file-preview-body > pre.conversation-file-preview-text {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.conversation-file-preview-loading,
+.conversation-file-preview-error {
+  padding: 36px 0;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.conversation-file-preview-error { color: var(--red); }
+
+.conversation-file-preview-line {
+  background: var(--chat-accent-soft);
+  color: inherit;
+  box-shadow: 0 0 0 2px var(--chat-accent-line);
+}
+
 .modal-wrap {
   position: absolute;
   inset: 0;

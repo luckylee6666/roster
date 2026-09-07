@@ -10,12 +10,14 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.4.0** — Grok subscription usage joins Claude and Codex with installed-CLI and platform-capability filtering; Claude context percentages recognize current 1M models correctly; and cross-CLI handoff no longer fails with a recursive stack overflow. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.4.1** — real-time Grok usage refresh, conversation history that opens at the latest message, in-conversation file previews with relative links and line navigation, and protection against concurrent app instances overwriting project data. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
+Only one Roster instance may use the same data directory. Quit the existing app before switching between installed and Debug builds; older releases do not participate in this lock.
+
 - **Two workspaces** — Roster opens in a calm conversation workspace for everyday use; switch to Developer mode at any time for the full terminal, file editing, split panes, and multi-CLI collaboration tools
-- **Structured multi-CLI conversations** — the conversation workspace only offers locally installed assistants and can run all eight registered CLIs: **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**. Their recent sessions share one timeline with source badges, preview/delete, same-tool resume, and cross-CLI takeover. History browsing is independent of the smaller handoff context, and saved inline screenshots plus project-local image/video links render in place
+- **Structured multi-CLI conversations** — the conversation workspace only offers locally installed assistants and can run all eight registered CLIs: **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**. Their recent sessions share one timeline with source badges, preview/delete, same-tool resume, and cross-CLI takeover. History browsing is independent of the smaller handoff context; saved inline screenshots and project-local image/video links render in place, while local text links open in a read-only conversation overlay. Nested links resolve relative to the open document; line links show source with the target line highlighted
 - **Project-aware slash commands** — use Roster actions such as `/model`, `/effort` where supported, `/new`, and `/help`, plus skills/custom commands discovered for the current project and current CLI. The backend rediscovers the selection immediately before launch and rejects stale or cross-provider commands
 - **Project management** — add, edit, delete projects
 - **Run target (optional)** — local machine / server, or leave it unset

@@ -13,6 +13,7 @@ import {
   MAX_PARALLEL_CONVERSATION_RUNS,
   normalizeProjectChanges,
 } from '../src/conversation-mode.js';
+import { CLI_TOOLS } from '../src/cli-tools.js';
 
 globalThis.window = globalThis.window || {};
 globalThis.requestAnimationFrame = fn => { fn(); return 0; };
@@ -124,16 +125,20 @@ class FakeEl {
   addEventListener(name, fn) { (this.listeners[name] = this.listeners[name] || []).push(fn); }
   querySelector() { return null; }
   querySelectorAll(selector) {
-    if (selector !== 'pre') return [];
+    const tags = selector === 'pre'
+      ? new Set(['PRE'])
+      : selector === 'img, video' ? new Set(['IMG', 'VIDEO']) : null;
+    if (!tags) return [];
     const found = [];
     const walk = node => node.childNodes.forEach(child => {
-      if (child.tagName === 'PRE') found.push(child);
+      if (tags.has(child.tagName)) found.push(child);
       walk(child);
     });
     walk(this);
     return found;
   }
   focus() {}
+  scrollIntoView(options) { this.scrollRequest = options; }
   closest() { return null; }
   contains(node) {
     if (node === this) return true;
@@ -196,6 +201,12 @@ const IDS = [
   'conversation-project-context',
   'conversation-activity-list',
   'conversation-plan-list',
+  'conversation-file-preview',
+  'conversation-file-preview-title',
+  'conversation-file-preview-path',
+  'conversation-file-preview-body',
+  'conversation-file-preview-close',
+  'conversation-file-preview-ok',
 ];
 
 function fire(node, event, payload) {
@@ -225,6 +236,7 @@ function fixture({
   focused = true,
   appView,
   history,
+  transcript,
   t,
 } = {}) {
   const byId = new Map(IDS.map(id => [id, new FakeEl(id.endsWith('-select') ? 'select' : 'div')]));
@@ -298,6 +310,9 @@ function fixture({
       }
       if (command === 'conversation_chat_cancel') return true;
       if (command === 'notify') return null;
+      if (command === 'preview_conversation_transcript') {
+        return transcript ? { messages: transcript } : null;
+      }
       if (command === 'pick_attachment_images') return pickedImages;
       if (command === 'conversation_model_list') return { models: slashLists.models };
       if (command === 'conversation_effort_list') return { efforts: slashLists.efforts };
@@ -332,6 +347,15 @@ function fixture({
         if (!/\.(png|jpe?g|gif|webp)$/i.test(payload.path)) throw new Error('只支持 PNG、JPEG、GIF、WebP 图片');
         const media = { kind: 'image', mimeType: 'image/png', dataUrl: `data:image/png;base64,AAAA${payload.path.length}` };
         return attachmentGate ? attachmentGate.promise.then(() => media) : media;
+      }
+      if (command === 'read_conversation_link_file') {
+        return {
+          name: 'wow3d.md',
+          path: '/Users/lucky/.claude/projects/project/memory/wow3d.md',
+          content: '# WOW3D 专题记忆\n第二行\n项目记录。',
+          kind: 'markdown',
+          line: payload.source.endsWith(':2') ? 2 : null,
+        };
       }
       return null;
     },
@@ -1003,6 +1027,116 @@ test('滚上去看历史会出现回到最新，点一下滚回底部', async t 
   fire(button, 'click');
   assert.equal(scroller.scrollTop, scroller.scrollHeight);
   assert.equal(button.hidden, true, '滚回底部后收起');
+});
+
+test('任意 CLI 历史对话打开后停在最新消息，迟到的媒体布局也会校准到底部', async t => {
+  const providerIds = CLI_TOOLS.map(tool => tool.id);
+  for (const providerId of providerIds) {
+    const history = {
+      groups: [{
+        tool: providerId,
+        label: providerId,
+        sessions: [{ id: `${providerId}-latest`, title: '最近会话', atMs: 300 }],
+      }],
+    };
+    const fx = fixture({
+      projects: [project(`project-${providerId}`, providerId)],
+      installed: providerIds,
+      history,
+      transcript: [
+        { role: 'user', text: '最早的问题' },
+        { role: 'assistant', text: '最新回答', tool: providerId, attachments: [
+          { kind: 'image', dataUrl: 'data:image/png;base64,AAAA' },
+        ] },
+      ],
+      t,
+    });
+    const scroller = fx.el('conversation-messages').parentElement;
+    scroller.clientHeight = 600;
+    scroller.scrollHeight = 900;
+    await flush();
+    assert.equal(scroller.scrollTop, 900, `${providerId} 打开历史后应跳到最新消息`);
+
+    const [image] = fx.el('conversation-messages').querySelectorAll('img, video');
+    assert.ok(image, `${providerId} 应渲染历史图片`);
+    scroller.scrollHeight = 2200;
+    fire(image, 'load');
+    await flush();
+    assert.equal(scroller.scrollTop, 2200, `${providerId} 图片撑高后仍应停在最新消息`);
+
+    // 用户主动往上看以后，迟到的媒体事件不能再把阅读位置抢回底部。
+    fire(scroller, 'pointerdown');
+    scroller.scrollTop = 120;
+    scroller.scrollHeight = 2600;
+    fire(image, 'load');
+    await flush();
+    assert.equal(scroller.scrollTop, 120, `${providerId} 应尊重用户主动浏览历史`);
+    fire(fx.el('conversation-scroll-bottom'), 'click');
+    assert.equal(scroller.scrollTop, 2600);
+    scroller.scrollHeight = 3200;
+    fire(image, 'load');
+    assert.equal(scroller.scrollTop, 3200, '回到最新后重新跟随延迟媒体');
+    for (let index = 0; index < 100; index += 1) fx.controller.setProjects([
+      project(`project-${providerId}`, providerId),
+    ]);
+    assert.equal(image.listeners.load.length, 1, '复用图片无论重绘多少次都只绑定一个监听器');
+    assert.equal(image.listeners.loadedmetadata, undefined, '图片不绑定视频事件');
+  }
+});
+
+test('对话内本地文件链接原地打开只读预览，网页链接仍交给系统浏览器', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const stream = fx.el('conversation-messages');
+  const localLink = new FakeEl('a');
+  localLink.setAttribute('href', '/Users/lucky/.claude/projects/project/memory/wow3d.md');
+  localLink.closest = selector => selector === 'a[href]' ? localLink : null;
+  let prevented = false;
+  fire(stream, 'click', { target: localLink, preventDefault() { prevented = true; } });
+  await flush();
+
+  assert.equal(prevented, true);
+  assert.deepEqual(
+    fx.invokes.find(entry => entry.command === 'read_conversation_link_file')?.payload,
+    {
+      projectId: 'a',
+      source: '/Users/lucky/.claude/projects/project/memory/wow3d.md',
+      basePath: null,
+    },
+  );
+  assert.ok(fx.el('conversation-file-preview').classNames.has('active'));
+  assert.equal(fx.el('conversation-file-preview-title').textContent, 'wow3d.md');
+  assert.match(fx.el('conversation-file-preview-path').textContent, /memory\/wow3d\.md/);
+
+  const nestedLink = new FakeEl('a');
+  nestedLink.setAttribute('href', 'topic.md:2');
+  nestedLink.closest = () => nestedLink;
+  fx.el('conversation-file-preview-body').appendChild(nestedLink);
+  fire(fx.el('conversation-file-preview-body'), 'click', { target: nestedLink, preventDefault() {} });
+  await flush();
+  assert.deepEqual(fx.invokes.filter(entry => entry.command === 'read_conversation_link_file').at(-1).payload, {
+    projectId: 'a', source: 'topic.md:2',
+    basePath: '/Users/lucky/.claude/projects/project/memory/wow3d.md',
+  });
+  const pre = fx.el('conversation-file-preview-body').firstChild;
+  assert.equal(pre.tagName, 'PRE', '有行号的 Markdown 使用源码预览');
+  const targetLine = pre.childNodes[1];
+  assert.equal(targetLine.tagName, 'MARK');
+  assert.equal(targetLine.textContent, '第二行');
+  assert.deepEqual(targetLine.scrollRequest, { block: 'center', behavior: 'instant' });
+
+  fire(fx.el('conversation-file-preview-close'), 'click');
+  assert.equal(fx.el('conversation-file-preview').classNames.has('active'), false);
+
+  const webLink = new FakeEl('a');
+  webLink.setAttribute('href', 'https://example.com/docs');
+  webLink.closest = selector => selector === 'a[href]' ? webLink : null;
+  fire(stream, 'click', { target: webLink, preventDefault() {} });
+  await flush();
+  assert.deepEqual(
+    fx.invokes.find(entry => entry.command === 'open_url')?.payload,
+    { url: 'https://example.com/docs' },
+  );
 });
 
 test('⌘K 聚焦项目搜索，⌘⇧N 在当前项目开新对话', async t => {

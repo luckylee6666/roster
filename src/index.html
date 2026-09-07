@@ -1068,6 +1068,23 @@
       <img id="conversation-image-preview-img" alt="图片预览" />
     </div>
 
+    <!-- 对话内本地文件只读预览：不切开发模式，关闭后回到原阅读位置 -->
+    <div class="modal-mask" id="conversation-file-preview" data-app-global-overlay>
+      <div class="modal-wrap">
+        <div class="modal conversation-file-preview-modal" role="dialog" aria-modal="true" aria-labelledby="conversation-file-preview-title">
+          <div class="modal-header">
+            <span class="modal-title" id="conversation-file-preview-title">文件预览</span>
+            <button class="modal-x" id="conversation-file-preview-close" type="button" aria-label="关闭文件预览">&times;</button>
+          </div>
+          <div class="conversation-file-preview-meta" id="conversation-file-preview-path"></div>
+          <div class="conversation-file-preview-body" id="conversation-file-preview-body" tabindex="0"></div>
+          <div class="modal-footer">
+            <button class="btn btn-primary" id="conversation-file-preview-ok" type="button">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 对话模式新建项目：不离开对话工作台即可添加项目和分组 -->
     <div class="modal-mask" id="conversation-assistant-overlay" data-app-global-overlay>
       <div class="modal-wrap">

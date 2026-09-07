@@ -122,6 +122,23 @@ fn resolve_memory_dir(home: &Path, project_dir: &Path, raw: &str) -> PathBuf {
     memory_dir_for_project(home, raw)
 }
 
+/// 返回当前项目已经存在的 Claude 记忆目录，不创建目录或工作区链接。
+/// 对话内文件预览用它把项目记忆作为项目根之外唯一额外允许的只读范围。
+fn existing_memory_dir_with_home(project_path: &str, home: &Path) -> Option<PathBuf> {
+    let raw = normalize_project_cwd(project_path);
+    if raw.is_empty() {
+        return None;
+    }
+    let project_dir = PathBuf::from(&raw);
+    let memory = resolve_memory_dir(home, &project_dir, &raw);
+    let canonical = memory.canonicalize().ok()?;
+    canonical.is_dir().then_some(canonical)
+}
+
+pub fn existing_memory_dir(project_path: &str) -> Option<PathBuf> {
+    existing_memory_dir_with_home(project_path, &dirs::home_dir()?)
+}
+
 fn memory_pointer_block() -> String {
     format!("{MEMORY_POINTER_START}\n{MEMORY_POINTER_BODY}\n{MEMORY_POINTER_END}\n")
 }
@@ -637,6 +654,22 @@ mod tests {
             .is_symlink());
         assert!(!project.join("CLAUDE.md").exists());
         assert!(!project.join("AGENTS.md").exists());
+    }
+
+    #[test]
+    fn finds_existing_memory_without_creating_or_mounting_it() {
+        let (_root, home) = temp_home();
+        let project = home.join("code").join("preview");
+        fs::create_dir_all(&project).unwrap();
+        let memory = memory_dir_for_project(&home, project.to_str().unwrap());
+        fs::create_dir_all(&memory).unwrap();
+        fs::write(memory.join("MEMORY.md"), "# 记忆\n").unwrap();
+
+        assert_eq!(
+            existing_memory_dir_with_home(project.to_str().unwrap(), &home),
+            Some(memory.canonicalize().unwrap())
+        );
+        assert!(!project.join(WORKSPACE_MEMORY_LINK).exists());
     }
 
     #[test]

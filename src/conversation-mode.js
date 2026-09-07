@@ -459,6 +459,12 @@ export function installConversationMode({
     attachImage: document.getElementById('conversation-attach-image'),
     composerBox: document.querySelector('.conversation-composer-box'),
     imagePreview: document.getElementById('conversation-image-preview'),
+    filePreview: document.getElementById('conversation-file-preview'),
+    filePreviewTitle: document.getElementById('conversation-file-preview-title'),
+    filePreviewPath: document.getElementById('conversation-file-preview-path'),
+    filePreviewBody: document.getElementById('conversation-file-preview-body'),
+    filePreviewClose: document.getElementById('conversation-file-preview-close'),
+    filePreviewOk: document.getElementById('conversation-file-preview-ok'),
     addProject: document.getElementById('conversation-add-project'),
     createOverlay: document.getElementById('conversation-create-overlay'),
     createClose: document.getElementById('conversation-create-close'),
@@ -522,6 +528,9 @@ export function installConversationMode({
   let historyRevision = 0;
   let transcriptRevision = 0;
   let contextRevision = 0;
+  let filePreviewRevision = 0;
+  let filePreviewTrigger = null;
+  let filePreviewCurrentPath = '';
   let destroyed = false;
   let unlisten = null;
   const dragUnlisteners = [];
@@ -569,7 +578,135 @@ export function installConversationMode({
   const projectMediaCache = new Map();
   const messageNodes = new Map();
   const expandedMessages = new Set();
+  let messageFollowRevision = 0;
+  let messageFollowActive = false;
+  let forceFollowOnNextMessageRender = false;
+  const trackedMessageMedia = new WeakSet();
   const runController = createConversationRunController({ invoke });
+
+  function closeFilePreview() {
+    filePreviewRevision += 1;
+    dom.filePreview?.classList?.remove('active');
+    dom.filePreview?.removeAttribute?.('aria-busy');
+    if (dom.filePreviewBody) dom.filePreviewBody.replaceChildren();
+    const trigger = filePreviewTrigger;
+    filePreviewTrigger = null;
+    filePreviewCurrentPath = '';
+    trigger?.focus?.({ preventScroll: true });
+  }
+
+  async function openFilePreview(source, trigger = null, basePath = null) {
+    const project = selectedProject;
+    if (!project || !dom.filePreview || !dom.filePreviewBody) return;
+    const revision = ++filePreviewRevision;
+    filePreviewCurrentPath = '';
+    if (!dom.filePreview.classList.contains('active')) filePreviewTrigger = trigger;
+    dom.filePreview.classList.add('active');
+    dom.filePreview.setAttribute('aria-busy', 'true');
+    if (dom.filePreviewTitle) dom.filePreviewTitle.textContent = '正在打开文件…';
+    if (dom.filePreviewPath) dom.filePreviewPath.textContent = String(source || '');
+    dom.filePreviewBody.className = 'conversation-file-preview-body';
+    dom.filePreviewBody.replaceChildren(
+      element(document, 'div', 'conversation-file-preview-loading', '正在读取只读预览…'),
+    );
+    try {
+      const preview = await invoke('read_conversation_link_file', {
+        projectId: project.id,
+        source: String(source || ''),
+        basePath,
+      });
+      if (destroyed || revision !== filePreviewRevision || selectedProject?.id !== project.id) return;
+      dom.filePreview.removeAttribute('aria-busy');
+      filePreviewCurrentPath = preview?.path || '';
+      if (dom.filePreviewTitle) dom.filePreviewTitle.textContent = preview?.name || '文件预览';
+      if (dom.filePreviewPath) {
+        dom.filePreviewPath.textContent = `${preview?.path || source}${preview?.line ? ` · 第 ${preview.line} 行` : ''}`;
+        dom.filePreviewPath.title = preview?.path || String(source || '');
+      }
+      dom.filePreviewBody.replaceChildren();
+      let lineTarget = null;
+      if (preview?.kind === 'markdown' && !preview?.line) {
+        dom.filePreviewBody.classList.add('is-markdown');
+        renderMarkdown(document, dom.filePreviewBody, preview.content, null);
+        decorateCodeBlocks(dom.filePreviewBody);
+      } else {
+        const pre = element(document, 'pre', 'conversation-file-preview-text');
+        const content = String(preview?.content || '');
+        if (preview?.line) {
+          const lines = content.split(/\r\n|\r|\n/);
+          const index = Math.min(lines.length - 1, Math.max(0, preview.line - 1));
+          const before = element(document, 'span', '', lines.slice(0, index).join('\n') + (index ? '\n' : ''));
+          lineTarget = element(document, 'mark', 'conversation-file-preview-line', lines[index] || ' ');
+          const after = element(document, 'span', '', index + 1 < lines.length ? '\n' + lines.slice(index + 1).join('\n') : '');
+          pre.append(before, lineTarget, after);
+        } else pre.textContent = content;
+        dom.filePreviewBody.appendChild(pre);
+      }
+      dom.filePreviewBody.scrollTop = 0;
+      dom.filePreviewBody.focus?.();
+      if (lineTarget) requestAnimationFrame(() => {
+        if (destroyed || revision !== filePreviewRevision) return;
+        lineTarget.scrollIntoView?.({ block: 'center', behavior: 'instant' });
+      });
+    } catch (error) {
+      if (destroyed || revision !== filePreviewRevision || selectedProject?.id !== project.id) return;
+      dom.filePreview.removeAttribute('aria-busy');
+      if (dom.filePreviewTitle) dom.filePreviewTitle.textContent = '无法预览文件';
+      dom.filePreviewBody.replaceChildren(
+        element(
+          document,
+          'div',
+          'conversation-file-preview-error',
+          error?.message || String(error),
+        ),
+      );
+    }
+  }
+
+  function cancelMessageFollow() {
+    messageFollowRevision += 1;
+    messageFollowActive = false;
+  }
+
+  function forceLatestOnNextMessageRender() {
+    cancelMessageFollow();
+    forceFollowOnNextMessageRender = true;
+  }
+
+  function jumpToLatestFor(revision) {
+    const scroller = dom.stream?.parentElement;
+    if (!scroller || destroyed || !messageFollowActive || revision !== messageFollowRevision) return;
+    scroller.scrollTop = scroller.scrollHeight;
+    updateScrollAffordance();
+  }
+
+  function trackMediaLayoutForLatest(media, revision = messageFollowRevision) {
+    if (!media?.addEventListener || !messageFollowActive || revision !== messageFollowRevision) return;
+    if (trackedMessageMedia.has(media)) return;
+    trackedMessageMedia.add(media);
+    const settle = () => {
+      if (!messageFollowActive || !dom.stream?.contains?.(media)) return;
+      const currentRevision = messageFollowRevision;
+      requestAnimationFrame(() => jumpToLatestFor(currentRevision));
+    };
+    media.addEventListener(media.tagName === 'VIDEO' ? 'loadedmetadata' : 'load', settle);
+  }
+
+  function followLatestAfterLayout() {
+    const scroller = dom.stream?.parentElement;
+    if (!scroller) return;
+    const revision = ++messageFollowRevision;
+    messageFollowActive = true;
+    jumpToLatestFor(revision);
+    // 一帧负责 DOM 插入，下一帧覆盖字体/图片 intrinsic size 已参与布局的情况。
+    requestAnimationFrame(() => {
+      jumpToLatestFor(revision);
+      requestAnimationFrame(() => jumpToLatestFor(revision));
+    });
+    dom.stream?.querySelectorAll?.('img, video')?.forEach(media => {
+      trackMediaLayoutForLatest(media, revision);
+    });
+  }
 
   function cachedProjectMedia(projectId, source) {
     const key = `${projectId}\0${source}`;
@@ -602,14 +739,17 @@ export function installConversationMode({
         video.preload = 'metadata';
         video.playsInline = true;
         video.setAttribute('aria-label', node.alt || '对话视频');
-        video.src = media.dataUrl;
         video.addEventListener('error', () => conversationMediaFallback(document, video, '这个视频无法播放'));
+        trackMediaLayoutForLatest(video);
+        video.src = media.dataUrl;
         node.replaceWith(video);
+        jumpToLatestFor(messageFollowRevision);
         return;
       }
       node.classList.remove('is-loading');
       node.removeAttribute('aria-busy');
       node.addEventListener('error', () => conversationMediaFallback(document, node));
+      trackMediaLayoutForLatest(node);
       node.src = media.dataUrl;
     } catch (_) {
       if (destroyed || selectedProject?.id !== projectId || node?.isConnected === false) return;
@@ -1677,7 +1817,9 @@ export function installConversationMode({
   function renderMessages() {
     if (!dom.stream || !dom.empty) return;
     const scrollParent = dom.stream.parentElement;
-    const shouldFollow = !scrollParent
+    const forceFollow = forceFollowOnNextMessageRender;
+    forceFollowOnNextMessageRender = false;
+    const shouldFollow = forceFollow || !scrollParent
       || scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 120;
     const empty = state.messages.length === 0 && !state.notice && !state.error;
     dom.empty.hidden = !empty;
@@ -1698,11 +1840,9 @@ export function installConversationMode({
     if (alert) nodes.push(alert);
     reconcileStream(dom.stream, nodes);
     if (shouldFollow) {
-      requestAnimationFrame(() => {
-        if (scrollParent) scrollParent.scrollTop = scrollParent.scrollHeight;
-        updateScrollAffordance();
-      });
+      followLatestAfterLayout();
     } else {
+      cancelMessageFollow();
       updateScrollAffordance();
     }
   }
@@ -1981,6 +2121,7 @@ export function installConversationMode({
       if (order === searchIndex) row.classList?.add('is-search-current');
     });
     if (!reveal) return;
+    cancelMessageFollow();
     messageRowAt(hits[searchIndex])?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
   }
 
@@ -2014,14 +2155,7 @@ export function installConversationMode({
   }
 
   function scrollToLatest() {
-    const scroller = dom.stream?.parentElement;
-    if (!scroller) return;
-    if (typeof scroller.scrollTo === 'function') {
-      scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
-    } else {
-      scroller.scrollTop = scroller.scrollHeight;
-    }
-    updateScrollAffordance();
+    followLatestAfterLayout();
   }
 
   function renderPlan() {
@@ -2565,6 +2699,7 @@ export function installConversationMode({
         dropPendingLabel();
         return;
       }
+      forceLatestOnNextMessageRender();
       state = loadConversationTranscript({
         projectId: project.id,
         providerId: session.tool,
@@ -2706,7 +2841,9 @@ export function installConversationMode({
   }
 
   function activateProject(next) {
+    if (dom.filePreview?.classList.contains('active')) closeFilePreview();
     stashActiveConversation();
+    forceLatestOnNextMessageRender();
     historyToolFilter = '';
     selectedProject = next;
     transcriptRevision += 1;
@@ -3318,8 +3455,15 @@ export function installConversationMode({
     scrollTick = true;
     requestAnimationFrame(() => {
       scrollTick = false;
+      const distance = messageScroller.scrollHeight
+        - messageScroller.scrollTop
+        - messageScroller.clientHeight;
+      if (distance > 120) cancelMessageFollow();
       updateScrollAffordance();
     });
+  });
+  ['wheel', 'touchstart', 'pointerdown'].forEach(eventName => {
+    messageScroller?.addEventListener?.(eventName, cancelMessageFollow, { passive: true });
   });
   dom.scrollBottom?.addEventListener('click', () => scrollToLatest());
 
@@ -3464,6 +3608,18 @@ export function installConversationMode({
   dom.imagePreview?.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeImagePreview();
   });
+  dom.filePreviewClose?.addEventListener('click', closeFilePreview);
+  dom.filePreviewOk?.addEventListener('click', closeFilePreview);
+  dom.filePreview?.addEventListener('click', event => {
+    if (event.target === dom.filePreview || event.target?.classList?.contains('modal-wrap')) {
+      closeFilePreview();
+    }
+  });
+  dom.filePreview?.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    closeFilePreview();
+  });
   dom.addProject?.addEventListener('click', () => openCreateProject());
   dom.createFolder?.addEventListener('click', () => void chooseCreateFolder());
   dom.createCancel?.addEventListener('click', () => closeCreateProject());
@@ -3528,17 +3684,22 @@ export function installConversationMode({
   dom.stop?.addEventListener('click', () => void stop());
   dom.openFolder?.addEventListener('click', () => void openProjectFolder());
   dom.refreshProject?.addEventListener('click', () => void refreshProjectContext({ force: true }));
-  dom.stream?.addEventListener('click', event => {
+  const handleConversationLink = event => {
     const link = event.target?.closest?.('a[href]');
     if (!link) return;
     event.preventDefault();
-    const url = link.getAttribute('href') || '';
-    if (/^https?:\/\//i.test(url)) {
-      invoke('open_url', { url }).catch(error => {
+    const source = link.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(source)) {
+      invoke('open_url', { url: source }).catch(error => {
         notify?.(`打开链接失败：${error?.message || error}`, 'error');
       });
+      return;
     }
-  });
+    const basePath = dom.filePreviewBody?.contains?.(link) ? filePreviewCurrentPath : null;
+    void openFilePreview(source, link, basePath);
+  };
+  dom.stream?.addEventListener('click', handleConversationLink);
+  dom.filePreviewBody?.addEventListener('click', handleConversationLink);
 
   // Tauri 的原生拖放会吞掉 DOM drop 事件，所以走 tauri:// 这组事件；
   // 开发模式的终端拖放监听在对话视图下命中不到目标，两边不会打架。
@@ -3655,6 +3816,7 @@ export function installConversationMode({
     isRunning,
     destroy() {
       destroyed = true;
+      filePreviewRevision += 1;
       clearUsageExpiryTimer();
       historyRevision += 1;
       transcriptRevision += 1;

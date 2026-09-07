@@ -22,6 +22,7 @@ mod conversation_chat;
 mod conversation_media;
 mod conversation_modes;
 mod conversation_slash;
+mod instance_lock;
 mod native_esc;
 mod orchestra;
 mod project_files;
@@ -2122,6 +2123,31 @@ async fn read_conversation_project_media(
     .map_err(|error| error.to_string())?
 }
 
+/// 对话正文里的本地文件链接：路径只能落在已保存项目或该项目对应的 Claude
+/// 记忆目录中，并通过已打开目录句柄逐级校验后有界读取。只返回只读预览内容。
+#[tauri::command]
+async fn read_conversation_link_file(
+    app_state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    source: String,
+    base_path: Option<String>,
+) -> Result<conversation_media::ConversationFilePreview, String> {
+    let path = {
+        let state = app_state.lock().map_err(|error| error.to_string())?;
+        state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.local_path.clone())
+            .ok_or_else(|| "找不到这个项目，请刷新后重试".to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        conversation_media::read_link_file(&path, &source, base_path.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn delete_project_session(path: String, tool: String, id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -3289,6 +3315,17 @@ fn companion_navigation_policy<R: tauri::Runtime>() -> tauri::plugin::TauriPlugi
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _instance_lock = match instance_lock::acquire(&preferred_data_dir()) {
+        Ok(lock) => lock,
+        Err(error) => {
+            rfd::MessageDialog::new()
+                .set_title("Roster")
+                .set_description(&error)
+                .set_level(rfd::MessageLevel::Warning)
+                .show();
+            return;
+        }
+    };
     log_info!(
         "===== 应用启动 v{} ({}) =====",
         env!("CARGO_PKG_VERSION"),
@@ -3399,6 +3436,7 @@ pub fn run() {
             preview_session_handoff,
             preview_conversation_transcript,
             read_conversation_project_media,
+            read_conversation_link_file,
             conversation_project_files,
             conversation_mode_list,
             list_conversation_session_titles,

@@ -5,6 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_CONVERSATION_MEDIA_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_CONVERSATION_LINK_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_INLINE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MEDIA_SOURCE_CHARS: usize = 4096;
 
@@ -23,6 +24,17 @@ pub struct ConversationMedia {
     pub kind: String,
     pub mime_type: String,
     pub data_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationFilePreview {
+    pub name: String,
+    pub path: String,
+    pub content: String,
+    pub truncated: bool,
+    pub kind: String,
+    pub line: Option<u32>,
 }
 
 fn image_mime(bytes: &[u8]) -> Option<&'static str> {
@@ -61,26 +73,30 @@ fn media_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     None
 }
 
-fn read_bounded_regular_file(file: fs::File) -> Result<Vec<u8>, String> {
+fn read_bounded_regular_file(
+    file: fs::File,
+    max_bytes: u64,
+    too_large: &str,
+) -> Result<Vec<u8>, String> {
     let metadata = file.metadata().map_err(|error| error.to_string())?;
     if !metadata.is_file() {
-        return Err("媒体路径不是普通文件".into());
+        return Err("路径不是普通文件".into());
     }
-    if metadata.len() > MAX_CONVERSATION_MEDIA_BYTES {
-        return Err("媒体文件超过 16MB，无法在对话中显示".into());
+    if metadata.len() > max_bytes {
+        return Err(too_large.into());
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
-    file.take(MAX_CONVERSATION_MEDIA_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > MAX_CONVERSATION_MEDIA_BYTES {
-        return Err("媒体文件超过 16MB，无法在对话中显示".into());
+    if bytes.len() as u64 > max_bytes {
+        return Err(too_large.into());
     }
     Ok(bytes)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn bounded_regular_file(path: &Path) -> Result<Vec<u8>, String> {
+fn bounded_regular_file(path: &Path, max_bytes: u64, too_large: &str) -> Result<Vec<u8>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if metadata.file_type().is_symlink() {
         return Err("媒体路径不能是符号链接".into());
@@ -88,11 +104,16 @@ fn bounded_regular_file(path: &Path) -> Result<Vec<u8>, String> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     let file = options.open(path).map_err(|error| error.to_string())?;
-    read_bounded_regular_file(file)
+    read_bounded_regular_file(file, max_bytes, too_large)
 }
 
 #[cfg(windows)]
-fn bounded_project_regular_file(project: &Path, target: &Path) -> Result<Vec<u8>, String> {
+fn bounded_project_regular_file(
+    project: &Path,
+    target: &Path,
+    max_bytes: u64,
+    too_large: &str,
+) -> Result<Vec<u8>, String> {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
@@ -139,7 +160,7 @@ fn bounded_project_regular_file(project: &Path, target: &Path) -> Result<Vec<u8>
         return Err("只能显示当前项目目录中的媒体".into());
     }
 
-    read_bounded_regular_file(file)
+    read_bounded_regular_file(file, max_bytes, too_large)
 }
 
 /// Opens a canonical project-relative target through already-open directory FDs.
@@ -150,7 +171,12 @@ fn bounded_project_regular_file(project: &Path, target: &Path) -> Result<Vec<u8>
 /// `openat(..., O_NOFOLLOW)` makes every lookup stay below the root FD that we
 /// opened, and rejects a symlink substituted at any level.
 #[cfg(unix)]
-fn bounded_project_regular_file(project: &Path, target: &Path) -> Result<Vec<u8>, String> {
+fn bounded_project_regular_file(
+    project: &Path,
+    target: &Path,
+    max_bytes: u64,
+    too_large: &str,
+) -> Result<Vec<u8>, String> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
@@ -227,7 +253,7 @@ fn bounded_project_regular_file(project: &Path, target: &Path) -> Result<Vec<u8>
         return Err("媒体路径无法安全读取".into());
     }
     // SAFETY: openat returned a new owned fd on success.
-    read_bounded_regular_file(unsafe { fs::File::from_raw_fd(fd) })
+    read_bounded_regular_file(unsafe { fs::File::from_raw_fd(fd) }, max_bytes, too_large)
 }
 
 fn hex(byte: u8) -> Option<u8> {
@@ -299,6 +325,179 @@ fn resolve_project_media(project_path: &str, source: &str) -> Result<(PathBuf, P
     Ok((project, target))
 }
 
+fn split_line_hint(source: &str) -> (&str, Option<u32>) {
+    if let Some((path, line)) = source.rsplit_once("#L") {
+        if !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit()) {
+            return (path, line.parse().ok().filter(|line| *line > 0));
+        }
+    }
+    if let Some((path, line)) = source.rsplit_once(':') {
+        if !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit()) {
+            return (path, line.parse().ok().filter(|line| *line > 0));
+        }
+    }
+    (source, None)
+}
+
+fn has_unsupported_link_scheme(source: &str) -> bool {
+    let Some((scheme, _)) = source.split_once(':') else {
+        return false;
+    };
+    if scheme.len() == 1 && scheme.as_bytes()[0].is_ascii_alphabetic() {
+        return false;
+    }
+    !scheme.is_empty()
+        && scheme.as_bytes()[0].is_ascii_alphabetic()
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn read_link_file_with_memory_root(
+    project_path: &str,
+    memory_root: Option<PathBuf>,
+    source: &str,
+    base_path: Option<&str>,
+) -> Result<ConversationFilePreview, String> {
+    let source = source.trim();
+    if source.is_empty()
+        || source.chars().count() > MAX_MEDIA_SOURCE_CHARS
+        || source.chars().any(char::is_control)
+    {
+        return Err("文件链接无效".into());
+    }
+    let raw = source.strip_prefix("file://").unwrap_or(source);
+    let decoded = percent_decode_path(raw)?;
+    let (decoded, line) = split_line_hint(&decoded);
+    if has_unsupported_link_scheme(decoded) {
+        return Err("只支持本地文件链接".into());
+    }
+    #[cfg(windows)]
+    let decoded = decoded
+        .strip_prefix('/')
+        .filter(|value| value.as_bytes().get(1) == Some(&b':'))
+        .unwrap_or(decoded);
+
+    let project = fs::canonicalize(project_path).map_err(|_| "项目目录不存在".to_string())?;
+    if !project.is_dir() {
+        return Err("项目路径不是目录".into());
+    }
+    let memory_root = memory_root
+        .and_then(|path| path.canonicalize().ok())
+        .filter(|path| path.is_dir());
+    let base = base_path
+        .map(|path| {
+            if path.is_empty() || path.len() > 16_384 || path.chars().any(char::is_control) {
+                return Err("预览来源路径无效".to_string());
+            }
+            let base = fs::canonicalize(path).map_err(|_| "预览来源文件不存在".to_string())?;
+            if !base.is_file()
+                || !(base.starts_with(&project)
+                    || memory_root
+                        .as_ref()
+                        .is_some_and(|root| base.starts_with(root)))
+            {
+                return Err("预览来源不属于当前项目或其记忆目录".to_string());
+            }
+            Ok(base)
+        })
+        .transpose()?;
+    let requested = PathBuf::from(decoded);
+    let candidates = if requested.is_absolute() {
+        vec![requested]
+    } else if let Some(base) = base {
+        // Once a document is open, links are relative to that document only.
+        // Never fall back to another root and accidentally open a namesake.
+        vec![base.parent().ok_or("预览来源路径无效")?.join(&requested)]
+    } else {
+        let mut candidates = vec![project.join(&requested)];
+        if let Some(memory) = memory_root.as_ref() {
+            candidates.push(memory.join(&requested));
+        }
+        candidates
+    };
+
+    let mut outside_allowed_root = false;
+    let mut selected = None;
+    for candidate in candidates {
+        let Ok(target) = candidate.canonicalize() else {
+            continue;
+        };
+        let root = if target.starts_with(&project) {
+            Some(project.clone())
+        } else {
+            memory_root
+                .as_ref()
+                .filter(|memory| target.starts_with(memory.as_path()))
+                .cloned()
+        };
+        if let Some(root) = root {
+            selected = Some((root, target));
+            break;
+        }
+        outside_allowed_root = true;
+    }
+    let (root, target) = selected.ok_or_else(|| {
+        if outside_allowed_root {
+            "只能预览当前项目或该项目 Claude 记忆目录中的文件".to_string()
+        } else {
+            "链接指向的本地文件不存在".to_string()
+        }
+    })?;
+
+    #[cfg(any(unix, windows))]
+    let bytes = bounded_project_regular_file(
+        &root,
+        &target,
+        MAX_CONVERSATION_LINK_FILE_BYTES,
+        "文件超过 1MB，无法在会话中预览",
+    )?;
+    #[cfg(not(any(unix, windows)))]
+    let bytes = bounded_regular_file(
+        &target,
+        MAX_CONVERSATION_LINK_FILE_BYTES,
+        "文件超过 1MB，无法在会话中预览",
+    )?;
+    if bytes.contains(&0) {
+        return Err("这是二进制文件，无法在会话中预览".into());
+    }
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "文件名不是有效 UTF-8".to_string())?
+        .to_string();
+    let kind = match target
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("md" | "markdown" | "mdx") => "markdown",
+        _ => "text",
+    };
+    Ok(ConversationFilePreview {
+        name,
+        path: target.to_string_lossy().to_string(),
+        content: String::from_utf8_lossy(&bytes).to_string(),
+        truncated: false,
+        kind: kind.into(),
+        line,
+    })
+}
+
+pub fn read_link_file(
+    project_path: &str,
+    source: &str,
+    base_path: Option<&str>,
+) -> Result<ConversationFilePreview, String> {
+    read_link_file_with_memory_root(
+        project_path,
+        crate::project_memory::existing_memory_dir(project_path),
+        source,
+        base_path,
+    )
+}
+
 /// 用户自己拖进来或选中的图片：路径来自本人操作，所以允许符号链接，
 /// 但仍然按普通文件、8MB 上限和魔数逐项校验，不认扩展名。
 pub fn read_attachment_image(path: &str) -> Result<ConversationMedia, String> {
@@ -341,9 +540,18 @@ pub fn read_attachment_image(path: &str) -> Result<ConversationMedia, String> {
 pub fn read_project_media(project_path: &str, source: &str) -> Result<ConversationMedia, String> {
     let (project, target) = resolve_project_media(project_path, source)?;
     #[cfg(any(unix, windows))]
-    let bytes = bounded_project_regular_file(&project, &target)?;
+    let bytes = bounded_project_regular_file(
+        &project,
+        &target,
+        MAX_CONVERSATION_MEDIA_BYTES,
+        "媒体文件超过 16MB，无法在对话中显示",
+    )?;
     #[cfg(not(any(unix, windows)))]
-    let bytes = bounded_regular_file(&target)?;
+    let bytes = bounded_regular_file(
+        &target,
+        MAX_CONVERSATION_MEDIA_BYTES,
+        "媒体文件超过 16MB，无法在对话中显示",
+    )?;
     let (kind, mime_type) = media_type(&bytes).ok_or_else(|| "不支持这种媒体格式".to_string())?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(ConversationMedia {
@@ -399,6 +607,117 @@ pub fn inline_image_attachment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_file_links_allow_project_and_its_memory_but_reject_other_roots() {
+        let project = tempfile::tempdir().unwrap();
+        let memory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(project.path().join("docs")).unwrap();
+        fs::write(project.path().join("docs/readme.md"), "# 项目说明\n").unwrap();
+        fs::write(memory.path().join("MEMORY.md"), "# 项目记忆索引\n").unwrap();
+        fs::write(memory.path().join("wow3d.md"), "# WOW3D\n").unwrap();
+
+        let project_file = read_link_file_with_memory_root(
+            project.path().to_str().unwrap(),
+            Some(memory.path().to_path_buf()),
+            "docs/readme.md#L1",
+            None,
+        )
+        .unwrap();
+        assert_eq!(project_file.name, "readme.md");
+        assert_eq!(project_file.kind, "markdown");
+        assert_eq!(project_file.line, Some(1));
+        assert_eq!(project_file.content, "# 项目说明\n");
+
+        let memory_file = read_link_file_with_memory_root(
+            project.path().to_str().unwrap(),
+            Some(memory.path().to_path_buf()),
+            memory.path().join("wow3d.md").to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(memory_file.content, "# WOW3D\n");
+
+        let relative_memory = read_link_file_with_memory_root(
+            project.path().to_str().unwrap(),
+            Some(memory.path().to_path_buf()),
+            "MEMORY.md",
+            None,
+        )
+        .unwrap();
+        assert_eq!(relative_memory.content, "# 项目记忆索引\n");
+
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        assert!(read_link_file_with_memory_root(
+            project.path().to_str().unwrap(),
+            Some(memory.path().to_path_buf()),
+            outside.path().to_str().unwrap(),
+            None,
+        )
+        .unwrap_err()
+        .contains("只能预览"));
+        assert!(read_link_file_with_memory_root(
+            project.path().to_str().unwrap(),
+            Some(memory.path().to_path_buf()),
+            "https://example.com/secret.md",
+            None,
+        )
+        .unwrap_err()
+        .contains("本地文件"));
+    }
+
+    #[test]
+    fn nested_file_links_use_document_directory_and_keep_scope() {
+        let project = tempfile::tempdir().unwrap();
+        let memory = tempfile::tempdir().unwrap();
+        fs::create_dir(project.path().join("docs")).unwrap();
+        let base = project.path().join("docs/README.md");
+        fs::write(&base, "# Docs").unwrap();
+        fs::write(project.path().join("guide.md"), "wrong root").unwrap();
+        fs::write(project.path().join("docs/guide.md"), "correct sibling").unwrap();
+        let preview = read_link_file_with_memory_root(
+            project.path().to_str().unwrap(),
+            Some(memory.path().into()),
+            "guide.md:2",
+            base.to_str(),
+        )
+        .unwrap();
+        assert_eq!(preview.content, "correct sibling");
+        assert_eq!(preview.line, Some(2));
+        fs::remove_file(project.path().join("docs/guide.md")).unwrap();
+        assert!(
+            read_link_file_with_memory_root(
+                project.path().to_str().unwrap(),
+                None,
+                "guide.md",
+                base.to_str(),
+            )
+            .is_err(),
+            "missing sibling must not fall back to root namesake"
+        );
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        assert!(read_link_file_with_memory_root(
+            project.path().to_str().unwrap(),
+            None,
+            "guide.md",
+            outside.path().to_str(),
+        )
+        .is_err());
+        let memory_base = memory.path().join("MEMORY.md");
+        fs::write(&memory_base, "index").unwrap();
+        fs::write(memory.path().join("topic.md"), "memory sibling").unwrap();
+        assert_eq!(
+            read_link_file_with_memory_root(
+                project.path().to_str().unwrap(),
+                Some(memory.path().into()),
+                "topic.md",
+                memory_base.to_str(),
+            )
+            .unwrap()
+            .content,
+            "memory sibling"
+        );
+    }
 
     #[test]
     fn project_media_stays_inside_project_and_detects_video() {
@@ -472,7 +791,13 @@ mod tests {
         fs::rename(&safe_dir, project.path().join("screens-original")).unwrap();
         symlink(outside.path(), &safe_dir).unwrap();
 
-        assert!(bounded_project_regular_file(&canonical_project, &target).is_err());
+        assert!(bounded_project_regular_file(
+            &canonical_project,
+            &target,
+            MAX_CONVERSATION_MEDIA_BYTES,
+            "媒体文件过大"
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -499,7 +824,13 @@ mod tests {
         fs::rename(&parent, root.path().join("parent-original")).unwrap();
         symlink(outside.path(), &parent).unwrap();
 
-        assert!(bounded_project_regular_file(&canonical_project, &target).is_err());
+        assert!(bounded_project_regular_file(
+            &canonical_project,
+            &target,
+            MAX_CONVERSATION_MEDIA_BYTES,
+            "媒体文件过大"
+        )
+        .is_err());
     }
 
     #[test]
