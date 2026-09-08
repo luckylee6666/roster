@@ -37,9 +37,12 @@ test('旧开关迁移保留空列表/损坏配置的关闭语义，不猜测用�
 
 test('普通会话只显示自动状态，文件管理留在开发模式',()=>{
   const html=readFileSync(new URL('../src/index.html',import.meta.url),'utf8');
+  const script=readFileSync(new URL('../src/shared-memory.js',import.meta.url),'utf8');
   assert.doesNotMatch(html,/id="conversation-memory-open"/);
   assert.match(html,/conversation-memory-indicator/);
   assert.match(html,/id="shared-memory-advanced"[^>]*>[\s\S]*?<summary>高级管理<\/summary>/);
+  assert.doesNotMatch(script,/请打开面板/);
+  assert.match(script,/ui\.status\.textContent='读取失败'/);
   const view=sharedMemoryOverview('- [[wow3d]] 莫高雷项目进度',[{name:'MEMORY.md'},{name:'wow3d.md'},{name:'inbox/draft.md'}]);
   assert.deepEqual(view,{count:1,inbox:1,items:['莫高雷项目进度']});
 });

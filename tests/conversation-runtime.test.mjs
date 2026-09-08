@@ -109,6 +109,19 @@ test('空常用指令不占输入框，管理与图片入口收进加号菜单',
   assert.doesNotMatch(conversation, /暂无片段/);
 });
 
+test('产品文档不再把已移除能力写成当前功能', async () => {
+  const [en, zh] = await Promise.all([read('README.md'), read('README.zh-CN.md')]);
+  for (const text of [en, zh]) {
+    assert.doesNotMatch(text, /\bGemini\b/);
+    assert.doesNotMatch(text, /\bgemini\b/);
+    assert.doesNotMatch(text, /项目想法|Per-project ideas|ideas\.json/);
+    assert.doesNotMatch(text, /Allow project changes|允许修改项目/);
+    assert.doesNotMatch(text, /5h X%/);
+    assert.doesNotMatch(text, /terminal icon|终端图标/);
+    assert.match(text, /Claude \/ Grok \/ Codex \/ OpenCode \/ agy \/ Qwen \/ MiMo Code/);
+  }
+});
+
 test('额度显示在顶栏助手徽标旁，不再挂在侧栏底部', async () => {
   const html = await read('src/index.html');
   const headerAt = html.indexOf('class="conversation-header"');

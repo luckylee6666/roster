@@ -17,6 +17,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Codex now follows the macOS system HTTPS proxy when no explicit process/Roster proxy is configured, addressing mismatched HTTP/WebSocket routes without weakening certificate verification. The default official route prefers native WebSocket continuation, with one stream retry before Codex's HTTP fallback; it no longer forces all conversations to HTTP. Custom providers/endpoints remain unchanged. Large histories may still require user-approved native context compaction; Roster never silently summarizes or deletes them.
 - Dedicated `pnpm dev` / `pnpm build:dev` commands launch Roster Dev with a separate application identifier, data directory, backups and WebView preferences. It may run alongside production; the first launch seeds only the project list and never falls back to writing production storage.
 - Codex long-thread resume now requests metadata only (`excludeTurns: true`). This prevents stored turns, images and tool output from exceeding the 1 MiB protocol-message limit before a new prompt can start. Conversation history continues to use the separate bounded transcript reader; existing history and transport safety limits are preserved.
+- Product docs no longer advertise removed capabilities as current: Gemini, project ideas, the old per-turn “Allow project changes” toggle, and menu-bar usage. Conversation memory status no longer tells users to open a management panel that only exists in Developer mode.
+- Developer-mode Codex resume now supplies the process-local `roster_openai_native` provider alias that conversation mode persisted onto official-route threads, so `codex resume` in the terminal can load those sessions again. Custom Codex providers remain untouched.
 
 ### 中文
 
@@ -31,6 +33,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Codex 后台在没有显式进程/Roster 代理时沿用 macOS 系统 HTTPS 代理，修正 HTTP/WebSocket 路径不一致，不降低证书校验。默认官方路由恢复 WebSocket 优先，流断开重试一次后由 Codex 回退 HTTP，不再把所有会话强制为 HTTP；自定义 provider/地址不变。超长历史仍可能需要用户确认后执行原生上下文压缩，Roster 不静默摘要或删除历史。
 - 增加 `pnpm dev` / `pnpm build:dev` 独立开发版入口，Roster Dev 使用单独应用标识、数据目录、备份和 WebView 偏好，可与正式版并行；首次仅复制项目列表，初始化失败也不回退写入正式版数据。
 - Codex 续接长会话时请求仅返回会话元数据（`excludeTurns: true`），避免历史轮次、图片和工具输出聚合成超过 1 MiB 的通信消息，导致新提问还没开始就失败。对话历史仍通过独立的有界正文读取流程展示，原历史和通信大小保护保持不变。
+- 产品文档不再把已移除能力写成当前功能：Gemini、项目想法、逐轮「允许修改项目」开关，以及托盘用量。会话记忆状态失败时也不再提示去打开只存在于开发模式的管理面板。
+- 开发模式续接 Codex 时补上会话模式写进线程的进程局部 `roster_openai_native` 传输别名，避免终端里 `codex resume` 因找不到该 provider 失败。自定义 Codex provider 不受影响。
 
 ## v1.4.1
 

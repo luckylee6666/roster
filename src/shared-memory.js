@@ -123,6 +123,6 @@ export function installSharedMemory({document,invoke,confirm,notify,onFloating})
   sidebar();
   return {open,setProject(project){
     current=project||null;const token=++sidebarRevision;sidebar();
-    if(current)void invoke('shared_memory_state',{projectId:current.id}).then(state=>{if(token!==sidebarRevision)return;policies.set(current.id,state.enabled);sidebar();}).catch(()=>{if(token===sidebarRevision&&ui.status)ui.status.textContent='共享记忆状态读取失败，请打开面板检查';});
+    if(current)void invoke('shared_memory_state',{projectId:current.id}).then(state=>{if(token!==sidebarRevision)return;policies.set(current.id,state.enabled);sidebar();}).catch(()=>{if(token===sidebarRevision&&ui.status)ui.status.textContent='读取失败';});
   },record(projectId,receipt){receipts.set(projectId,receipt);sidebar();},saved(projectId,result){if(result.saved||!result.ok)saveStates.set(projectId,result.ok);sidebar();},hasUnsavedChanges:dirty};
 }

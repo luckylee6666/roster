@@ -101,7 +101,7 @@ test('打开 CLI 用该工具最近一条历史续接，没有历史才新开', 
   });
   assert.deepEqual(launchCommandForProjectTool('codex', groups), {
     last: { id: 'x-1', title: '打tag吧', preview: '给当前版本打 tag' },
-    autoCmd: 'codex resume x-1',
+    autoCmd: resumeCliCommand('codex', 'x-1'),
   });
   assert.deepEqual(launchCommandForProjectTool('mimo', [
     { tool: 'mimo', sessions: [{ id: 'ses-new', title: 'MiMo 最新会话', atMs: 300 }] },

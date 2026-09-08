@@ -9,6 +9,23 @@ const CODEX_OPTIONS_WITH_VALUE = new Set([
   '--add-dir', '--disable', '--enable', '--local-provider', '--remote', '--remote-auth-token-env',
 ]);
 
+// Must stay identical to NATIVE_PROVIDER_CONFIG in src-tauri/src/codex_chat.rs.
+// Conversation-mode Codex persists this process-local alias onto the thread;
+// developer-mode TUI resume has to define it or Codex refuses to load the session.
+export const CODEX_NATIVE_PROVIDER_ID = 'roster_openai_native';
+export const CODEX_NATIVE_PROVIDER_CONFIG = 'model_providers.roster_openai_native={name="OpenAI",wire_api="responses",requires_openai_auth=true,supports_websockets=true,stream_max_retries=1,supports_standalone_web_search=true,env_http_headers={OpenAI-Organization="OPENAI_ORGANIZATION",OpenAI-Project="OPENAI_PROJECT"}}';
+
+export function withCodexNativeProvider(command) {
+  const trimmed = String(command || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.includes(CODEX_NATIVE_PROVIDER_ID)) return trimmed;
+  const executableEnd = trimmed.search(/\s/);
+  const executable = executableEnd === -1 ? trimmed : trimmed.slice(0, executableEnd);
+  if (cliToolName(executable) !== 'codex') return trimmed;
+  const rest = executableEnd === -1 ? '' : trimmed.slice(executableEnd);
+  return `${executable} -c ${quoteCliArg(CODEX_NATIVE_PROVIDER_CONFIG)}${rest}`;
+}
+
 function shellWords(text) {
   const words = [];
   let word = '';
@@ -61,7 +78,7 @@ export function resumeCliCommand(tool, sessionId) {
   if (!name || !id) return '';
   if (name === 'claude') return `claude --resume ${quoteCliArg(id)}`;
   if (name === 'grok') return `grok --resume ${quoteCliArg(id)}`;
-  if (name === 'codex') return `codex resume ${quoteCliArg(id)}`;
+  if (name === 'codex') return withCodexNativeProvider(`codex resume ${quoteCliArg(id)}`);
   if (name === 'opencode') return `opencode --session ${quoteCliArg(id)}`;
   if (name === 'agy') return `agy --conversation ${quoteCliArg(id)}`;
   if (name === 'qwen') return `qwen --resume ${quoteCliArg(id)}`;
@@ -151,10 +168,10 @@ export function restoredCliCommand(command) {
   if (tool === 'codex') {
     const executableEnd = trimmed.search(/\s/);
     const argumentsText = executableEnd === -1 ? '' : trimmed.slice(executableEnd).trimStart();
-    if (hasCodexResumeSubcommand(argumentsText)) return trimmed;
-    return executableEnd === -1
+    if (hasCodexResumeSubcommand(argumentsText)) return withCodexNativeProvider(trimmed);
+    return withCodexNativeProvider(executableEnd === -1
       ? `${trimmed} resume --last`
-      : `${trimmed.slice(0, executableEnd)} resume --last${trimmed.slice(executableEnd)}`;
+      : `${trimmed.slice(0, executableEnd)} resume --last${trimmed.slice(executableEnd)}`);
   }
 
   if (tool === 'opencode') {

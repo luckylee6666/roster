@@ -12,43 +12,48 @@ import {
   resumeCliCommand,
   sessionLayoutEntries,
   sessionTitlePreview,
+  withCodexNativeProvider,
 } from '../src/session-restore-utils.js';
 
 test('重启恢复 Codex 标签时按当前项目目录续接最近会话', () => {
-  assert.equal(restoredCliCommand('codex'), 'codex resume --last');
-  assert.equal(restoredCliCommand('codex --search'), 'codex resume --last --search');
+  assert.equal(restoredCliCommand('codex'), withCodexNativeProvider('codex resume --last'));
+  assert.equal(restoredCliCommand('codex --search'), withCodexNativeProvider('codex resume --last --search'));
   assert.equal(
     restoredCliCommand('/usr/local/bin/codex -m gpt-5'),
-    '/usr/local/bin/codex resume --last -m gpt-5',
+    withCodexNativeProvider('/usr/local/bin/codex resume --last -m gpt-5'),
   );
 });
 
 test('已是 Codex 恢复命令时不会重复追加参数', () => {
-  assert.equal(restoredCliCommand('codex resume --last'), 'codex resume --last');
-  assert.equal(restoredCliCommand('codex resume session-id'), 'codex resume session-id');
+  assert.equal(restoredCliCommand('codex resume --last'), withCodexNativeProvider('codex resume --last'));
+  assert.equal(restoredCliCommand('codex resume session-id'), withCodexNativeProvider('codex resume session-id'));
   assert.equal(
     restoredCliCommand('codex --profile resume'),
-    'codex resume --last --profile resume',
+    withCodexNativeProvider('codex resume --last --profile resume'),
   );
-  assert.equal(restoredCliCommand('codex -m resume'), 'codex resume --last -m resume');
-  assert.equal(restoredCliCommand('codex --search resume --last'), 'codex --search resume --last');
+  assert.equal(restoredCliCommand('codex -m resume'), withCodexNativeProvider('codex resume --last -m resume'));
+  assert.equal(restoredCliCommand('codex --search resume --last'), withCodexNativeProvider('codex --search resume --last'));
   assert.equal(
     restoredCliCommand('codex --profile work resume session-id'),
-    'codex --profile work resume session-id',
+    withCodexNativeProvider('codex --profile work resume session-id'),
+  );
+  assert.equal(
+    restoredCliCommand(withCodexNativeProvider('codex resume session-id')),
+    withCodexNativeProvider('codex resume session-id'),
   );
 });
 
 test('历史会话按工具生成指定 ID 的续接命令', () => {
   assert.equal(resumeCliCommand('claude', 'abc-1'), 'claude --resume abc-1');
   assert.equal(resumeCliCommand('grok', '019ff9ad'), 'grok --resume 019ff9ad');
-  assert.equal(resumeCliCommand('codex', 'abc-1'), 'codex resume abc-1');
+  assert.equal(resumeCliCommand('codex', 'abc-1'), withCodexNativeProvider('codex resume abc-1'));
   assert.equal(resumeCliCommand('opencode', 'ses_1'), 'opencode --session ses_1');
   assert.equal(resumeCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
   assert.equal(resumeCliCommand('gemini', 'x'), '', 'Gemini 已移除，不再生成续接命令');
   assert.equal(resumeCliCommand('claude', ''), '');
   assert.equal(launchCliCommand('grok', '019ff9ad'), 'grok --resume 019ff9ad');
   assert.equal(launchCliCommand('claude', 'abc-1'), 'claude --resume abc-1');
-  assert.equal(launchCliCommand('codex', 'x-1'), 'codex resume x-1');
+  assert.equal(launchCliCommand('codex', 'x-1'), withCodexNativeProvider('codex resume x-1'));
   assert.equal(launchCliCommand('opencode', 'ses_1'), 'opencode --session ses_1');
   assert.equal(launchCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
   assert.equal(launchCliCommand('grok', ''), 'grok');
@@ -56,6 +61,7 @@ test('历史会话按工具生成指定 ID 的续接命令', () => {
   assert.equal(launchCliCommand('', 'abc'), '');
   assert.equal(extractResumedSessionId('claude --resume abc-1'), 'abc-1');
   assert.equal(extractResumedSessionId('codex resume --last'), '');
+  assert.equal(extractResumedSessionId(withCodexNativeProvider('codex resume abc-1')), 'abc-1');
   assert.equal(sessionTitlePreview('  修好   分屏空窗格  '), '修好 分屏空窗格');
   assert.equal(sessionTitlePreview('一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十'), '一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六…');
 });
@@ -98,6 +104,18 @@ test('工具识别兼容绝对路径命令', () => {
   assert.equal(cliToolName('claude'), 'claude');
 });
 
+test('开发模式 Codex 续接带上会话模式写入的原生传输别名，且与 Rust 常量一致', async () => {
+  const rust = await readFile(new URL('../src-tauri/src/codex_chat.rs', import.meta.url), 'utf8');
+  const config = rust.match(/const NATIVE_PROVIDER_CONFIG: &str = "(.*)";/)?.[1]
+    ?.replace(/\\"/g, '"');
+  const { CODEX_NATIVE_PROVIDER_CONFIG } = await import('../src/session-restore-utils.js');
+  assert.equal(CODEX_NATIVE_PROVIDER_CONFIG, config);
+  const command = resumeCliCommand('codex', '01a06112-9959-7852-ab59-b177c7570d30');
+  assert.equal(command.startsWith('codex -c '), true);
+  assert.match(command, /roster_openai_native/);
+  assert.match(command, / resume 01a06112-9959-7852-ab59-b177c7570d30$/);
+});
+
 test('恢复编排把续接命令与原项目目录交给终端创建，并隔离单个标签失败', async () => {
   const calls = [];
   await restoreSessionLayout([
@@ -113,8 +131,8 @@ test('恢复编排把续接命令与原项目目录交给终端创建，并隔�
   });
 
   assert.deepEqual(calls, [
-    { cwd: '/projects/one', name: 'Codex 1', autoCmd: 'codex resume --last' },
-    { cwd: '/projects/two', name: 'Codex 2', autoCmd: 'codex resume session-2' },
+    { cwd: '/projects/one', name: 'Codex 1', autoCmd: withCodexNativeProvider('codex resume --last') },
+    { cwd: '/projects/two', name: 'Codex 2', autoCmd: withCodexNativeProvider('codex resume session-2') },
     { cwd: '/projects/three', name: 'Claude', autoCmd: 'claude --continue' },
     { cwd: '/projects/four', name: 'OpenCode', autoCmd: 'opencode --continue' },
     { cwd: '/projects/five', name: 'Grok', autoCmd: 'grok --continue' },

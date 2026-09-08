@@ -17,14 +17,14 @@ Latest release: **v1.4.1** — real-time Grok usage refresh, conversation histor
 Only one instance may use each data directory. `pnpm dev` or `pnpm build:dev` creates **Roster Dev** (`com.lucky.roster.dev`), using `~/.roster-dev/` and separate backups/WebView preferences. It can run alongside the installed Roster (`~/.roster/`). The development app copies only the project list on first launch; subsequent app-data changes are independent. Project files and CLI histories still point to their original locations.
 
 - **Two workspaces** — Roster opens in a calm conversation workspace for everyday use; switch to Developer mode at any time for the full terminal, file editing, split panes, and multi-CLI collaboration tools
-- **Structured multi-CLI conversations** — the conversation workspace only offers locally installed assistants and can run all eight registered CLIs: **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**. Their recent sessions share one timeline with source badges, preview/delete, same-tool resume, and cross-CLI takeover. History browsing is independent of the smaller handoff context; saved inline screenshots and project-local image/video links render in place, while local text links open in a read-only conversation overlay. Nested links resolve relative to the open document; line links show source with the target line highlighted
+- **Structured multi-CLI conversations** — the conversation workspace only offers locally installed assistants and can run all seven registered CLIs: **Claude / Grok / Codex / OpenCode / agy / Qwen / MiMo Code**. Their recent sessions share one timeline with source badges, preview/delete, same-tool resume, and cross-CLI takeover. History browsing is independent of the smaller handoff context; saved inline screenshots and project-local image/video links render in place, while local text links open in a read-only conversation overlay. Nested links resolve relative to the open document; line links show source with the target line highlighted
 - **Project-aware slash commands** — use Roster actions such as `/model`, `/effort` where supported, `/new`, and `/help`, plus skills/custom commands discovered for the current project and current CLI. The backend rediscovers the selection immediately before launch and rejects stale or cross-provider commands
 - **Project management** — add, edit, delete projects
 - **Run target (optional)** — local machine / server, or leave it unset
 - **Server management** — configure SSH servers (host, port, user, password/key login method)
 - **Grouping** — group projects, collapsible sidebar, click to locate, rename a group inline (hover → pencil; all projects in it move together)
 - **Built-in terminal** — in-app bottom-drawer tabbed terminal managing all sessions; file tree, file preview and editing, color themes, font size, drag-to-insert path; closing a tab asks first and reminds you to let the AI update its memory (see [Using the terminal](#using-the-built-in-terminal))
-- **Multi AI CLI launch** — start **Claude / Grok / Codex / opencode / Gemini / agy / Qwen / MiMo Code** in a project directory from the project card, with a tool badge on the tab. Opening a CLI focuses a running tab for that tool, otherwise it resumes the latest on-disk session; a new session starts only when there is no history
+- **Multi AI CLI launch** — start **Claude / Grok / Codex / opencode / agy / Qwen / MiMo Code** in a project directory from the project card, with a tool badge on the tab. Opening a CLI focuses a running tab for that tool, otherwise it resumes the latest on-disk session; a new session starts only when there is no history
 - **Project history** — expand a card to search, preview, resume, or delete each CLI's on-disk sessions; running tabs only match an explicit continue/resume
 - **Open a set / Collaborate** — one click opens Claude + Codex + Grok in a three-pane main layout; Collaborate lets you choose one installed CLI as the brain and one or more others as workers sharing `.vibe/orchestra/`
 - **Unify memory to Claude** (opt-in) — a project `.memory` symlink to Claude's project memory store; off by default, never auto-creates `CLAUDE.md` / `AGENTS.md`
@@ -33,11 +33,10 @@ Only one instance may use each data directory. `pnpm dev` or `pnpm build:dev` cr
 - **Git status badges** — local project cards show the current branch, working-tree changes (● tracked / + untracked), and ahead/behind vs upstream (↑/↓), or a green ✓ when clean; scanned in the background, refreshed on launch and window focus
 - **Session restore** — the terminal remembers your tab layout (dir + CLI per tab) and offers to restore it on next launch; Claude, OpenCode, Grok, Qwen, and MiMo Code use `--continue`, while Codex uses `resume --last` in the saved project directory. Picking a specific Qwen or MiMo Code history row uses `qwen --resume <id>` or `mimo --session <id>`
 - **Prompt/snippet library** — keep reusable prompts/commands; manage and inject them in Developer mode or place one into the conversation composer. Insertion never sends automatically, and data stays in `snippets.json`
-- **Per-project ideas** — keep multiple rough ideas per project; both workspaces can capture, refine, archive, delete, and place them into the current input without sending automatically
 - **Cross-CLI handoff** — from any running registered CLI tab, review that tool's latest project conversation plus the current Git state, edit the handoff draft, then open any other installed CLI to continue without modifying the source session
 - **Restore context** — a history icon on each project card opens a one-glance snapshot to resume work: git overview + recent commits + changed files + CLAUDE.md summary + the CLI you last launched there; footer buttons jump back in (open terminal / Claude)
 - **Rate-limit usage (no Node)** — only locally installed Claude/Codex/Grok tabs whose usage backend is available are shown. Installation is detected at startup and on window focus; opening the panel reuses that result immediately. Manual Refresh visibly rechecks installation/capabilities and bypasses each provider's normal 60-second cache. Claude uses the official `api/oauth/usage` endpoint (5-hour / 7-day); Codex uses the local `codex app-server` `account/rateLimits/read` RPC; Grok asks the official local `grok agent stdio` process for `x.ai/billing`, which returns the current weekly/monthly percentage, reset time, and subscription tier without creating a conversation or sending a model prompt. Roster never reads Grok credentials; if that live ACP query fails, macOS/Linux can still show the CLI's bounded local billing snapshot as explicitly labelled stale data
-- **Menu-bar tray** — a macOS menu-bar item shows Claude `5h X% · 7d Y%`, refreshed every 60s; its menu opens the app / refreshes / quits
+- **Menu-bar tray** — a macOS menu-bar item opens the app, opens the log, or quits. It does not show usage; quota belongs next to the current assistant in the conversation header
 - **Terminal context %** — Claude tabs show an `NN%` context-window badge (window size read from the startup banner, fill estimated from the transcript; amber ≥70%, red ≥90%); 0 before the first turn of a new session
 - **Scan & import** — batch-import git projects from a directory (auto-reads remote, dedups by path)
 - **Search** — quickly filter by name, path, description
@@ -73,17 +72,17 @@ All seven CLI adapters now reuse resident structured sessions: Codex uses App Se
 
 On macOS, the Codex subprocess inherits the configured system HTTPS proxy unless an explicit Roster/process proxy overrides it (PAC is not evaluated). Official connections prefer native WebSockets with a short retry budget and automatic HTTP fallback. No credentials are read and TLS verification stays enabled. Very large histories can still be slow; context compaction requires an explicit user decision.
 
-- Install and sign in to at least one supported CLI. The participant picker only shows locally installed structured adapters for **Claude / Grok / Codex / OpenCode / Gemini / agy / Qwen / MiMo Code**
-- Choose a project on the left. The recent timeline combines Claude, Grok, Codex, OpenCode, Gemini, agy, Qwen, and MiMo Code with an explicit source badge. Reopen a row to continue with its CLI, or choose another participant to take over using a filtered natural-language handoff; source IDs are never passed as target resume IDs
-- Turns start with the selected CLI's **read-only/plan policy**. Codex uses its `readOnly` sandbox; ordinary Claude and Qwen turns use safe mode; Grok, Gemini, agy, and Qwen request their own sandbox; OpenCode and MiMo Code use their built-in plan agent without enabling dangerous auto-approval flags. Enable **Allow project changes** for one turn when the assistant should edit files or run project commands; the toggle resets afterward. Roster does not auto-grant extra approvals, but third-party plugins, local configuration, and network behavior remain governed by that CLI rather than an OS-level Roster sandbox
+- Install and sign in to at least one supported CLI. The participant picker only shows locally installed structured adapters for **Claude / Grok / Codex / OpenCode / agy / Qwen / MiMo Code**
+- Choose a project on the left. The recent timeline combines Claude, Grok, Codex, OpenCode, agy, Qwen, and MiMo Code with an explicit source badge. Reopen a row to continue with its CLI, or choose another participant to take over using a filtered natural-language handoff; source IDs are never passed as target resume IDs
+- Turns start with the selected CLI's **read-only/plan policy**. The first registered mode for every CLI is read-only; empty or unknown modes stay read-only. Pick a permission mode next to the send button — the frontend only sends that mode ID, and the backend rejects anything it does not recognize instead of granting write access. Roster does not auto-grant extra approvals; third-party plugins, local configuration, and network behavior remain governed by that CLI rather than an OS-level Roster sandbox
 - Type `/` in the composer for commands. `/model <id>` works even when a CLI cannot enumerate models; `/effort` appears only for adapters with a mapped effort/variant flag (OpenCode and MiMo Code map it to `--variant`). Project skills and custom commands are discovered per CLI, then rechecked by the backend before execution. A missing, changed, cross-project, or cross-provider command fails closed instead of becoming plain chat. Slash commands cannot run in the same turn as a cross-CLI handoff
 - Running an explicitly selected local slash command may require that CLI's safe/customization-disable flag to be relaxed for that one verified command. The existing plan/write policy and sandbox flags remain in force, and Roster still never adds auto-approval or trust-bypass flags
-- The center shows the conversation, including validated historical screenshots and project-local image/video links. Long histories use a dedicated bounded transcript instead of the shorter cross-CLI handoff summary. The right rail shows branch/change/commit context, plans, activity, and full current-project idea actions, with folder-open and refresh controls. Existing prompt snippets can be placed into the composer
+- The center shows the conversation, including validated historical screenshots and project-local image/video links. Long histories use a dedicated bounded transcript instead of the shorter cross-CLI handoff summary. The right rail shows branch/change/commit context, plans, activity, and an automatic project-memory status, with folder-open and refresh controls. Existing common instructions can be placed into the composer
 - Use **Developer mode** when you need the full terminal, file editor, split panes, or collaboration. Switching views preserves the conversation and suspends hidden companion views
 
 ## Using the built-in terminal
 
-A bottom-drawer terminal — open it from a project card's terminal icon or the floating button at the bottom-right.
+A bottom-drawer terminal — open it from a project card's Open CLI buttons or the floating button at the bottom-right.
 
 **Workspace modes**
 - **Normal**: use the full terminal workspace
@@ -93,9 +92,9 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 
 **Launch an AI CLI**
 - Each project card shows one-click **Open CLI** buttons for locally installed tools
-- If that tool is already running for the project, Roster focuses it. Otherwise it resumes the latest on-disk session; a new session starts only when there is no history. The tab shows a tool badge (claude orange / grok gold / codex blue / opencode green / gemini purple / agy cyan / qwen pink / mimo orange)
+- If that tool is already running for the project, Roster focuses it. Otherwise it resumes the latest on-disk session; a new session starts only when there is no history. The tab shows a tool badge (claude orange / grok gold / codex blue / opencode green / agy cyan / qwen pink / mimo orange)
 - The **+** at the top-left opens a blank terminal (no CLI)
-- Prerequisite: the corresponding CLI (`grok` / `codex` / `opencode` / `gemini` / `agy` / `qwen` / `mimo`) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
+- Prerequisite: the corresponding CLI (`claude` / `grok` / `codex` / `opencode` / `agy` / `qwen` / `mimo`) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
 
 **File tree + preview** (left)
 - The tree is rooted at the active tab's project directory and follows tab switches; folders load lazily on click
@@ -103,11 +102,6 @@ A bottom-drawer terminal — open it from a project card's terminal icon or the 
 - **Drag** a file/folder from the tree onto the terminal → inserts its path (handy for pointing an AI session at a directory)
 - Drag the middle splitter to resize the tree; the folder toolbar icon collapses/expands it
 - The lower half of the tree is a session rail for the current project: running AI tabs first (click to focus), then recent on-disk sessions (click to resume). Search, preview, and delete stay on the project card. Drag the horizontal splitter to resize; the chevron collapses just the rail
-
-**Project ideas**
-- The lightbulb in the terminal toolbar is enabled when the active running tab belongs to a registered project. Each project has its own list, stored locally in `ideas.json`
-- Capture as many rough ideas as needed, then edit, archive, or delete them as they evolve. If a project is removed, its remaining ideas can be explicitly reassigned from another project's drawer
-- In Developer mode, **Place in current conversation** rechecks the active tab and project, then pastes a single-line draft into that CLI without pressing Enter. The conversation workspace also shows the selected project's active ideas in its right rail; clicking one places it in the composer for review
 
 **Cross-CLI handoff**
 - Open any running registered CLI tab in a registered project, then click the two-arrow handoff icon in the terminal toolbar
