@@ -2,10 +2,13 @@
 //! 前端只传项目 ID 和静态 provider ID；路径与可执行文件都由后端解析。
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_COMMANDS: usize = 80;
@@ -18,8 +21,17 @@ const MAX_EFFORT_LIST_BYTES: usize = 16 * 1024;
 const MAX_CODEX_MODELS_CACHE_BYTES: usize = 512 * 1024;
 const MAX_SCANNED_FILES: usize = 240;
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(8);
-const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(5);
-const EFFORT_LIST_TIMEOUT: Duration = Duration::from_secs(4);
+const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// 探测的输出界限由两处保证：读取侧 `take(max_bytes + 1)` 决定返回值大小，
+/// 等待循环里对**探测自己的临时输出文件**做 fstat 看门狗决定何时掐进程。
+/// 这里不用 RLIMIT_FSIZE：它作用于子进程写的**每一个**文件。嵌入式 SQLite 的
+/// CLI 必然撞上——`opencode models` 要 checkpoint 它的 300MB+ 数据库，任何
+/// 现实取值的文件上限都会把整条命令打死（先表现为 64KiB 时模型行消失，加大到
+/// 64MiB 仍零输出），而数据库只会继续长，没有"够宽裕"的取值。
+const EFFORT_LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const GROK_ACP_CATALOG_TIMEOUT: Duration = Duration::from_secs(8);
+const GROK_CATALOG_TTL: Duration = Duration::from_secs(30);
 const MAX_SLASH_ARGS_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -110,6 +122,7 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
             let raw = capture_cli_help("claude", &cwd).unwrap_or_default();
             parse_help_model_aliases(&raw)
         }
+        "grok" => grok_catalog(&cwd).0,
         _ => {
             let Some(args) = model_list_args(provider) else {
                 return Ok(ConversationModelList { models: Vec::new() });
@@ -142,6 +155,300 @@ fn model_list_args(provider: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// Illegal `--effort` value so the CLI prints its enum and exits.
+/// Grok without a prompt opens the TUI (or dies with "Device not configured"
+/// when stdin is not a tty), so the probe must stay headless with `--single`.
+fn effort_list_args(provider: &str) -> Option<&'static [&'static str]> {
+    match provider {
+        "claude" => Some(&["--effort", "__roster_probe__"]),
+        "grok" => Some(&[
+            "--effort",
+            "__roster_probe__",
+            "--single",
+            ".",
+            "--output-format",
+            "json",
+        ]),
+        _ => None,
+    }
+}
+
+struct GrokCatalog {
+    at: Instant,
+    models: Vec<ConversationModel>,
+    efforts: Vec<ConversationEffort>,
+}
+
+fn grok_catalog_cache() -> &'static Mutex<Option<GrokCatalog>> {
+    static CACHE: OnceLock<Mutex<Option<GrokCatalog>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn grok_catalog(cwd: &Path) -> (Vec<ConversationModel>, Vec<ConversationEffort>) {
+    let mut cache = match grok_catalog_cache().lock() {
+        Ok(cache) => cache,
+        Err(_) => return grok_catalog_uncached(cwd),
+    };
+    if let Some(cached) = cache.as_ref() {
+        if cached.at.elapsed() < GROK_CATALOG_TTL && !cached.models.is_empty() {
+            return (cached.models.clone(), cached.efforts.clone());
+        }
+    }
+    let result = grok_catalog_uncached(cwd);
+    if !result.0.is_empty() {
+        *cache = Some(GrokCatalog {
+            at: Instant::now(),
+            models: result.0.clone(),
+            efforts: result.1.clone(),
+        });
+    }
+    result
+}
+
+fn grok_catalog_uncached(cwd: &Path) -> (Vec<ConversationModel>, Vec<ConversationEffort>) {
+    let from_acp = grok_models_from_acp(cwd);
+    let (models, efforts) = if let Some(catalog) = from_acp.filter(|(models, _)| !models.is_empty())
+    {
+        catalog
+    } else {
+        (
+            grok_models_cli(cwd),
+            grok_efforts_cli(cwd, effort_list_args("grok").unwrap_or(&[])),
+        )
+    };
+    crate::log_info!(
+        "Grok 对话模型列表：{} 个，推理强度 {} 档",
+        models.len(),
+        efforts.len()
+    );
+    (models, efforts)
+}
+
+fn grok_models_cli(cwd: &Path) -> Vec<ConversationModel> {
+    let Ok(binary) = crate::cli_detect::resolve_registered_cli_bin("grok") else {
+        return Vec::new();
+    };
+    let raw = run_cli_output(
+        &binary,
+        &["models"],
+        cwd,
+        MODEL_LIST_TIMEOUT,
+        MAX_MODEL_LIST_BYTES,
+        false,
+        true,
+    )
+    .unwrap_or_default();
+    parse_cli_models(&raw)
+}
+
+fn grok_efforts_cli(cwd: &Path, args: &[&str]) -> Vec<ConversationEffort> {
+    let Ok(binary) = crate::cli_detect::resolve_registered_cli_bin("grok") else {
+        return Vec::new();
+    };
+    if args.is_empty() {
+        return Vec::new();
+    }
+    let raw = run_cli_output(
+        &binary,
+        args,
+        cwd,
+        EFFORT_LIST_TIMEOUT,
+        MAX_EFFORT_LIST_BYTES,
+        false,
+        true,
+    )
+    .unwrap_or_default();
+    parse_cli_efforts(&raw)
+}
+
+pub fn parse_grok_acp_model_state(
+    init: &Value,
+) -> (Vec<ConversationModel>, Vec<ConversationEffort>) {
+    let state = init
+        .pointer("/_meta/modelState")
+        .or_else(|| init.pointer("/result/_meta/modelState"))
+        .unwrap_or(init);
+    let current = state
+        .get("currentModelId")
+        .and_then(Value::as_str)
+        .and_then(normalize_model_id);
+    let Some(items) = state.get("availableModels").and_then(Value::as_array) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut ids: Vec<(String, String, bool)> = Vec::new();
+    let mut per_model: HashMap<String, Vec<String>> = HashMap::new();
+    let mut effort_ids = Vec::new();
+    let mut effort_seen = std::collections::HashSet::new();
+    for item in items {
+        let Some(id) = item
+            .get("modelId")
+            .or_else(|| item.get("id"))
+            .and_then(Value::as_str)
+            .and_then(normalize_model_id)
+        else {
+            continue;
+        };
+        let label = item
+            .get("name")
+            .or_else(|| item.get("label"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let label = if label.is_empty() {
+            id.clone()
+        } else {
+            label.chars().take(80).collect()
+        };
+        let current = current.as_deref() == Some(id.as_str());
+        let mut mine = Vec::new();
+        let efforts = item
+            .pointer("/_meta/reasoningEfforts")
+            .or_else(|| item.get("reasoningEfforts"))
+            .and_then(Value::as_array);
+        if let Some(efforts) = efforts {
+            for effort in efforts {
+                let Some(effort_id) = effort
+                    .get("value")
+                    .or_else(|| effort.get("id"))
+                    .and_then(Value::as_str)
+                    .and_then(normalize_effort_id)
+                else {
+                    continue;
+                };
+                if !mine.contains(&effort_id) {
+                    mine.push(effort_id.clone());
+                }
+                if effort_seen.insert(effort_id.clone()) {
+                    effort_ids.push(effort_id);
+                }
+            }
+        }
+        per_model.insert(id.clone(), mine);
+        ids.push((id, label, current));
+    }
+    let mut models = finish_models(ids);
+    for model in &mut models {
+        model.efforts = per_model.remove(&model.id).unwrap_or_default();
+    }
+    const ORDER: [&str; 7] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+    effort_ids.sort_by_key(|id| {
+        ORDER
+            .iter()
+            .position(|item| *item == id.as_str())
+            .unwrap_or(100)
+    });
+    (
+        models,
+        finish_efforts(
+            effort_ids
+                .into_iter()
+                .map(|id| (id.clone(), effort_label(&id), false)),
+        ),
+    )
+}
+
+fn grok_models_from_acp(cwd: &Path) -> Option<(Vec<ConversationModel>, Vec<ConversationEffort>)> {
+    let binary = crate::cli_detect::resolve_registered_cli_bin("grok").ok()?;
+    let mut command = Command::new(binary);
+    command
+        .args([
+            "--disable-web-search",
+            "--no-subagents",
+            "agent",
+            "--no-leader",
+            "stdio",
+        ])
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
+    let tree = match crate::codex_chat::register_process_tree(&child) {
+        Ok(tree) => tree,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
+    let init = grok_acp_initialize(&mut child);
+    tree.terminate();
+    #[cfg(unix)]
+    {
+        let _ = Command::new("/bin/kill")
+            .arg("-KILL")
+            .arg(format!("-{}", child.id()))
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let init = init?;
+    let catalog = parse_grok_acp_model_state(&init);
+    if catalog.0.is_empty() {
+        None
+    } else {
+        Some(catalog)
+    }
+}
+
+fn grok_acp_initialize(child: &mut std::process::Child) -> Option<Value> {
+    use std::sync::mpsc;
+    let mut stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel::<Option<Value>>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                let _ = tx.send(None);
+                break;
+            };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if value.get("id") == Some(&Value::from(1)) {
+                let _ = tx.send(value.get("result").cloned());
+                break;
+            }
+        }
+    });
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": {
+                "fs": { "readTextFile": false, "writeTextFile": false },
+                "terminal": false
+            },
+            "clientInfo": {
+                "name": "roster",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "_meta": {
+                "startupHints": {
+                    "nonInteractive": true,
+                    "skipGitStatus": true,
+                    "skipProjectLayout": true
+                }
+            }
+        }
+    });
+    stdin.write_all(format!("{request}\n").as_bytes()).ok()?;
+    stdin.flush().ok()?;
+    rx.recv_timeout(GROK_ACP_CATALOG_TIMEOUT).ok().flatten()
+}
+
 pub fn list_efforts(
     provider_id: &str,
     project_path: &str,
@@ -150,15 +457,21 @@ pub fn list_efforts(
     let cwd = crate::codex_chat::validate_project_path(project_path)?;
     let efforts = match provider {
         "codex" => parse_codex_models_cache(&read_codex_models_cache().unwrap_or_default()).1,
-        "claude" | "grok" => {
+        "grok" => grok_catalog(&cwd).1,
+        "claude" => {
             let Ok(binary) = crate::cli_detect::resolve_registered_cli_bin(provider) else {
+                return Ok(ConversationEffortList {
+                    efforts: Vec::new(),
+                });
+            };
+            let Some(args) = effort_list_args(provider) else {
                 return Ok(ConversationEffortList {
                     efforts: Vec::new(),
                 });
             };
             let raw = run_cli_output(
                 &binary,
-                &["--effort", "__roster_probe__"],
+                args,
                 &cwd,
                 EFFORT_LIST_TIMEOUT,
                 MAX_EFFORT_LIST_BYTES,
@@ -220,17 +533,45 @@ pub fn list_slash_commands(
     let provider = normalize_provider(provider_id)?;
     let cwd = crate::codex_chat::validate_project_path(project_path)?;
     let home = dirs::home_dir().ok_or_else(|| "找不到用户目录".to_string())?;
-    let mut commands = Vec::new();
+    let mut commands = builtin_slash_commands(provider);
+    let mut seen: std::collections::HashSet<String> =
+        commands.iter().map(|command| command.id.clone()).collect();
+    let mut listed = false;
     if provider == "grok" {
         if let Some(from_inspect) = grok_inspect_commands(&cwd) {
-            commands = from_inspect;
+            for command in from_inspect {
+                if seen.insert(command.id.clone()) {
+                    commands.push(command);
+                }
+            }
+            listed = true;
         }
     }
-    if commands.is_empty() {
-        commands = scan_provider_commands(provider, &cwd, &home);
+    if !listed {
+        for command in scan_provider_commands(provider, &cwd, &home) {
+            if seen.insert(command.id.clone()) {
+                commands.push(command);
+            }
+        }
     }
     commands.truncate(MAX_COMMANDS);
     Ok(ConversationSlashList { commands })
+}
+
+/// CLI 内置压缩命令不在扫描目录里。Qwen 的 `/compress` 会总结历史、缩小下一轮
+/// 模型上下文；Roster 不自动执行，用户从斜杠菜单点才跑。Codex 压缩是 App
+/// Server 的 `thread/compact/start`，不是斜杠，不能混用。
+fn builtin_slash_commands(provider: &str) -> Vec<ConversationSlashCommand> {
+    match provider {
+        "qwen" => command_from_parts(
+            "compress",
+            "压缩当前会话上下文，减少下一轮送给模型的历史",
+            "command",
+        )
+        .into_iter()
+        .collect(),
+        _ => Vec::new(),
+    }
 }
 
 pub fn resolve_slash_invocation(
@@ -811,22 +1152,6 @@ fn run_cli_output(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
-        // Keep a noisy probe from filling its temporary output file before the
-        // polling timeout fires. Descendants inherit this limit as well.
-        let output_limit = max_bytes.saturating_add(1) as libc::rlim_t;
-        unsafe {
-            command.pre_exec(move || {
-                let limit = libc::rlimit {
-                    rlim_cur: output_limit,
-                    rlim_max: output_limit,
-                };
-                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::last_os_error())
-                }
-            });
-        }
     }
     let mut child = command.spawn().ok()?;
     let process_tree = match crate::codex_chat::register_process_tree(&child) {
@@ -838,7 +1163,21 @@ fn run_cli_output(
         }
     };
     let deadline = Instant::now() + timeout;
+    let cap = (max_bytes + 1) as u64;
     let status = loop {
+        // 噪音探测可能在超时前不停往输出文件里灌——直接盯它自己那两个临时
+        // 文件的大小，超了就掐整个进程组。读取侧本就截到 max_bytes+1，
+        // 这里只是不让磁盘被灌爆。
+        let oversized = stdout.metadata().is_ok_and(|meta| meta.len() > cap)
+            || stderr
+                .as_ref()
+                .is_some_and(|file| file.metadata().is_ok_and(|meta| meta.len() > cap));
+        if oversized {
+            process_tree.terminate();
+            terminate_group(&mut child);
+            let _ = child.wait();
+            return None;
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => {
@@ -1266,29 +1605,6 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn grok_inspect_json_keeps_invocable_skills_and_qualified_names() {
-        let raw = r#"{
-            "skills": [
-                {"name":"review","description":"审查改动","userInvocable":true},
-                {"name":"hidden","description":"不出现","userInvocable":false},
-                {"name":"code-review","description":"内置冲突","userInvocable":true,"invocableAs":"bundled:code-review"},
-                {"name":"bad name","description":"非法"},
-                {"name":"disabled","description":"关掉","userInvocable":true,"compatibilityStatus":"disabled"}
-            ]
-        }"#;
-        let commands = commands_from_grok_inspect_json(raw);
-        assert_eq!(
-            commands
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            ["review", "bundled:code-review"]
-        );
-        assert_eq!(commands[0].title, "审查改动");
-        assert_eq!(commands[0].action, "skill");
-    }
-
-    #[test]
     fn scans_skill_md_and_command_files_but_skips_disabled() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
@@ -1406,6 +1722,70 @@ mod tests {
     }
 
     #[test]
+    fn qwen_exposes_native_compress_slash() {
+        let commands = builtin_slash_commands("qwen");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].id, "compress");
+        assert_eq!(commands[0].source, "command");
+        assert!(builtin_slash_commands("claude").is_empty());
+        assert!(builtin_slash_commands("codex").is_empty());
+    }
+
+    #[test]
+    fn parses_grok_acp_initialize_model_state() {
+        let init = serde_json::json!({
+            "_meta": {
+                "modelState": {
+                    "currentModelId": "grok-4.6",
+                    "availableModels": [
+                        {
+                            "modelId": "grok-4.6",
+                            "name": "Grok 4.6",
+                            "_meta": {
+                                "reasoningEfforts": [
+                                    {"id": "xhigh", "value": "xhigh"},
+                                    {"id": "high", "value": "high"},
+                                    {"id": "medium", "value": "medium"},
+                                    {"id": "low", "value": "low"}
+                                ]
+                            }
+                        },
+                        {
+                            "modelId": "grok-4.5",
+                            "name": "Grok 4.5",
+                            "_meta": {
+                                "reasoningEfforts": [
+                                    {"id": "high", "value": "high"},
+                                    {"id": "low", "value": "low"}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+        let (models, efforts) = parse_grok_acp_model_state(&init);
+        assert_eq!(
+            models
+                .iter()
+                .map(|item| (item.id.as_str(), item.current, item.label.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("grok-4.6", true, "Grok 4.6"),
+                ("grok-4.5", false, "Grok 4.5")
+            ]
+        );
+        assert_eq!(models[0].efforts, ["xhigh", "high", "medium", "low"]);
+        assert_eq!(
+            efforts
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh"]
+        );
+    }
+
+    #[test]
     fn parses_grok_models_text_and_ignores_login_prose() {
         let models = parse_cli_models(
             "You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n",
@@ -1435,6 +1815,28 @@ mod tests {
         assert_eq!(model_list_args("qwen"), None);
         assert_eq!(model_list_args("claude"), None);
         assert_eq!(model_list_args("codex"), None);
+        assert_eq!(
+            effort_list_args("claude"),
+            Some(&["--effort", "__roster_probe__"][..])
+        );
+        assert_eq!(
+            effort_list_args("grok"),
+            Some(
+                &[
+                    "--effort",
+                    "__roster_probe__",
+                    "--single",
+                    ".",
+                    "--output-format",
+                    "json"
+                ][..]
+            )
+        );
+        assert!(effort_list_args("grok")
+            .unwrap()
+            .windows(2)
+            .any(|pair| pair == ["--single", "."]));
+        assert_eq!(effort_list_args("codex"), None);
     }
 
     #[test]
@@ -1532,6 +1934,66 @@ mod tests {
             ["high", "max", "minimal"]
         );
         assert_eq!(variants[2].label, "最低");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn probe_tolerates_cli_side_writes_and_reaps_noisy_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // 1) 先写一个远超输出上限的"缓存"再打模型行（`opencode models` 每次
+        // 重写约 4.5MB 目录缓存，旧实现用 RLIMIT_FSIZE=输出上限时缓存写触发
+        // SIGXFSZ、整条命令零输出，OpenCode/MiMo 的模型行就这么消失了）。
+        // `|| exit 9` 还原"写缓存的就是进程自己"的形状。
+        let cache_script = dir.path().join("fake-models-cli.sh");
+        std::fs::write(
+            &cache_script,
+            "#!/bin/sh\nhead -c 200000 /dev/zero > \"$0.cache\" || exit 9\nprintf 'provider/a\\nprovider/b\\n'\n",
+        )
+        .expect("write script");
+        std::fs::set_permissions(&cache_script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        let raw = run_cli_output(
+            &cache_script,
+            &[],
+            dir.path(),
+            std::time::Duration::from_secs(10),
+            MAX_MODEL_LIST_BYTES,
+            false,
+            true,
+        )
+        .expect("旁路缓存写不该打死探测");
+        let models = parse_cli_models(&raw);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["provider/a", "provider/b"]
+        );
+
+        // 2) 反方向：真正疯狂往 stdout 灌的探测被看门狗掐掉——返回 None，
+        // 但进程不能还活着（跑偏写盘的风险由这里兜住）。
+        let noisy = dir.path().join("noisy.sh");
+        std::fs::write(&noisy, "#!/bin/sh\nyes | head -c 400000\nsleep 30\n").expect("write noisy");
+        std::fs::set_permissions(&noisy, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let started = std::time::Instant::now();
+        let outcome = run_cli_output(
+            &noisy,
+            &[],
+            dir.path(),
+            std::time::Duration::from_secs(30),
+            MAX_MODEL_LIST_BYTES,
+            false,
+            false,
+        );
+        assert!(outcome.is_none(), "超过输出上限的探测应被掐掉");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "要立刻回收，不能等满 30 秒超时（实际 {:.1?}）",
+            started.elapsed()
+        );
     }
 
     #[test]

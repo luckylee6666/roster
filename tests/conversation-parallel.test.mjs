@@ -1644,14 +1644,18 @@ test('模型和推理强度带助手归属，换助手时不会把上一家的�
   fx.pickAssistant('grok');
   await flush();
   assert.deepEqual(fx.tuningRows(), ['model', 'mode'], 'Grok 这边有模型可选');
+  fx.openTuning('model');
+  assert.equal(fx.tuningOptions().includes('grok-4'), true, '正向锚：此刻 grok-4 确实在面板里');
 
-  // 换助手的一瞬间新列表还没回来，这个空档里绝不能列出 grok-4。
+  // 换助手的一瞬间新列表还没回来：可以出现不带选项的「读取中」占位行，
+  // 但绝不能把上一家的真实选项挂出来。tuningOptions 横跨展开/收起两种
+  // 渲染态，只收集当前实际挂着的 optionId，泄漏必被抓住。
   fx.setSlashLists({ models: [], efforts: [] });
   fx.pickAssistant('claude');
   assert.equal(
-    fx.tuningRows().includes('model'),
+    fx.tuningOptions().includes('grok-4'),
     false,
-    '新助手的模型还没查回来时，宁可不列，也不能显示上一家的',
+    '新助手的模型还没查回来时，面板里绝不能有上一家的选项',
   );
   await flush();
   assert.deepEqual(fx.tuningRows(), ['mode'], 'Claude 这边确实没有模型列表');

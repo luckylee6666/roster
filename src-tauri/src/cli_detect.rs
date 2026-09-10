@@ -244,26 +244,24 @@ fn unix_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<
     let mut stdout = tempfile::tempfile().map_err(|_| "无法解析 CLI".to_string())?;
     let stdout_for_child = stdout.try_clone().map_err(|_| "无法解析 CLI".to_string())?;
     command.process_group(0);
-    // The temporary file avoids inherited-pipe EOF hangs. Apply an OS-enforced
-    // file-size ceiling too, so a noisy profile cannot fill the file between
-    // polling intervals (and its descendants inherit the same ceiling).
-    unsafe {
-        command.pre_exec(|| {
-            let limit = libc::rlimit {
-                rlim_cur: MAX_CLI_RESOLVE_OUTPUT_BYTES as libc::rlim_t,
-                rlim_max: MAX_CLI_RESOLVE_OUTPUT_BYTES as libc::rlim_t,
-            };
-            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
-            }
-        });
-    }
+    // The temporary file avoids inherited-pipe EOF hangs. Runaway growth of the
+    // probe's own output file is reaped by the size watchdog in the polling
+    // loop below — NOT by RLIMIT_FSIZE: that ceiling would also apply to every
+    // other file the profile's children legitimately write (same lesson as
+    // conversation_slash's `run_cli_output`: `opencode models` checkpointing its
+    // 300MB+ SQLite database was SIGXFSZ-killed at any realistic limit).
     command.stdout(Stdio::from(stdout_for_child));
     let mut child = command.spawn().map_err(|_| "无法解析 CLI".to_string())?;
     let deadline = Instant::now() + timeout;
+    let cap = (MAX_CLI_RESOLVE_OUTPUT_BYTES + 1) as u64;
     let status = loop {
+        // A noisy profile can outgrow the read bound between polls; reap the
+        // group immediately instead of letting the file grow until timeout.
+        if stdout.metadata().is_ok_and(|meta| meta.len() > cap) {
+            terminate_resolver_group(&mut child);
+            let _ = child.wait();
+            return Err("CLI 解析输出过大".to_string());
+        }
         if let Some(status) = child.try_wait().map_err(|_| "无法解析 CLI".to_string())? {
             break status;
         }

@@ -19,6 +19,11 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Codex long-thread resume now requests metadata only (`excludeTurns: true`). This prevents stored turns, images and tool output from exceeding the 1 MiB protocol-message limit before a new prompt can start. Conversation history continues to use the separate bounded transcript reader; existing history and transport safety limits are preserved.
 - Product docs no longer advertise removed capabilities as current: Gemini, project ideas, the old per-turn “Allow project changes” toggle, and menu-bar usage. Conversation memory status no longer tells users to open a management panel that only exists in Developer mode.
 - Developer-mode Codex resume now supplies the process-local `roster_openai_native` provider alias that conversation mode persisted onto official-route threads, so `codex resume` in the terminal can load those sessions again. Custom Codex providers remain untouched.
+- OpenCode/MiMo Code ACP session loads now skip history replay, and oversized `session/update` notifications are dropped instead of aborting the live turn. Conversation history still comes from the independent transcript reader. ACP `agent_message` bodies and updates without `sessionId` are shown; a turn that finishes with no visible text is reported as a failure instead of removing the thinking placeholder.
+- Grok conversation composer now keeps the selected permission mode (`plan` / `auto` / `bypassPermissions`) instead of mapping writable modes onto ACP `default` (Normal). Auto/always-approve stay on session `_meta` and the CLI flag; `session/set_mode` is only used for Plan. A short session rule tells Grok to name the Roster mode when asked, instead of calling auto/always-approve “normal chat”. Model and reasoning-effort menus read Grok ACP `modelState` (with a `grok models` fallback) so the composer is not left with only the mode row.
+- Resident turns distinguish a long model wait from a hang: up to 15 minutes of silence is allowed before any structured output (needed for huge resumes and native `/compress`); after output has started, three minutes without a new line still fails the turn.
+- Qwen’s native `/compress` is listed as a conversation slash command. It is Qwen’s own context summarizer (not Codex `thread/compact/start`) and only runs when chosen; Roster still does not auto-compact any CLI.
+- Model/effort probes and login-shell command resolution no longer set `RLIMIT_FSIZE` on the child. OpenCode and MiMo Code embed a growing SQLite database whose checkpoint was SIGXFSZ-killed at any realistic ceiling, which left the OpenCode model picker silently empty. A size watchdog on the probe's own bounded output file still reaps runaway processes without capping the CLI's unrelated file writes.
 
 ### 中文
 
@@ -35,6 +40,11 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Codex 续接长会话时请求仅返回会话元数据（`excludeTurns: true`），避免历史轮次、图片和工具输出聚合成超过 1 MiB 的通信消息，导致新提问还没开始就失败。对话历史仍通过独立的有界正文读取流程展示，原历史和通信大小保护保持不变。
 - 产品文档不再把已移除能力写成当前功能：Gemini、项目想法、逐轮「允许修改项目」开关，以及托盘用量。会话记忆状态失败时也不再提示去打开只存在于开发模式的管理面板。
 - 开发模式续接 Codex 时补上会话模式写进线程的进程局部 `roster_openai_native` 传输别名，避免终端里 `codex resume` 因找不到该 provider 失败。自定义 Codex provider 不受影响。
+- OpenCode/MiMo Code 的 ACP 续接不再回放整段历史；过大的 `session/update` 会跳过而不是掐掉当前轮。对话历史仍走独立正文读取。补上 `agent_message` 整段正文，以及不带 sessionId 的更新；本轮结束后仍无可见回复时改为失败，不再让思考点消失成空白。
+- Grok 对话设置不再把写入档映射成 ACP `default`（普通对话）。自动/始终批准走 session `_meta` 和 CLI 档位，只有规划模式才调用 `session/set_mode`。启动时写入短规则，问模式时按 Roster 档位回答，不再把自动/始终批准说成普通对话。模型和推理强度从 Grok ACP 的 `modelState` 读取（`grok models` 作兜底），避免设置面板只剩「模式」一行。
+- 常驻对话把「还在等模型」和「已经开始输出却卡住」分开：还没有任何结构化输出时最多等 15 分钟（超长续接和 `/compress` 需要），一旦开始有输出，再空三分钟才失败。
+- Qwen 对话斜杠补上原生 `/compress`（压缩模型上下文）。这不是 Codex 的 `thread/compact/start`，也不会自动执行；选了才跑。
+- 模型/强度列表探测与登录壳命令解析不再给子进程设 `RLIMIT_FSIZE`。OpenCode/MiMo Code 内嵌的 SQLite 库只会越长越大，checkpoint 在任何现实取值下都会被 SIGXFSZ 打死，此前表现为 OpenCode 模型选择框静默为空。现在只对探测自己的有界输出临时文件做大小看门狗，既能收割跑飞输出，也不再误伤 CLI 的其他合法写入。
 
 ## v1.4.1
 

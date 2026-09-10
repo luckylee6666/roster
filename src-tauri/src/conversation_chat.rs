@@ -20,6 +20,8 @@ mod resident;
 pub(crate) use resident::ResidentPool;
 
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
+const OVERSIZED_PROTOCOL_NOTIFICATION: &str = "oversized-protocol-notification";
+const OVERSIZED_PROTOCOL_LINE: &str = "CLI 返回的单条结构化消息过大，已停止处理";
 const MAX_PROTOCOL_MESSAGES: usize = 16_384;
 const MAX_PROTOCOL_TURN_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ASSISTANT_TURN_BYTES: usize = 2 * 1024 * 1024;
@@ -28,6 +30,11 @@ const MAX_ACTIVITY_EVENTS: usize = 1_024;
 const STDERR_TAIL_BYTES: usize = 4_096;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// After the turn is ready, a huge resume/compress can sit silent while the
+/// model runs (this Qwen thread took ~2 minutes for hello). Do not treat that
+/// as a hang. Once structured output has started, a shorter gap means stuck.
+const PROTOCOL_IDLE_BEFORE_OUTPUT: Duration = Duration::from_secs(15 * 60);
+const PROTOCOL_IDLE_AFTER_OUTPUT: Duration = Duration::from_secs(3 * 60);
 
 pub type ConversationChatState = CodexChatState;
 
@@ -191,6 +198,45 @@ fn safe_event_id(value: &str, fallback: &str) -> String {
     }
 }
 
+fn skippable_oversized_prefix(parts: &[&[u8]]) -> bool {
+    let mut head = Vec::new();
+    for part in parts {
+        let take = (4096usize).saturating_sub(head.len()).min(part.len());
+        head.extend_from_slice(&part[..take]);
+        if head.len() >= 4096 {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&head);
+    text.contains("\"method\":\"session/update\"")
+        || text.contains("\"method\": \"session/update\"")
+}
+
+fn discard_until_newline<R: BufRead>(reader: &mut R) -> Result<(), String> {
+    loop {
+        let available = reader
+            .fill_buf()
+            .map_err(|_| "读取 CLI 结构化响应失败".to_string())?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        if let Some(index) = available.iter().position(|byte| *byte == b'\n') {
+            reader.consume(index + 1);
+            return Ok(());
+        }
+        let n = available.len();
+        reader.consume(n);
+    }
+}
+
+fn oversized_protocol_error(parts: &[&[u8]]) -> String {
+    if skippable_oversized_prefix(parts) {
+        OVERSIZED_PROTOCOL_NOTIFICATION.to_string()
+    } else {
+        OVERSIZED_PROTOCOL_LINE.to_string()
+    }
+}
+
 fn read_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, String> {
     let mut line = Vec::new();
     loop {
@@ -205,13 +251,19 @@ fn read_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, Stri
                 (0, true)
             } else if let Some(index) = available.iter().position(|byte| *byte == b'\n') {
                 if line.len().saturating_add(index) > MAX_PROTOCOL_LINE_BYTES {
-                    return Err("CLI 返回的单条结构化消息过大，已停止处理".into());
+                    let error = oversized_protocol_error(&[&line, &available[..index]]);
+                    reader.consume(index + 1);
+                    return Err(error);
                 }
                 line.extend_from_slice(&available[..index]);
                 (index + 1, true)
             } else {
                 if line.len().saturating_add(available.len()) > MAX_PROTOCOL_LINE_BYTES {
-                    return Err("CLI 返回的单条结构化消息过大，已停止处理".into());
+                    let error = oversized_protocol_error(&[&line, available]);
+                    let n = available.len();
+                    reader.consume(n);
+                    discard_until_newline(reader)?;
+                    return Err(error);
                 }
                 line.extend_from_slice(available);
                 (available.len(), false)
@@ -1766,6 +1818,29 @@ pub fn approve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_reader_skips_oversized_session_update_but_rejects_other_huge_lines() {
+        let update = format!(
+            "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"text\":\"{}\"}}}}\nnext\n",
+            "x".repeat(MAX_PROTOCOL_LINE_BYTES + 1)
+        );
+        let mut reader = std::io::Cursor::new(update.into_bytes());
+        assert_eq!(
+            read_protocol_line(&mut reader).unwrap_err(),
+            OVERSIZED_PROTOCOL_NOTIFICATION
+        );
+        assert_eq!(
+            read_protocol_line(&mut reader).unwrap(),
+            Some("next".into())
+        );
+
+        let mut fatal = std::io::Cursor::new(vec![b'x'; MAX_PROTOCOL_LINE_BYTES + 1]);
+        assert_eq!(
+            read_protocol_line(&mut fatal).unwrap_err(),
+            OVERSIZED_PROTOCOL_LINE
+        );
+    }
 
     #[test]
     fn provider_registry_only_accepts_registered_headless_clis() {

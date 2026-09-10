@@ -128,7 +128,12 @@ impl Session {
             let mut reader = BufReader::new(stdout.unwrap());
             loop {
                 let line = read_protocol_line(&mut reader);
-                let end = !matches!(line, Ok(Some(_)));
+                let end = match &line {
+                    Ok(None) => true,
+                    Err(error) if error == OVERSIZED_PROTOCOL_NOTIFICATION => false,
+                    Err(_) => true,
+                    Ok(Some(_)) => false,
+                };
                 if tx.send(line).is_err() || end {
                     break;
                 }
@@ -153,6 +158,24 @@ impl Drop for Session {
         if let Ok(mut child) = self.process.lock() {
             stop_child(&mut child, false);
         }
+    }
+}
+
+/// Grok 问「现在什么模式」时，模型只看得见规划模式的系统提醒，会把 auto /
+/// 始终批准都说成「普通对话」。用 CLI `--rules` 和 session `_meta.rules`
+/// 补上 Roster 档位名称。
+fn grok_permission_rule(mode_id: &str) -> &'static str {
+    match mode_id {
+        "plan" => {
+            "当前 Roster 权限档是「只读计划」(plan)。只读分析，不要改项目文件。用户问现在什么模式时，回答「只读计划」，不要说成普通对话。"
+        }
+        "auto" => {
+            "当前 Roster 权限档是「自动」(auto)：由你自行判断该不该用工具。这不是规划模式，也不是 Grok 的普通询问档 default。用户问现在什么模式时，回答「自动」，不要说成「普通对话」。"
+        }
+        "bypassPermissions" => {
+            "当前 Roster 权限档是「始终批准」(bypassPermissions)：工具调用不再逐条确认，仍限制在项目工作区。用户问现在什么模式时，回答「始终批准」，不要说成「普通对话」。"
+        }
+        _ => "按当前 CLI 权限档工作。用户问模式时用 Roster 档位名称回答。",
     }
 }
 
@@ -191,6 +214,8 @@ fn command(spec: &ProviderSpec, binary: PathBuf, r: &HeadlessStart) -> Command {
         cmd.args([
             "--permission-mode",
             r.mode.id,
+            "--rules",
+            grok_permission_rule(r.mode.id),
             "--disable-web-search",
             "--no-subagents",
         ]);
@@ -382,12 +407,15 @@ fn start_reserved(
                 sink: &sink,
                 cancelled: &cancelled,
                 start: started,
+                last_protocol: started,
+                got_output: false,
                 ready: false,
                 protocol_bytes: 0,
                 messages: 0,
                 output_bytes: 0,
                 events: 0,
                 sent_text: false,
+                saw_thought: false,
                 provider: spec.id,
             };
             if matches!(spec.id, "grok" | "opencode" | "mimo") {
@@ -446,12 +474,15 @@ struct Turn<'a> {
     sink: &'a Sink,
     cancelled: &'a AtomicBool,
     start: Instant,
+    last_protocol: Instant,
+    got_output: bool,
     ready: bool,
     protocol_bytes: usize,
     messages: usize,
     output_bytes: usize,
     events: usize,
     sent_text: bool,
+    saw_thought: bool,
     provider: &'static str,
 }
 impl Turn<'_> {
@@ -476,6 +507,13 @@ impl Turn<'_> {
             }
             let line = match self.session.lines.recv_timeout(Duration::from_millis(100)) {
                 Ok(Ok(Some(line))) => line,
+                Ok(Err(e)) if e == OVERSIZED_PROTOCOL_NOTIFICATION => {
+                    crate::log_warn!(
+                        "{} 跳过过大的 session/update，本轮继续",
+                        provider_label(self.provider)
+                    );
+                    continue;
+                }
                 Ok(Err(e)) => return Err(e),
                 Ok(Ok(None)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("CLI 常驻服务已退出，请确认登录状态后重试".into())
@@ -484,9 +522,25 @@ impl Turn<'_> {
                     if !self.session.alive() {
                         return Err("CLI 常驻服务意外退出".into());
                     }
+                    if self.ready {
+                        let limit = if self.got_output {
+                            PROTOCOL_IDLE_AFTER_OUTPUT
+                        } else {
+                            PROTOCOL_IDLE_BEFORE_OUTPUT
+                        };
+                        if self.last_protocol.elapsed() > limit {
+                            return Err(if self.got_output {
+                                "CLI 开始回复后长时间没有新输出，已停止"
+                            } else {
+                                "CLI 等待模型回复过久。超长历史可用 /compress（Qwen）等原生命令压缩后再问，或开新对话"
+                            }
+                            .into());
+                        }
+                    }
                     continue;
                 }
             };
+            self.last_protocol = Instant::now();
             self.messages += 1;
             self.protocol_bytes += line.len();
             if self.messages > MAX_PROTOCOL_MESSAGES
@@ -496,6 +550,9 @@ impl Turn<'_> {
             }
             if line.trim().is_empty() {
                 continue;
+            }
+            if self.ready {
+                self.got_output = true;
             }
             return serde_json::from_str(&line).map_err(|_| "CLI 没有返回有效的结构化消息".into());
         }
@@ -514,6 +571,8 @@ impl Turn<'_> {
     }
     fn ready(&mut self, reused: bool) {
         self.ready = true;
+        self.last_protocol = Instant::now();
+        self.got_output = false;
         crate::log_info!(
             "{} 对话就绪：{} · 准备耗时 {} ms",
             provider_label(self.provider),
@@ -643,21 +702,47 @@ impl Turn<'_> {
                     .cloned()
                     .ok_or_else(|| "CLI 返回了无效的协议结果".into());
             }
-            if updates
-                && value["method"] == "session/update"
-                && value["params"]["sessionId"] == self.session.thread
-            {
-                self.acp_update(&value["params"]["update"])?;
+            if updates && value["method"] == "session/update" {
+                let sid = value["params"]["sessionId"].as_str().unwrap_or("");
+                if !sid.is_empty() && sid != self.session.thread {
+                    crate::log_warn!(
+                        "{} 忽略其他会话的 update：{} != {}",
+                        provider_label(self.provider),
+                        sid,
+                        self.session.thread
+                    );
+                } else {
+                    self.acp_update(&value["params"]["update"])?;
+                }
             }
         }
     }
+    fn acp_text(content: &Value) -> String {
+        if content.get("type").and_then(Value::as_str) == Some("text") {
+            return content
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+        }
+        extract_text_content(content)
+    }
+
     fn acp_update(&mut self, update: &Value) -> Result<(), String> {
-        match update["sessionUpdate"].as_str().unwrap_or("") {
-            "agent_message_chunk" if update["content"]["type"] == "text" => {
-                if let Some(text) = update["content"]["text"].as_str() {
+        let kind = update["sessionUpdate"]
+            .as_str()
+            .or_else(|| update["type"].as_str())
+            .unwrap_or("");
+        match kind {
+            "agent_message_chunk" | "agent_message" | "content" => {
+                let text = Self::acp_text(&update["content"]);
+                if !text.is_empty() {
                     self.sent_text = true;
-                    self.event("assistant_delta", json!({"text":text}))?;
+                    self.event("assistant_delta", json!({ "text": text }))?;
                 }
+            }
+            "agent_thought_chunk" | "agent_thought" => {
+                self.saw_thought = true;
             }
             "tool_call" | "tool_call_update" => {
                 let status = match update["status"].as_str() {
@@ -681,7 +766,22 @@ impl Turn<'_> {
                 }).collect();
                 self.event("plan", json!({"items":items}))?;
             }
-            _ => {} // reasoning, raw tools, commands, and paths never leave the backend
+            "current_mode_update"
+            | "available_commands_update"
+            | "config_options_update"
+            | "usage_update"
+            | "user_message_chunk"
+            | "user_message"
+            | "session_info_update" => {}
+            _ => {
+                if self.ready && !kind.is_empty() {
+                    crate::log_warn!(
+                        "{} 未识别的 session/update：{}",
+                        provider_label(self.provider),
+                        kind
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -699,7 +799,16 @@ impl Turn<'_> {
                 params["sessionId"] = json!(r.thread_id);
             }
             if self.provider == "grok" {
-                params["_meta"] = json!({"yoloMode":r.mode.id=="bypassPermissions","autoMode":r.mode.id=="auto","noReplay":true});
+                params["_meta"] = json!({
+                    "yoloMode": r.mode.id == "bypassPermissions",
+                    "autoMode": r.mode.id == "auto",
+                    "noReplay": true,
+                    "rules": grok_permission_rule(r.mode.id),
+                });
+            } else if matches!(self.provider, "opencode" | "mimo") {
+                // History is shown from disk. ACP replay of tool output can exceed
+                // the 1 MiB line budget and abort a live turn.
+                params["_meta"] = json!({"noReplay":true});
             }
             let info = self.rpc(
                 if r.thread_id.is_empty() {
@@ -710,18 +819,36 @@ impl Turn<'_> {
                 params,
                 false,
             )?;
-            let id = info["sessionId"].as_str().unwrap_or(&r.thread_id);
+            let id = info["sessionId"]
+                .as_str()
+                .or_else(|| info.pointer("/session/sessionId").and_then(Value::as_str))
+                .or_else(|| info.pointer("/session/id").and_then(Value::as_str))
+                .unwrap_or(&r.thread_id);
             if !r.thread_id.is_empty() && id != r.thread_id {
                 return Err("CLI 没有恢复指定的历史会话".into());
             }
             self.set_thread(id)?;
             let thread = self.session.thread.clone();
             if self.provider == "grok" {
-                self.rpc(
-                    "session/set_mode",
-                    json!({"sessionId":thread,"modeId":if r.mode.writes{"default"}else{"plan"}}),
-                    false,
-                )?;
+                // Grok's ACP session mode is plan vs default. Auto / always-approve
+                // are `_meta.autoMode` / `_meta.yoloMode` on session/new plus the
+                // CLI `--permission-mode`. Calling set_mode("auto") is ignored and
+                // can leave the session in Normal; set_mode("default") overwrites
+                // Auto on purpose. Only Plan needs session/set_mode.
+                if r.mode.id == "plan" {
+                    self.rpc(
+                        "session/set_mode",
+                        json!({"sessionId":thread,"modeId":"plan"}),
+                        false,
+                    )?;
+                }
+                if !r.model.is_empty() {
+                    self.rpc(
+                        "session/set_model",
+                        json!({"sessionId":thread,"modelId":r.model}),
+                        false,
+                    )?;
+                }
             } else {
                 self.rpc(
                     "session/set_mode",
@@ -752,14 +879,19 @@ impl Turn<'_> {
                 )
             };
         }
-        let mut params =
+        let params =
             json!({"sessionId":self.session.thread,"prompt":[{"type":"text","text":prompt}]});
-        if self.provider == "grok" {
-            params["_meta"] = json!({"mode":if r.mode.writes{"default"}else{"plan"}});
-        }
         let result = self.rpc("session/prompt", params, true)?;
         match result["stopReason"].as_str() {
-            Some("end_turn" | "max_tokens" | "max_turn_requests") => Ok(()),
+            Some("end_turn" | "max_tokens" | "max_turn_requests") => {
+                if self.sent_text {
+                    Ok(())
+                } else if self.saw_thought {
+                    Err("CLI 只返回了内部推理，没有对用户的可见回复".into())
+                } else {
+                    Err("CLI 完成本轮但没有返回可见回复".into())
+                }
+            }
             Some("cancelled") => Err("CLI 取消了本轮请求（可能需要交互审批）".into()),
             _ => Err("CLI 返回了未成功完成的停止状态".into()),
         }
@@ -881,6 +1013,22 @@ mod tests {
         provider: &str,
         scenario: &str,
     ) -> Receiver<(String, Value)> {
+        start_fake(
+            state,
+            cwd,
+            provider,
+            scenario,
+            request(cwd, run, thread, provider),
+        )
+    }
+    #[cfg(unix)]
+    fn start_fake(
+        state: &ConversationChatState,
+        cwd: &Path,
+        provider: &str,
+        scenario: &str,
+        r: HeadlessStart,
+    ) -> Receiver<(String, Value)> {
         let (tx, rx) = mpsc::channel();
         let sink: Sink = Arc::new(move |kind, data| {
             let _ = tx.send((kind.into(), data));
@@ -890,8 +1038,7 @@ mod tests {
             .env("ROSTER_RESIDENT_PROVIDER", provider)
             .env("ROSTER_RESIDENT_SCENARIO", scenario)
             .env("ROSTER_RESIDENT_LOG", cwd.join("requests.jsonl"));
-        let r = request(cwd, run, thread, provider);
-        let cancelled = crate::codex_chat::reserve_run(state, &r.project_id, run).unwrap();
+        let cancelled = crate::codex_chat::reserve_run(state, &r.project_id, &r.run_id).unwrap();
         start_reserved(
             state,
             *provider_spec(provider).unwrap(),
@@ -938,9 +1085,25 @@ mod tests {
             if id == "grok" {
                 assert!(args.windows(2).any(|a| a == ["--sandbox", "workspace"]));
                 assert!(args.contains(&"--no-leader".into()));
+                assert!(args
+                    .windows(2)
+                    .any(|a| a[0] == "--rules" && a[1].contains("只读计划")));
+                assert!(grok_permission_rule("auto").contains("「自动」"));
+                assert!(grok_permission_rule("auto").contains("不要说成「普通对话」"));
+                assert!(grok_permission_rule("bypassPermissions").contains("始终批准"));
                 r.thread_id = "existing".into();
+                r.model = "grok-4.5".into();
+                r.effort = "high".into();
                 let c = command(provider_spec(id).unwrap(), PathBuf::from("/bin/cli"), &r);
-                assert!(!c.get_args().any(|a| a == "--sandbox"));
+                let resumed: Vec<_> = c
+                    .get_args()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                assert!(!resumed.iter().any(|a| a == "--sandbox"));
+                assert!(resumed.windows(2).any(|a| a == ["--model", "grok-4.5"]));
+                assert!(resumed
+                    .windows(2)
+                    .any(|a| a == ["--reasoning-effort", "high"]));
             }
         }
     }
@@ -1078,6 +1241,121 @@ mod tests {
                 .unwrap()
                 .sessions
                 .is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_acp_skips_oversized_session_update_and_still_completes() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let events = until(
+            &launch(&state, root.path(), "first", "", "mimo", "oversized-update"),
+            "completed",
+        );
+        assert!(events.iter().all(|(kind, _)| kind != "error"));
+        assert!(events
+            .iter()
+            .any(|(kind, data)| { kind == "assistant_delta" && data["text"] == "回复1" }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_acp_accepts_agent_message_without_session_id() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let events = until(
+            &launch(&state, root.path(), "first", "", "mimo", "agent-message"),
+            "completed",
+        );
+        assert!(events.iter().all(|(kind, _)| kind != "error"));
+        assert!(events
+            .iter()
+            .any(|(kind, data)| { kind == "assistant_delta" && data["text"] == "回复1" }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_acp_empty_visible_reply_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let events = until(
+            &launch(&state, root.path(), "first", "", "mimo", "empty-reply"),
+            "error",
+        );
+        assert!(events.iter().any(|(kind, data)| {
+            kind == "error" && data["message"].as_str().unwrap_or("").contains("内部推理")
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_grok_acp_keeps_selected_permission_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let mut r = request(root.path(), "first", "", "grok");
+        r.mode = crate::conversation_modes::resolve("grok", "auto").unwrap();
+        r.model = "grok-4.5".into();
+        r.effort = "high".into();
+        until(
+            &start_fake(&state, root.path(), "grok", "normal", r),
+            "completed",
+        );
+        let requests: Vec<Value> = std::fs::read_to_string(root.path().join("requests.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["request"].clone())
+            .collect();
+        let new = requests
+            .iter()
+            .find(|request| request["method"] == "session/new")
+            .unwrap();
+        assert_eq!(new["params"]["_meta"]["autoMode"], true);
+        assert_eq!(new["params"]["_meta"]["yoloMode"], false);
+        assert!(new["params"]["_meta"]["rules"]
+            .as_str()
+            .unwrap_or("")
+            .contains("「自动」"));
+        assert!(
+            requests
+                .iter()
+                .all(|request| request["method"] != "session/set_mode"),
+            "auto 不能走 session/set_mode，否则 Grok 会落回普通对话"
+        );
+        let set_model = requests
+            .iter()
+            .find(|request| request["method"] == "session/set_model")
+            .unwrap();
+        assert_eq!(set_model["params"]["modelId"], "grok-4.5");
+        let prompt = requests
+            .iter()
+            .find(|request| request["method"] == "session/prompt")
+            .unwrap();
+        assert_ne!(prompt["params"]["_meta"]["mode"], "default");
+        assert!(prompt["params"].get("_meta").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resident_opencode_and_mimo_session_load_skip_history_replay() {
+        for provider in ["opencode", "mimo"] {
+            let root = tempfile::tempdir().unwrap();
+            let state = ConversationChatState::default();
+            let thread = format!("session-{provider}");
+            until(
+                &launch(&state, root.path(), "first", &thread, provider, "normal"),
+                "completed",
+            );
+            let requests: Vec<Value> = std::fs::read_to_string(root.path().join("requests.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap()["request"].clone())
+                .collect();
+            let load = requests
+                .iter()
+                .find(|request| request["method"] == "session/load")
+                .unwrap();
+            assert_eq!(load["params"]["_meta"]["noReplay"], true, "{provider}");
         }
     }
 

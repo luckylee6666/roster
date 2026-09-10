@@ -1036,29 +1036,31 @@ export function installConversationMode({
   /** 模型、推理强度、模式：都是"这一轮怎么跑"的设置，收进同一个入口。 */
   function tuningSections() {
     const sections = [];
+    const provider = currentProvider();
+    const loadingLists = slashModelsLoading && ownsSlashLists();
     const models = activeSlashModels();
-    if (models.length) {
+    if (models.length || (provider.supportsModel && loadingLists)) {
       sections.push({
         key: 'model',
         label: '模型',
-        value: currentModel() || '默认',
+        value: !models.length && loadingLists ? '读取中' : (currentModel() || '默认'),
         options: models.map(item => ({ id: item.id, label: item.label || item.id })),
         current: currentModel(),
         apply: id => {
-          const provider = currentProvider().id;
-          if (id) providerModels[provider] = id;
-          else delete providerModels[provider];
+          const providerId = currentProvider().id;
+          if (id) providerModels[providerId] = id;
+          else delete providerModels[providerId];
           persistProviderModels();
-          dropEffortUnsupportedByModel(provider);
+          dropEffortUnsupportedByModel(providerId);
         },
       });
     }
     const efforts = activeSlashEfforts();
-    if (efforts.length) {
+    if (efforts.length || (provider.supportsEffort && loadingLists)) {
       sections.push({
         key: 'effort',
         label: '推理强度',
-        value: currentEffort() || '默认',
+        value: !efforts.length && loadingLists ? '读取中' : (currentEffort() || '默认'),
         options: efforts.map(item => ({ id: item.id, label: item.label || item.id })),
         current: currentEffort(),
         apply: id => {

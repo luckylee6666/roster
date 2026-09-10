@@ -18,9 +18,22 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (scenario === 'die-second' && turns === 2) return process.exit(1);
   if (scenario === 'oversized') return process.stdout.write('x'.repeat(1024 * 1024 + 1) + '\n');
   if (request.method === 'session/prompt') {
+    if (scenario === 'oversized-update') {
+      out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'tool_call', toolCallId: 't1', kind: 'read', status: 'completed', content: { type: 'text', text: 'x'.repeat(1024 * 1024 + 1) } } } });
+      out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `回复${turns}` } } } });
+      return out({ id: request.id, result: { stopReason: 'end_turn' } });
+    }
+    if (scenario === 'empty-reply') {
+      out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '私有推理' } } } });
+      return out({ id: request.id, result: { stopReason: 'end_turn' } });
+    }
     out({ method: 'session/update', params: { sessionId: 'wrong-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '串会话' } } } });
     out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '私有推理' } } } });
-    out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `回复${turns}` } } } });
+    if (scenario === 'agent-message') {
+      out({ method: 'session/update', params: { update: { sessionUpdate: 'agent_message', content: [{ type: 'text', text: `回复${turns}` }] } } });
+    } else {
+      out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `回复${turns}` } } } });
+    }
     if (scenario !== 'hang') out({ id: request.id, result: { stopReason: 'end_turn' } });
   } else if (provider === 'agy') {
     out({ event: 'init', conversation_id: session });
