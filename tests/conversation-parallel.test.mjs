@@ -1685,7 +1685,7 @@ test('CLI 目录里没有的模型/强度会被丢掉，不再每轮带着它去
   await flush();
   const summary = fx.el('conversation-tuning-summary').textContent;
   assert.doesNotMatch(summary, /claude-opus-5/, '失效的模型不能继续挂在摘要上');
-  assert.doesNotMatch(summary, /· high/, '失效的强度也不能继续挂着');
+  assert.doesNotMatch(summary, /high/, '失效的强度也不能继续挂着');
 
   // 仍然有效的选择不能被误删：选一个还在列表里的模型再刷新一次。
   fx.pickTuning('model', 'gpt-5.6-luna');
@@ -1697,6 +1697,54 @@ test('CLI 目录里没有的模型/强度会被丢掉，不再每轮带着它去
     fx.el('conversation-tuning-summary').textContent,
     /gpt-5\.6-luna/,
     '列表里仍有的模型必须保留',
+  );
+});
+
+test('示例性列表不能当权威清单：手打的完整模型名 / variant 强度不能被删', async t => {
+  // Claude 的模型列表来自 --help 的别名示例，完整模型名可以手打。
+  const claude = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'codex'], t });
+  await flush();
+  claude.setSlashLists({ models: [{ id: 'sonnet', label: 'sonnet' }], efforts: [] });
+  claude.pickAssistant('codex');
+  await flush();
+  claude.pickAssistant('claude');
+  await flush();
+  const claudeComposer = claude.el('conversation-composer');
+  claudeComposer.value = '/model claude-opus-4-5-20250929';
+  fire(claudeComposer, 'keydown', { key: 'Enter', preventDefault() {}, shiftKey: false });
+  await flush();
+  assert.match(claude.el('conversation-tuning-summary').textContent, /claude-opus-4-5-20250929/);
+
+  claude.pickAssistant('codex');
+  await flush();
+  claude.pickAssistant('claude');
+  await flush();
+  assert.match(
+    claude.el('conversation-tuning-summary').textContent,
+    /claude-opus-4-5-20250929/,
+    '别名列表不权威，不能删掉手打的完整模型名',
+  );
+
+  // OpenCode 的强度列表来自 run --help 的 --variant 示例，官方明说不是完整枚举。
+  const opencode = fixture({ projects: [project('a', '项目 A')], installed: ['opencode', 'codex'], t });
+  await flush();
+  opencode.setSlashLists({ models: [], efforts: [{ id: 'high', label: 'high' }] });
+  opencode.pickAssistant('opencode');
+  await flush();
+  const effortComposer = opencode.el('conversation-composer');
+  effortComposer.value = '/effort minimal';
+  fire(effortComposer, 'keydown', { key: 'Enter', preventDefault() {}, shiftKey: false });
+  await flush();
+  assert.match(opencode.el('conversation-tuning-summary').textContent, /minimal/);
+
+  opencode.pickAssistant('codex');
+  await flush();
+  opencode.pickAssistant('opencode');
+  await flush();
+  assert.match(
+    opencode.el('conversation-tuning-summary').textContent,
+    /minimal/,
+    'variant 示例不权威，不能删掉手打的值',
   );
 });
 

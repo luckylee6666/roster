@@ -1000,16 +1000,32 @@ export function installConversationMode({
     return slashOwner === currentProvider().id;
   }
 
+  // 后端模型列表上限（conversation_slash::MAX_MODELS）；拿到整整一屏就可能是
+  // 截断过的，不能当完整清单用来删选择。
+  const SLASH_MODEL_LIST_CAP = 40;
+
+  // 只有"这家 CLI 真会全量列出取值"的列表才能拿来删选择：
+  // - Claude 的模型来自 `--help` 里的别名示例，完整模型名可以手打；
+  // - OpenCode/MiMo 的强度来自 `run --help` 的 --variant 示例，官方明说不是完整枚举。
+  // 另外列表是按当前项目探测的（OpenCode/MiMo 会合并项目级配置），而选择按
+  // provider 持久化；项目目录不同造成的差异不在这里删。
+  function tuningListAuthoritative(providerId, kind) {
+    if (kind === 'model' && providerId === 'claude') return false;
+    if (kind === 'effort' && (providerId === 'opencode' || providerId === 'mimo')) return false;
+    return true;
+  }
+
   // 列表非空才校验：空列表代表"探测失败或不支持"，不能拿它清掉用户的有效选择。
   function dropStaleTuning(providerId, models, efforts) {
+    const modelListComplete = models.length > 0 && models.length < SLASH_MODEL_LIST_CAP;
     const storedModel = String(providerModels[providerId] || '').trim();
-    if (models.length && storedModel
+    if (modelListComplete && tuningListAuthoritative(providerId, 'model') && storedModel
       && !models.some(item => String(item?.id || '') === storedModel)) {
       delete providerModels[providerId];
       persistProviderModels();
     }
     const storedEffort = String(providerEfforts[providerId] || '').trim();
-    if (efforts.length && storedEffort
+    if (efforts.length && tuningListAuthoritative(providerId, 'effort') && storedEffort
       && !efforts.some(item => String(item?.id || '') === storedEffort)) {
       delete providerEfforts[providerId];
       persistProviderEfforts();
