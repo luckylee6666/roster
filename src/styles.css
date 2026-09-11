@@ -6567,8 +6567,10 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-message {
   position: relative;
-  /* 悬停工具栏高 20px，消息间距要容下它：气泡与工具栏、工具栏与下一条各 6px。 */
-  margin-bottom: 32px;
+  /* 工具栏高 20px，6px 空隙也归消息的 padding 管：鼠标从气泡移向按钮时
+     一路都在 :hover 命中区里，不会穿过空隙把按钮弄没；气泡与按钮、按钮
+     与下一条各留 6px。用 margin 做间距会让那 6px 变成拿不到 :hover 的死区。 */
+  padding-bottom: 32px;
 }
 
 .conversation-message.is-collapsed .conversation-message-content {
@@ -6614,7 +6616,7 @@ html[data-app-view="developer"] #conversation-surface {
    hover never reflows the transcript. */
 .conversation-message-tools {
   position: absolute;
-  bottom: -26px;
+  bottom: 6px;
   left: 0;
   display: flex;
   gap: 4px;
