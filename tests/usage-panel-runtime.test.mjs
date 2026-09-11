@@ -7,14 +7,14 @@ const page = readFileSync(new URL('../src/index.html', import.meta.url), 'utf8')
 const rust = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
 const usage = readFileSync(new URL('../src-tauri/src/usage.rs', import.meta.url), 'utf8');
 
-test('用量面板支持 Claude、Codex、Grok，且不再依赖 OpenCode/ccusage', () => {
+test('用量面板支持 Claude、Codex、Grok、OpenCode，且不再依赖 ccusage/本地日志', () => {
   assert.match(page, /data-agent="claude"/);
   assert.match(page, /data-agent="codex"/);
   assert.match(page, /data-agent="grok"/);
+  assert.match(page, /data-agent="opencode" hidden/);
   assert.match(page, /data-agent="claude" hidden/);
   assert.match(page, /data-agent="codex" hidden/);
   assert.match(page, /data-agent="grok" hidden/);
-  assert.doesNotMatch(page, /data-agent="opencode"/);
   assert.match(page, /id="terminal-usage-btn" title="用量统计"/);
   assert.match(main, /from '\.\/usage-panel-utils\.js'/);
   assert.match(main, /usageCommandForAgent\(agent\)/);
@@ -23,7 +23,7 @@ test('用量面板支持 Claude、Codex、Grok，且不再依赖 OpenCode/ccusag
   assert.match(main, /usageAgentsForInstalledClis\(installedCliIds, usageCapableAgentIds\)/);
   assert.match(main, /tab\.hidden = !visible/);
   assert.match(main, /refreshInstalledClis\(\{ force: forceProbe, syncUsageLoad: false \}\)/);
-  assert.match(main, /本机没有已安装且支持用量查询的 Claude、Codex 或 Grok/);
+  assert.match(main, /本机没有已安装且支持用量查询的 Claude、Codex、Grok 或 OpenCode/);
   const loadBlock = main.slice(
     main.indexOf('async function loadUsage('),
     main.indexOf('function renderLimitUsage'),
@@ -48,6 +48,7 @@ test('用量面板支持 Claude、Codex、Grok，且不再依赖 OpenCode/ccusag
   assert.match(rust, /async fn oauth_usage/);
   assert.match(rust, /async fn codex_usage/);
   assert.match(rust, /async fn grok_usage/);
+  assert.match(rust, /async fn opencode_usage/);
   assert.match(rust, /fn usage_supported_agents/);
   assert.doesNotMatch(rust, /agent_weekly/);
   assert.doesNotMatch(rust, /fn has_npx/);
@@ -55,6 +56,7 @@ test('用量面板支持 Claude、Codex、Grok，且不再依赖 OpenCode/ccusag
   assert.match(usage, /codex app-server/);
   assert.match(usage, /grok agent stdio/);
   assert.match(usage, /_x\.ai\/billing/);
+  assert.match(usage, /zen\/go\/v1\/usage/);
   assert.match(usage, /parse_grok_billing_response/);
   assert.match(usage, /billing: fetched credits config/);
   assert.match(usage, /unified\.jsonl/);

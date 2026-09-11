@@ -6,6 +6,9 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ### English
 
+**Added**
+- OpenCode Go subscription usage now appears in the usage panel and next to the conversation assistant badge: Roster reads the existing `opencode-go` key from OpenCode's own `auth.json` and calls the official `GET /zen/go/v1/usage` endpoint for 5-hour, weekly and monthly percentages with reset times. Custom `opencode-go` gateways are skipped; the key only ever goes to the official host, and no conversation or model request is created.
+
 **Fixed**
 - Project memory now runs automatically in conversation mode: a compact status replaces the management dialog, successful substantive turns record bounded source-labelled progress excerpts, and subsequent requests reuse recent progress. Curated topics remain untouched; editing/recovery stay optional in Developer mode.
 - Added project shared memory to both workspaces with one migrated preference, bounded reference injection/read receipts for ordinary conversations, and a confirmed Markdown editor with conflict checks and recoverable history. Existing off choices remain off; new projects default on. CLI security flags are unchanged, inbox/private memories are not automatically merged, and custom slash commands retain their native semantics.
@@ -26,6 +29,9 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Model/effort probes and login-shell command resolution no longer set `RLIMIT_FSIZE` on the child. OpenCode and MiMo Code embed a growing SQLite database whose checkpoint was SIGXFSZ-killed at any realistic ceiling, which left the OpenCode model picker silently empty. A size watchdog on the probe's own bounded output file still reaps runaway processes without capping the CLI's unrelated file writes.
 
 ### 中文
+
+**新增**
+- 用量面板与对话助手徽标新增 OpenCode Go 订阅用量：读取 OpenCode 自己 `auth.json` 里的 `opencode-go` key，调用官方 `GET /zen/go/v1/usage` 拿 5 小时 / 周 / 月三档百分比与重置时间。`opencode-go` 配了自定义网关时跳过；key 只发官方地址，也不创建对话或发送模型请求。
 
 **修复**
 - 会话模式的项目记忆改为后台自动运行：只显示简短状态，正常结束且有实质进度的对话自动记录有来源标记的摘录，下次请求自动读取近期进度。人工专题不自动覆盖，编辑/恢复仅作为开发模式的可选高级操作。

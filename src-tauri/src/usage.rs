@@ -1665,6 +1665,272 @@ pub fn fetch_grok_usage(force_refresh: bool) -> GrokUsage {
     }
 }
 
+// ============================================================================
+// OpenCode Go 用量
+//
+// OpenCode Go 订阅在官方网关有 GET /zen/go/v1/usage：用 auth.json 里
+// opencode-go 的 API key 认证，返回 rolling（5 小时）/ weekly / monthly 的
+// 百分比与重置时间。Roster 只读 key 发这一个查询，不创建会话也不发模型请求；
+// 配置把 opencode-go 指到非官方地址时直接跳过，不向第三方探测或发 key。
+// ============================================================================
+
+const OPENCODE_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
+const OPENCODE_OFFICIAL_BASE: &str = "https://opencode.ai/";
+const OPENCODE_FAIL_KEY: &str = "opencode";
+const OPENCODE_CACHE_NAME: &str = "opencode-usage.json";
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeUsage {
+    pub ok: bool,
+    pub error: Option<String>,
+    pub stale: bool,
+    #[serde(default)]
+    pub age_secs: u64,
+    pub windows: Vec<LimitWindow>,
+}
+
+fn opencode_data_dir() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        let path = PathBuf::from(xdg);
+        if !path.as_os_str().is_empty() {
+            return Some(path.join("opencode"));
+        }
+    }
+    dirs::home_dir().map(|home| home.join(".local").join("share").join("opencode"))
+}
+
+fn opencode_config_path() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        let path = PathBuf::from(xdg);
+        if !path.as_os_str().is_empty() {
+            return Some(path.join("opencode").join("opencode.json"));
+        }
+    }
+    dirs::home_dir().map(|home| home.join(".config").join("opencode").join("opencode.json"))
+}
+
+/// 用户在 opencode.json 里给 opencode-go 配了自定义网关时，官方用量接口不再代表
+/// 那家的额度；跳过查询，也不把 key 发往第三方。
+fn opencode_go_base_is_official_at(config_path: Option<&Path>) -> bool {
+    let Some(path) = config_path else {
+        return true;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return true;
+    };
+    let Ok(config) = serde_json::from_str::<Value>(&text) else {
+        return true;
+    };
+    let base = config
+        .get("provider")
+        .and_then(|providers| providers.get("opencode-go"))
+        .and_then(|provider| provider.get("options"))
+        .and_then(|options| options.get("baseURL"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .trim_end_matches('/');
+    base.is_empty() || base == "https://opencode.ai" || base.starts_with(OPENCODE_OFFICIAL_BASE)
+}
+
+fn read_opencode_go_key_at(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|_| {
+        "未找到 OpenCode Go 登录凭据（先在 OpenCode 里登录 OpenCode Go）".to_string()
+    })?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|_| "OpenCode 凭据文件无法解析".to_string())?;
+    value
+        .get("opencode-go")
+        .and_then(|entry| entry.get("key"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            "未找到 OpenCode Go 登录凭据（先在 OpenCode 里登录 OpenCode Go）".to_string()
+        })
+        .and_then(|key| {
+            // key 会插进 curl 的 -K 配置：带引号/反斜杠/控制字符会破坏格式，
+            // 与其让 curl 报一句看不懂的错，不如在这里直接拒绝。
+            if key
+                .chars()
+                .any(|ch| ch.is_control() || ch == '"' || ch == '\\')
+            {
+                Err("OpenCode Go 凭据格式异常，请在 OpenCode 里重新登录".to_string())
+            } else {
+                Ok(key)
+            }
+        })
+}
+
+/// key 走 curl 的 stdin 配置（-K -），不进 argv（避免 ps 泄露）。
+fn fetch_opencode_usage_raw(key: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let bin = curl_bin();
+    let mut child = std::process::Command::new(bin)
+        .args([
+            "-sS",
+            "--max-time",
+            "15",
+            "-w",
+            "\n%{http_code}",
+            "-K",
+            "-",
+            OPENCODE_USAGE_URL,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 curl 失败（{bin}）：{e}"))?;
+    {
+        let mut stdin = child.stdin.take().ok_or("无法写入 curl stdin")?;
+        // 官方要求非泛化的 user-agent；Roster 以自己的身份请求。
+        let cfg = format!(
+            "header = \"Authorization: Bearer {key}\"\nheader = \"user-agent: Roster/{}\"\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        stdin
+            .write_all(cfg.as_bytes())
+            .map_err(|e| format!("写 curl 配置失败：{e}"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("等待 curl 失败：{e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        return Err(format!(
+            "curl 失败（exit {:?}）：{}",
+            out.status.code(),
+            stderr.trim()
+        ));
+    }
+    let (body, code) = match stdout.rsplit_once('\n') {
+        Some((b, c)) => (b.to_string(), c.trim().to_string()),
+        None => (stdout.clone(), String::new()),
+    };
+    if code != "200" {
+        let snippet: String = body.trim().chars().take(200).collect();
+        return Err(format!("HTTP {code}：{snippet}"));
+    }
+    Ok(body)
+}
+
+fn parse_opencode_usage(json: &str) -> Result<OpencodeUsage, String> {
+    let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let usage = value
+        .get("usage")
+        .ok_or_else(|| "OpenCode 用量接口返回异常".to_string())?;
+    let mut windows = Vec::new();
+    for (key, label) in [
+        ("rolling", "5 小时窗口"),
+        ("weekly", "7 天窗口"),
+        ("monthly", "30 天窗口"),
+    ] {
+        let Some(entry) = usage.get(key) else {
+            continue;
+        };
+        let Some(percent) = json_number(entry.get("percent")) else {
+            continue;
+        };
+        windows.push(LimitWindow {
+            label: label.to_string(),
+            utilization: percent,
+            resets_at: entry
+                .get("resetsAt")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        });
+    }
+    if windows.is_empty() {
+        return Err("OpenCode 用量数据缺少有效窗口".to_string());
+    }
+    Ok(OpencodeUsage {
+        ok: true,
+        error: None,
+        stale: false,
+        age_secs: 0,
+        windows,
+    })
+}
+
+fn opencode_cache_path() -> PathBuf {
+    cache_file(OPENCODE_CACHE_NAME)
+}
+
+fn read_opencode_cache_with_age() -> Option<(OpencodeUsage, u64)> {
+    let text = std::fs::read_to_string(opencode_cache_path()).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let ts = value.get("ts").and_then(Value::as_u64)?;
+    let data: OpencodeUsage = serde_json::from_value(value.get("data")?.clone()).ok()?;
+    Some((data, now_ms().saturating_sub(ts)))
+}
+
+fn opencode_error_or_cached(error: String) -> OpencodeUsage {
+    if let Some((mut cached, age)) = read_opencode_cache_with_age() {
+        cached.stale = true;
+        cached.age_secs = age / 1000;
+        cached.error = Some(error);
+        return cached;
+    }
+    OpencodeUsage {
+        ok: false,
+        error: Some(error),
+        ..Default::default()
+    }
+}
+
+pub fn fetch_opencode_usage(force_refresh: bool) -> OpencodeUsage {
+    if !opencode_go_base_is_official_at(opencode_config_path().as_deref()) {
+        return OpencodeUsage {
+            ok: false,
+            error: Some("opencode-go 配的是自定义网关，未调用官方用量接口".to_string()),
+            ..Default::default()
+        };
+    }
+    if let Some((mut cached, age)) = read_opencode_cache_with_age() {
+        if may_use_fresh_cache(force_refresh, age, cached.ok) {
+            cached.stale = false;
+            cached.age_secs = age / 1000;
+            return cached;
+        }
+    }
+    if let Some(error) = recent_failure(OPENCODE_FAIL_KEY) {
+        return opencode_error_or_cached(error);
+    }
+    let auth_path = opencode_data_dir()
+        .map(|dir| dir.join("auth.json"))
+        .ok_or_else(|| "找不到用户目录".to_string());
+    match auth_path
+        .and_then(|path| read_opencode_go_key_at(&path))
+        .and_then(|key| fetch_opencode_usage_raw(&key))
+        .and_then(|json| parse_opencode_usage(&json))
+    {
+        Ok(mut usage) => {
+            usage.stale = false;
+            usage.age_secs = 0;
+            let summary = usage
+                .windows
+                .iter()
+                .map(|window| format!("{} {}%", window.label, window.utilization.round() as i64))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            crate::log_info!("opencode 用量刷新：{summary}");
+            cache_write(&opencode_cache_path(), &usage);
+            usage
+        }
+        Err(error) => {
+            crate::log_warn!("opencode 用量刷新失败：{error}");
+            record_failure(OPENCODE_FAIL_KEY, &error);
+            opencode_error_or_cached(error)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1989,6 +2255,27 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "人工核对用：需要本机已在 OpenCode 登录 OpenCode Go"]
+    fn probe_local_opencode_usage_without_exposing_the_key() {
+        let usage = fetch_opencode_usage(true);
+        assert!(usage.ok, "OpenCode 用量探针失败：{:?}", usage.error);
+        assert!(!usage.windows.is_empty(), "OpenCode 没有返回任何用量窗口");
+        assert!(usage.windows.iter().all(|window| {
+            window.utilization.is_finite()
+                && (0.0..=100.0).contains(&window.utilization)
+                && !window.label.is_empty()
+        }));
+        // 只打印百分比，不带 key、不带账号信息。
+        let summary = usage
+            .windows
+            .iter()
+            .map(|window| format!("{} {}%", window.label, window.utilization.round()))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        eprintln!("opencode usage probe: {summary}");
+    }
+
+    #[test]
     fn parses_pushed_rate_limits_with_only_a_weekly_window() {
         // 本机实测 `account/rateLimits/updated` 推来的真实形状：secondary 为
         // null，只有一个 10080 分钟的窗口，resetsAt 是 Unix 秒。
@@ -2167,5 +2454,93 @@ mod tests {
         let result = serde_json::json!({ "rateLimits": null });
         let err = parse_codex_usage(&result).expect_err("应失败");
         assert!(err.contains("没有套餐限流数据"));
+    }
+
+    #[test]
+    fn opencode_usage_parses_rolling_weekly_monthly() {
+        // 抓自官方 GET /zen/go/v1/usage 的真实形状。
+        let raw = r#"{"usage":{"rolling":{"status":"ok","percent":9,"resetsAt":"2026-09-11T06:00:27.241Z"},"weekly":{"status":"ok","percent":4,"resetsAt":"2026-09-14T00:00:00.241Z"},"monthly":{"status":"ok","percent":2,"resetsAt":"2026-10-10T13:57:28.241Z"}}}"#;
+        let usage = parse_opencode_usage(raw).expect("应解析成功");
+        assert!(usage.ok);
+        assert_eq!(usage.windows.len(), 3);
+        assert_eq!(usage.windows[0].label, "5 小时窗口");
+        assert!((usage.windows[0].utilization - 9.0).abs() < 1e-9);
+        assert_eq!(usage.windows[0].resets_at, "2026-09-11T06:00:27.241Z");
+        assert_eq!(usage.windows[1].label, "7 天窗口");
+        assert_eq!(usage.windows[2].label, "30 天窗口");
+    }
+
+    #[test]
+    fn opencode_usage_rejects_payloads_without_windows() {
+        assert!(parse_opencode_usage("{}").is_err());
+        assert!(parse_opencode_usage(r#"{"usage":{}}"#).is_err());
+        assert!(parse_opencode_usage(r#"{"usage":{"rolling":{}}}"#).is_err());
+    }
+
+    #[test]
+    fn opencode_go_key_is_read_from_auth_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(
+            &path,
+            r#"{"opencode-go":{"type":"api","key":"sk-test-key"}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_opencode_go_key_at(&path).unwrap(), "sk-test-key");
+
+        std::fs::write(&path, r#"{"opencode-go":{"type":"oauth"}}"#).unwrap();
+        assert!(read_opencode_go_key_at(&path).is_err());
+        assert!(read_opencode_go_key_at(&dir.path().join("missing.json")).is_err());
+
+        // 会破坏 curl -K 配置的 key 直接拒绝，并给出可操作的错误。
+        std::fs::write(&path, r#"{"opencode-go":{"type":"api","key":"sk-a\"b"}}"#).unwrap();
+        let error = read_opencode_go_key_at(&path).expect_err("带引号的 key 应被拒绝");
+        assert!(error.contains("凭据格式异常"));
+    }
+
+    #[test]
+    fn opencode_custom_gateway_skips_the_official_usage_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        };
+        for official in [
+            "https://opencode.ai/zen/go/v1",
+            "https://opencode.ai",
+            "https://opencode.ai/",
+        ] {
+            let path = write(
+                "official.json",
+                &format!(
+                    r#"{{"provider":{{"opencode-go":{{"options":{{"baseURL":"{official}"}}}}}}}}"#
+                ),
+            );
+            assert!(
+                opencode_go_base_is_official_at(Some(&path)),
+                "{official} 应视为官方地址"
+            );
+        }
+
+        let custom = write(
+            "custom.json",
+            r#"{"provider":{"opencode-go":{"options":{"baseURL":"https://example.com/v1"}}}}"#,
+        );
+        assert!(!opencode_go_base_is_official_at(Some(&custom)));
+        let lookalike = write(
+            "lookalike.json",
+            r#"{"provider":{"opencode-go":{"options":{"baseURL":"https://opencode.ai.evil.example/v1"}}}}"#,
+        );
+        assert!(
+            !opencode_go_base_is_official_at(Some(&lookalike)),
+            "相似域名不能当官方地址"
+        );
+
+        // 没有配置文件、没有 opencode-go、没有 baseURL 时都按官方处理。
+        assert!(opencode_go_base_is_official_at(None));
+        let empty = dir.path().join("empty.json");
+        std::fs::write(&empty, "{}").unwrap();
+        assert!(opencode_go_base_is_official_at(Some(&empty)));
     }
 }

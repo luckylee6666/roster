@@ -3312,11 +3312,22 @@ async fn grok_usage(force: Option<bool>) -> Result<usage::GrokUsage, String> {
         .map_err(|e| e.to_string())
 }
 
+/// OpenCode Go 订阅用量：读 OpenCode 自己的 auth.json 取 key，调用官方
+/// `/zen/go/v1/usage` 拿 5 小时/周/月三档百分比；不创建会话、不发模型请求。
+#[tauri::command]
+async fn opencode_usage(force: Option<bool>) -> Result<usage::OpencodeUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        usage::fetch_opencode_usage(force.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// 返回当前平台具备用量后端能力的来源。CLI 是否安装由另一条命令负责；Grok
 /// 通过跨平台的官方 ACP 查询，不再依赖 Unix 专属的安全日志读取能力。
 #[tauri::command]
 fn usage_supported_agents() -> Vec<&'static str> {
-    vec!["claude", "codex", "grok"]
+    vec!["claude", "codex", "grok", "opencode"]
 }
 
 /// 在普通用户对话工作台里启动一轮已登记 CLI。项目路径始终从后端保存的项目记录
@@ -3738,6 +3749,7 @@ pub fn run() {
             oauth_usage,
             codex_usage,
             grok_usage,
+            opencode_usage,
             usage_supported_agents,
             conversation_chat_start,
             conversation_slash_list,

@@ -2880,7 +2880,7 @@ function syncUsageTabs({ loadOnChange = false } = {}) {
   if (previous !== usageAgent) setUsageRefreshStatus('idle');
   if (!available.length && $('usage-overlay').classList.contains('active')) {
     body.dataset.checking = 'false';
-    body.innerHTML = '<div class="usage-error">本机没有已安装且支持用量查询的 Claude、Codex 或 Grok</div>';
+    body.innerHTML = '<div class="usage-error">本机没有已安装且支持用量查询的 Claude、Codex、Grok 或 OpenCode</div>';
   } else if (loadOnChange
     && (previous !== usageAgent || body.dataset.checking === 'true')
     && usageAgent

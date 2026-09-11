@@ -14,18 +14,27 @@ import {
   usageResetLabel,
 } from '../src/usage-panel-utils.js';
 
-test('用量面板支持 Claude、Codex 与 Grok，并对未知助手 fail closed', () => {
-  assert.deepEqual(USAGE_AGENTS, ['claude', 'codex', 'grok']);
+test('用量面板支持 Claude、Codex、Grok 与 OpenCode，并对未知助手 fail closed', () => {
+  assert.deepEqual(USAGE_AGENTS, ['claude', 'codex', 'grok', 'opencode']);
   assert.equal(usageCommandForAgent('claude'), 'oauth_usage');
   assert.equal(usageCommandForAgent('codex'), 'codex_usage');
   assert.equal(usageCommandForAgent('grok'), 'grok_usage');
+  assert.equal(usageCommandForAgent('opencode'), 'opencode_usage');
   assert.equal(usageCommandForAgent('unknown'), '');
 });
 
 test('用量标签只保留本机已安装的受支持 CLI', () => {
   assert.deepEqual(usageAgentsForInstalledClis(null), []);
   assert.deepEqual(usageAgentsForInstalledClis([]), []);
-  assert.deepEqual(usageAgentsForInstalledClis(['opencode', 'agy']), []);
+  assert.deepEqual(
+    usageAgentsForInstalledClis(['opencode', 'agy']),
+    ['opencode'],
+  );
+  assert.deepEqual(
+    usageAgentsForInstalledClis(['opencode', 'agy'], ['claude', 'codex']),
+    [],
+    '本机装了但后端没有对应能力时仍要隐藏',
+  );
   assert.deepEqual(usageAgentsForInstalledClis(['grok']), ['grok']);
   assert.deepEqual(
     usageAgentsForInstalledClis(['grok', 'codex', 'grok', 'unknown']),
@@ -86,6 +95,27 @@ test('Grok 载荷复用统一窗口结构', () => {
   assert.deepEqual(windowsFromUsagePayload('grok', {}), []);
   assert.deepEqual(windowsFromUsagePayload('unknown', payload), []);
   assert.equal(conversationUsageSummary('grok', { ok: true, ...payload }), '7 天 18%');
+});
+
+test('OpenCode 载荷复用统一窗口结构，三段都有独立重置时间', () => {
+  const payload = {
+    ok: true,
+    windows: [
+      { label: '5 小时窗口', utilization: 9, resetsAt: '2026-09-11T06:00:27.241Z' },
+      { label: '7 天窗口', utilization: 4, resetsAt: '2026-09-14T00:00:00.241Z' },
+      { label: '30 天窗口', utilization: 2, resetsAt: '2026-10-10T13:57:28.241Z' },
+    ],
+  };
+  assert.deepEqual(windowsFromUsagePayload('opencode', payload), payload.windows);
+  assert.deepEqual(windowsFromUsagePayload('opencode', {}), []);
+  assert.equal(
+    conversationUsageSummary('opencode', payload),
+    '5 小时 9% · 7 天 4% · 30 天 2%',
+  );
+  const state = conversationUsageState('opencode', payload, Date.UTC(2026, 8, 10, 12));
+  assert.equal(state.level, 'ok');
+  assert.equal(state.peak, 9);
+  assert.match(state.reset, /约 18 小时后重置/);
 });
 
 test('Grok 旧快照明确标记且不能冒充实时用满', () => {

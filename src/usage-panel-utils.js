@@ -1,4 +1,4 @@
-export const USAGE_AGENTS = ['claude', 'codex', 'grok'];
+export const USAGE_AGENTS = ['claude', 'codex', 'grok', 'opencode'];
 export const GROK_USAGE_FRESH_MS = 60 * 1000;
 
 export function usageAgentsForInstalledClis(installedIds, supportedIds = USAGE_AGENTS) {
@@ -52,11 +52,12 @@ export function usageCommandForAgent(agent) {
   if (agent === 'claude') return 'oauth_usage';
   if (agent === 'codex') return 'codex_usage';
   if (agent === 'grok') return 'grok_usage';
+  if (agent === 'opencode') return 'opencode_usage';
   return '';
 }
 
 export function windowsFromUsagePayload(agent, payload) {
-  if (agent === 'codex' || agent === 'grok') {
+  if (agent === 'codex' || agent === 'grok' || agent === 'opencode') {
     return Array.isArray(payload?.windows) ? payload.windows : [];
   }
   return agent === 'claude'

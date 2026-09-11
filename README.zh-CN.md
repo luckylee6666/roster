@@ -35,7 +35,7 @@
 - **Prompt 片段库** — 存常用 Prompt/命令；开发模式可管理并注入终端，对话工作台可直接选一条放入输入框，始终不会代替用户发送，数据存于 `snippets.json`
 - **跨 CLI 交接** — 任意一家已登记 CLI 都能把当前项目的最新会话和 Git 现场交给另一家已安装 CLI，例如 Grok 交给 Claude，来源会话保持不动
 - **恢复现场** — 项目卡片历史图标，一张速览接回上次工作：git 概览 + 最近提交 + 改动文件 + CLAUDE.md 摘要 + 上次启动的 CLI；底部一键打开终端 / Claude
-- **限流用量（零 Node）** — 只显示本机已安装且具备对应用量后端能力的 Claude/Codex/Grok 标签。应用启动和窗口重新聚焦时维护安装结果；打开面板直接复用。手动刷新会显示明确状态、重查安装与平台能力，并绕过各家的普通 60 秒缓存。Claude 走官方 `api/oauth/usage`（5 小时 / 7 天）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`；Grok 通过官方本机 `grok agent stdio` 进程查询 `x.ai/billing`，实时返回周/月百分比、重置时间与订阅档位，不创建对话、也不发送模型请求。Roster 不读取 Grok 凭据；只有实时 ACP 查询失败时，macOS/Linux 才会把 CLI 的有界本地 billing 快照作为明确标记的旧数据兜底
+- **限流用量（零 Node）** — 只显示本机已安装且具备对应用量后端能力的 Claude/Codex/Grok/OpenCode 标签。应用启动和窗口重新聚焦时维护安装结果；打开面板直接复用。手动刷新会显示明确状态、重查安装与平台能力，并绕过各家的普通 60 秒缓存。Claude 走官方 `api/oauth/usage`（5 小时 / 7 天）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`；Grok 通过官方本机 `grok agent stdio` 进程查询 `x.ai/billing`，实时返回周/月百分比、重置时间与订阅档位，不创建对话、也不发送模型请求；OpenCode Go 读取 OpenCode 自己 `auth.json` 里的 key，调用官方 `GET /zen/go/v1/usage` 拿 5 小时 / 周 / 月百分比（配了自定义 `opencode-go` 网关时跳过）。Roster 不读取 Grok 凭据；只有实时 ACP 查询失败时，macOS/Linux 才会把 CLI 的有界本地 billing 快照作为明确标记的旧数据兜底
 - **菜单栏托盘** — macOS 菜单栏可打开应用、打开日志或退出，不再显示用量；额度在会话顶栏、紧挨当前助手
 - **终端上下文 %** — Claude 会话标签显示 `NN%` 上下文占用（读启动横幅判窗口大小 + transcript 估算，≥70% 橙、≥90% 红），新会话发话前为 0
 - **扫描导入** — 扫描目录批量导入 git 项目（自动读取 remote、按路径去重）
