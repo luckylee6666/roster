@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.4.1** — real-time Grok usage refresh, conversation history that opens at the latest message, in-conversation file previews with relative links and line navigation, and protection against concurrent app instances overwriting project data. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.5.0** — resident sessions for all seven conversation CLIs, automatic project shared memory, a dedicated Roster Dev build, and OpenCode Go usage, plus restored history images and clearer CLI protocol errors. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 

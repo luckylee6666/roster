@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
-## Unreleased
+## v1.5.0
 
 ### English
 
@@ -27,6 +27,10 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Resident turns distinguish a long model wait from a hang: up to 15 minutes of silence is allowed before any structured output (needed for huge resumes and native `/compress`); after output has started, three minutes without a new line still fails the turn.
 - Qwen’s native `/compress` is listed as a conversation slash command. It is Qwen’s own context summarizer (not Codex `thread/compact/start`) and only runs when chosen; Roster still does not auto-compact any CLI.
 - Model/effort probes and login-shell command resolution no longer set `RLIMIT_FSIZE` on the child. OpenCode and MiMo Code embed a growing SQLite database whose checkpoint was SIGXFSZ-killed at any realistic ceiling, which left the OpenCode model picker silently empty. A size watchdog on the probe's own bounded output file still reaps runaway processes without capping the CLI's unrelated file writes.
+- Conversation history now restores pasted images from OpenCode/MiMo Code sessions (SQLite `file` parts) instead of only showing `[Image N]` placeholders.
+- A saved model or reasoning effort that the CLI no longer lists is dropped on refresh instead of being sent every turn; lists that are only examples (Claude help aliases, OpenCode/MiMo `--variant` examples) are never used to delete manual choices.
+- OpenCode/MiMo Code protocol errors now carry their real message (`error.data.message`); previously MiMo could finish as a silent empty reply and OpenCode reported a misleading “check that the CLI is installed and logged in”.
+- Hover actions under a message (copy / ask again) keep a 6px gap from the bubble and stay reachable while the pointer travels to them.
 
 ### 中文
 
@@ -51,6 +55,10 @@ All notable changes to this project are documented here. 本项目的更新记�
 - 常驻对话把「还在等模型」和「已经开始输出却卡住」分开：还没有任何结构化输出时最多等 15 分钟（超长续接和 `/compress` 需要），一旦开始有输出，再空三分钟才失败。
 - Qwen 对话斜杠补上原生 `/compress`（压缩模型上下文）。这不是 Codex 的 `thread/compact/start`，也不会自动执行；选了才跑。
 - 模型/强度列表探测与登录壳命令解析不再给子进程设 `RLIMIT_FSIZE`。OpenCode/MiMo Code 内嵌的 SQLite 库只会越长越大，checkpoint 在任何现实取值下都会被 SIGXFSZ 打死，此前表现为 OpenCode 模型选择框静默为空。现在只对探测自己的有界输出临时文件做大小看门狗，既能收割跑飞输出，也不再误伤 CLI 的其他合法写入。
+- OpenCode/MiMo Code 会话历史里的粘贴图片（SQLite `file` part）现在能恢复显示，不再只剩 `[Image N]` 占位。
+- CLI 目录里不再提供的模型/推理强度会在刷新时丢掉，而不是每轮原样发出；只是示例的列表（Claude help 别名、OpenCode/MiMo `--variant` 示例）不会用来删手打的选择。
+- OpenCode/MiMo Code 协议错误会带上真实原因（`error.data.message`）；此前 MiMo 可能以一轮静默空回复收场，OpenCode 会被误报成「请确认已安装并已登录」。
+- 消息下方的悬停按钮（复制 / 重新提问）与气泡留 6px 间距，且鼠标移过去时保持可点。
 
 ## v1.4.1
 
