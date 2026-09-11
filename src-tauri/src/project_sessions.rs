@@ -2151,12 +2151,18 @@ fn jsonl_handoff_candidates(
         .collect()
 }
 
-fn sqlite_message_candidates_bounded(
+struct SqlitePartGroup {
+    message_id: String,
+    role: String,
+    parts: Vec<serde_json::Value>,
+}
+
+fn sqlite_session_part_groups(
     db_path: &Path,
     cwd: &str,
     session_id: &str,
     part_limit: i64,
-) -> Result<(Vec<SessionHandoffMessage>, bool), String> {
+) -> Result<(Vec<SqlitePartGroup>, bool), String> {
     if part_limit <= 0 {
         return Err("SQLite 会话读取上限必须大于 0".into());
     }
@@ -2216,10 +2222,7 @@ fn sqlite_message_candidates_bounded(
     if truncated {
         rows.remove(0);
     }
-    let mut candidates = Vec::new();
-    let mut current_id = String::new();
-    let mut current_role = String::new();
-    let mut current_parts = Vec::new();
+    let mut groups: Vec<SqlitePartGroup> = Vec::new();
     for (message_id, message_data, part_data) in rows {
         let message = serde_json::from_str::<serde_json::Value>(&message_data).ok();
         let part = serde_json::from_str::<serde_json::Value>(&part_data).ok();
@@ -2228,40 +2231,114 @@ fn sqlite_message_candidates_bounded(
             .and_then(|value| value.get("role"))
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        let part_type = part
-            .as_ref()
-            .and_then(|value| value.get("type"))
-            .and_then(|value| value.as_str());
-        let text = part
-            .as_ref()
-            .filter(|_| part_type == Some("text"))
-            .and_then(|value| value.get("text"))
-            .and_then(|value| value.as_str());
-        if role != "user" && role != "assistant" || text.is_none() {
+        if role != "user" && role != "assistant" {
             continue;
         }
-        if !current_id.is_empty() && current_id != message_id {
-            let text = sanitize_handoff_text(&current_parts.join("\n"));
-            if !(text.is_empty() || current_role == "user" && is_noise_codex_text(&text)) {
-                candidates.push(SessionHandoffMessage {
-                    role: current_role.clone(),
-                    text,
-                });
-            }
-            current_parts.clear();
+        let Some(part) = part else {
+            continue;
+        };
+        match groups.last_mut() {
+            Some(group) if group.message_id == message_id => group.parts.push(part),
+            _ => groups.push(SqlitePartGroup {
+                message_id,
+                role: role.to_string(),
+                parts: vec![part],
+            }),
         }
-        current_id = message_id;
-        current_role = role.to_string();
-        current_parts.push(text.unwrap_or_default().to_string());
     }
-    if !current_id.is_empty() {
-        let text = sanitize_handoff_text(&current_parts.join("\n"));
-        if !(text.is_empty() || current_role == "user" && is_noise_codex_text(&text)) {
-            candidates.push(SessionHandoffMessage {
-                role: current_role,
-                text,
-            });
+    Ok((groups, truncated))
+}
+
+fn sqlite_message_candidates_bounded(
+    db_path: &Path,
+    cwd: &str,
+    session_id: &str,
+    part_limit: i64,
+) -> Result<(Vec<SessionHandoffMessage>, bool), String> {
+    let (groups, truncated) = sqlite_session_part_groups(db_path, cwd, session_id, part_limit)?;
+    let mut candidates = Vec::new();
+    for group in groups {
+        let text = sanitize_handoff_text(
+            &group
+                .parts
+                .iter()
+                .filter(|part| part.get("type").and_then(serde_json::Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        if text.is_empty() || group.role == "user" && is_noise_codex_text(&text) {
+            continue;
         }
+        candidates.push(SessionHandoffMessage {
+            role: group.role,
+            text,
+        });
+    }
+    Ok((candidates, truncated))
+}
+
+fn sqlite_transcript_candidates_bounded(
+    db_path: &Path,
+    cwd: &str,
+    session_id: &str,
+    part_limit: i64,
+) -> Result<(Vec<ConversationTranscriptMessage>, bool), String> {
+    let (groups, truncated) = sqlite_session_part_groups(db_path, cwd, session_id, part_limit)?;
+    let mut remaining_image_bytes = TRANSCRIPT_INLINE_IMAGE_LIMIT;
+    let mut attachment_count = 0usize;
+    let mut candidates = Vec::new();
+    for group in groups {
+        let mut texts = Vec::new();
+        let mut attachments = Vec::new();
+        for part in &group.parts {
+            match part.get("type").and_then(serde_json::Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = part.get("text").and_then(serde_json::Value::as_str) {
+                        texts.push(text.to_string());
+                    }
+                }
+                // 实测 OpenCode/MiMo 把粘贴/拖入的图片写成 type=file 的 data URL
+                // part；正文里只留 [Image N] 占位。这里按 JSONL 路径同一套魔数与
+                // 体积校验恢复图片，占位文本在有图可显示时去掉。
+                Some("file") => {
+                    if attachment_count >= TRANSCRIPT_ATTACHMENT_LIMIT || remaining_image_bytes == 0
+                    {
+                        continue;
+                    }
+                    let Some(data_url) = inline_data_url_from_item(part) else {
+                        continue;
+                    };
+                    let alt = format!("会话图片 {}", attachment_count + 1);
+                    if let Some(attachment) =
+                        inline_image_attachment(&data_url, &alt, &mut remaining_image_bytes)
+                    {
+                        attachments.push(attachment);
+                        attachment_count += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = sanitize_handoff_text(&texts.join("\n"));
+        if !attachments.is_empty() {
+            for index in 1..=attachments.len() {
+                text = text.replace(&format!("[Image {index}]"), "");
+                text = text.replace(&format!("[Image #{index}]"), "");
+            }
+            text = sanitize_handoff_text(&text);
+        }
+        if text.is_empty() && attachments.is_empty() {
+            continue;
+        }
+        if attachments.is_empty() && group.role == "user" && is_noise_codex_text(&text) {
+            continue;
+        }
+        candidates.push(ConversationTranscriptMessage {
+            role: group.role,
+            text,
+            attachments,
+        });
     }
     Ok((candidates, truncated))
 }
@@ -2395,19 +2472,6 @@ fn source_handoff_messages(
     Ok(limit_handoff_messages(candidates, source_truncated))
 }
 
-fn transcript_from_text_messages(
-    messages: Vec<SessionHandoffMessage>,
-) -> Vec<ConversationTranscriptMessage> {
-    messages
-        .into_iter()
-        .map(|message| ConversationTranscriptMessage {
-            role: message.role,
-            text: message.text,
-            attachments: Vec::new(),
-        })
-        .collect()
-}
-
 fn source_transcript_messages(
     home: &Path,
     cwd: &str,
@@ -2499,14 +2563,14 @@ fn source_transcript_messages(
         "opencode" => {
             let db = find_opencode_db(home).ok_or_else(|| "找不到 OpenCode 会话库".to_string())?;
             let (messages, truncated) =
-                sqlite_message_candidates_bounded(&db, cwd, session_id, 4000)?;
-            (transcript_from_text_messages(messages), truncated)
+                sqlite_transcript_candidates_bounded(&db, cwd, session_id, 4000)?;
+            (messages, truncated)
         }
         "mimo" => {
             let db = find_mimo_db(home).ok_or_else(|| "找不到 MiMo Code 会话库".to_string())?;
             let (messages, truncated) =
-                sqlite_message_candidates_bounded(&db, cwd, session_id, 4000)?;
-            (transcript_from_text_messages(messages), truncated)
+                sqlite_transcript_candidates_bounded(&db, cwd, session_id, 4000)?;
+            (messages, truncated)
         }
         _ => return Err("还不支持读取这个工具的历史对话".into()),
     };
@@ -2840,6 +2904,91 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "assistant");
         assert_eq!(messages[0].text, "还需要补失败回滚");
+    }
+
+    #[test]
+    fn sqlite_transcript_restores_opencode_file_part_images() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        let cwd = "/Users/lucky/git/sqlite-images";
+        let session_id = "sqlite-images-main";
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    directory TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    time_updated INTEGER NOT NULL
+                 );
+                 CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                 );
+                 CREATE TABLE part (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session (id, parent_id, directory, title, time_updated)
+                 VALUES (?1, NULL, ?2, '图片会话', 300)",
+                rusqlite::params![session_id, cwd],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, data)
+                 VALUES ('msg-user', ?1, '{\"role\":\"user\"}'),
+                        ('msg-image-only', ?1, '{\"role\":\"user\"}'),
+                        ('msg-assistant', ?1, '{\"role\":\"assistant\"}')",
+                rusqlite::params![session_id],
+            )
+            .unwrap();
+        // 抓自本机真实 OpenCode 会话的 part 形状：粘贴图片是 type=file 的
+        // data URL，正文里留的是 [Image N] 占位（不是 [Image #N]）。
+        let file_part = serde_json::json!({
+            "type": "file",
+            "mime": "image/png",
+            "filename": "clipboard",
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        })
+        .to_string();
+        connection
+            .execute(
+                "INSERT INTO part (id, message_id, session_id, data)
+                 VALUES ('p1', 'msg-user', ?1, '{\"type\":\"text\",\"text\":\"[Image 1] 修复下这个问题\"}'),
+                        ('p2', 'msg-user', ?1, ?2),
+                        ('p3', 'msg-image-only', ?1, ?2),
+                        ('p4', 'msg-assistant', ?1, '{\"type\":\"text\",\"text\":\"修好了\"}')",
+                rusqlite::params![session_id, file_part],
+            )
+            .unwrap();
+
+        let (messages, truncated) =
+            sqlite_transcript_candidates_bounded(&db, cwd, session_id, 100).unwrap();
+
+        assert!(!truncated);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(
+            messages[0].text, "修复下这个问题",
+            "有图时去掉 [Image N] 占位"
+        );
+        assert_eq!(messages[0].attachments.len(), 1);
+        assert_eq!(messages[0].attachments[0].mime_type, "image/png");
+        assert!(messages[0].attachments[0]
+            .data_url
+            .starts_with("data:image/png;base64,"));
+        assert_eq!(messages[1].text, "", "只有图片的消息也必须保留");
+        assert_eq!(messages[1].attachments.len(), 1);
+        assert_eq!(messages[2].text, "修好了");
     }
 
     #[test]
