@@ -503,9 +503,20 @@ fn parse_opencode_line(value: &Value) -> ParsedLine {
             parsed.activities.push(tool_activity(id, "tool", status));
         }
         "error" => {
-            parsed.error = first_string(value, &["/message", "/error/message", "/error"])
-                .filter(|text| !text.is_empty())
-                .map(|text| bounded_utf8(text, 2_000));
+            // 实测的 OpenCode/MiMo 形状是 error.data.message（外面还有 name/ref）。
+            // 只找 /error/message 会取不到：MiMo 的 exit 0 会让这一轮变成静默的
+            // 空回复，OpenCode 的 exit 1 会退化成误导的"请确认已安装并已登录"。
+            parsed.error = first_string(
+                value,
+                &[
+                    "/error/data/message",
+                    "/error/message",
+                    "/message",
+                    "/error",
+                ],
+            )
+            .filter(|text| !text.is_empty())
+            .map(|text| bounded_utf8(text, 2_000));
         }
         _ => {}
     }
@@ -2774,6 +2785,60 @@ mod tests {
             }
         }));
         assert!(qwen_subagent.assistant_delta.is_none());
+    }
+
+    #[test]
+    fn opencode_and_mimo_error_events_carry_their_message() {
+        // 实测形状（两家当前版本）：坏模型/服务端错误是一条 type=error 的事件，
+        // 消息在 error.data.message。取不到就会让 MiMo 的 exit 0 错误变成一轮
+        // 静默空回复，OpenCode 的 exit 1 错误退化成"请确认 CLI 已安装并已登录"。
+        let mimo = parse_opencode_line(&json!({
+            "type": "error",
+            "timestamp": 1789090318594_i64,
+            "sessionID": "ses_-ffe5f71e83887ffemKz4owRzB",
+            "error": {
+                "name": "UnknownError",
+                "data": { "message": "Model not found: xiaomi/mimo-flash." }
+            }
+        }));
+        assert_eq!(
+            mimo.error.as_deref(),
+            Some("Model not found: xiaomi/mimo-flash.")
+        );
+
+        let opencode = parse_opencode_line(&json!({
+            "type": "error",
+            "timestamp": 1789090827264_i64,
+            "sessionID": "ses_f71e07529fferbMgvoRQ87Z9hf",
+            "error": {
+                "name": "UnknownError",
+                "data": {
+                    "message": "Unexpected server error. Check server logs for details.",
+                    "ref": "err_714d82b4"
+                }
+            }
+        }));
+        assert_eq!(
+            opencode.error.as_deref(),
+            Some("Unexpected server error. Check server logs for details.")
+        );
+
+        // 旧形状不能回归：error 直接是字符串、error.message 或顶层 message。
+        let legacy_string = parse_opencode_line(&json!({
+            "type": "error",
+            "error": "旧的字符串错误"
+        }));
+        assert_eq!(legacy_string.error.as_deref(), Some("旧的字符串错误"));
+        let legacy_nested = parse_opencode_line(&json!({
+            "type": "error",
+            "error": { "message": "旧的两层错误" }
+        }));
+        assert_eq!(legacy_nested.error.as_deref(), Some("旧的两层错误"));
+        let legacy_top = parse_opencode_line(&json!({
+            "type": "error",
+            "message": "旧的顶层错误"
+        }));
+        assert_eq!(legacy_top.error.as_deref(), Some("旧的顶层错误"));
     }
 
     #[test]
