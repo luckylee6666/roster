@@ -1679,6 +1679,10 @@ const OPENCODE_OFFICIAL_BASE: &str = "https://opencode.ai/";
 const OPENCODE_FAIL_KEY: &str = "opencode";
 const OPENCODE_CACHE_NAME: &str = "opencode-usage.json";
 
+/// 和 Codex/Grok 一样单飞：并发刷新只跑一次，缓存临时文件也不会被两个写者
+/// 重叠 rename。
+static OPENCODE_GATE: Mutex<()> = Mutex::new(());
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OpencodeUsage {
@@ -1700,38 +1704,143 @@ fn opencode_data_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".local").join("share").join("opencode"))
 }
 
-fn opencode_config_path() -> Option<PathBuf> {
+fn opencode_config_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         let path = PathBuf::from(xdg);
         if !path.as_os_str().is_empty() {
-            return Some(path.join("opencode").join("opencode.json"));
+            dirs.push(path.join("opencode"));
         }
     }
-    dirs::home_dir().map(|home| home.join(".config").join("opencode").join("opencode.json"))
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".config").join("opencode");
+        if !dirs.contains(&path) {
+            dirs.push(path);
+        }
+    }
+    dirs
 }
 
-/// 用户在 opencode.json 里给 opencode-go 配了自定义网关时，官方用量接口不再代表
-/// 那家的额度；跳过查询，也不把 key 发往第三方。
-fn opencode_go_base_is_official_at(config_path: Option<&Path>) -> bool {
-    let Some(path) = config_path else {
-        return true;
-    };
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return true;
-    };
-    let Ok(config) = serde_json::from_str::<Value>(&text) else {
-        return true;
-    };
-    let base = config
+/// OpenCode 支持 opencode.json / opencode.jsonc，也能用 `OPENCODE_CONFIG`
+/// 指定配置文件；只看一个 json 会把带注释或自定义路径的配置漏掉，误把
+/// 自定义网关当成官方地址。
+fn opencode_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(custom) = std::env::var_os("OPENCODE_CONFIG") {
+        let path = PathBuf::from(custom);
+        if !path.as_os_str().is_empty() {
+            paths.push(path);
+        }
+    }
+    for dir in opencode_config_dirs() {
+        for name in ["opencode.json", "opencode.jsonc"] {
+            let path = dir.join(name);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+/// JSONC 的 `//`、`/* */` 注释要剥掉，但字符串里的斜杠不能动。
+fn strip_jsonc_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            out.push(ch);
+            continue;
+        }
+        if ch == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut star = false;
+                    for next in chars.by_ref() {
+                        if star && next == '/' {
+                            break;
+                        }
+                        star = next == '*';
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn opencode_go_base_from_config(config: &Value) -> Option<String> {
+    config
         .get("provider")
         .and_then(|providers| providers.get("opencode-go"))
         .and_then(|provider| provider.get("options"))
         .and_then(|options| options.get("baseURL"))
         .and_then(Value::as_str)
         .map(str::trim)
-        .unwrap_or("")
-        .trim_end_matches('/');
-    base.is_empty() || base == "https://opencode.ai" || base.starts_with(OPENCODE_OFFICIAL_BASE)
+        .filter(|base| !base.is_empty())
+        .map(|base| base.trim_end_matches('/').to_string())
+}
+
+fn opencode_base_is_official(base: &str) -> bool {
+    base == "https://opencode.ai" || base.starts_with(OPENCODE_OFFICIAL_BASE)
+}
+
+/// 用户在配置里给 opencode-go 配了自定义网关时，官方用量接口不再代表那家的
+/// 额度；跳过查询，也不把 key 发往第三方。配置文件存在但解析不了时保守跳过：
+/// 宁可少显示，也不把别家的额度当成官方的。
+fn opencode_usage_gate_for(paths: &[PathBuf]) -> Result<(), String> {
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Err("无法读取 OpenCode 配置，未调用官方用量接口".to_string());
+        };
+        let parsed = serde_json::from_str::<Value>(&text)
+            .ok()
+            .or_else(|| serde_json::from_str::<Value>(&strip_jsonc_comments(&text)).ok());
+        let Some(config) = parsed else {
+            return Err("无法解析 OpenCode 配置，未调用官方用量接口".to_string());
+        };
+        if let Some(base) = opencode_go_base_from_config(&config) {
+            if !opencode_base_is_official(&base) {
+                return Err("opencode-go 配的是自定义网关，未调用官方用量接口".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn opencode_usage_gate() -> Result<(), String> {
+    opencode_usage_gate_for(&opencode_config_paths())
 }
 
 fn read_opencode_go_key_at(path: &Path) -> Result<String, String> {
@@ -1769,7 +1878,8 @@ fn fetch_opencode_usage_raw(key: &str) -> Result<String, String> {
     use std::io::Write;
     use std::process::Stdio;
     let bin = curl_bin();
-    let mut child = std::process::Command::new(bin)
+    let mut command = std::process::Command::new(bin);
+    command
         .args([
             "-sS",
             "--max-time",
@@ -1782,7 +1892,10 @@ fn fetch_opencode_usage_raw(key: &str) -> Result<String, String> {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // 和 CLI 子进程用同一套代理设置，避免"终端能联网、用量查询不能"。
+    crate::proxy_settings::apply_to_std_command(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|e| format!("启动 curl 失败（{bin}）：{e}"))?;
     {
@@ -1833,6 +1946,14 @@ fn parse_opencode_usage(json: &str) -> Result<OpencodeUsage, String> {
         let Some(entry) = usage.get(key) else {
             continue;
         };
+        // 非 ok 的窗口可能是"查询异常/已超限"的占位数据，别把 0% 当"额度充足"。
+        if entry
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status != "ok")
+        {
+            continue;
+        }
         let Some(percent) = json_number(entry.get("percent")) else {
             continue;
         };
@@ -1885,10 +2006,13 @@ fn opencode_error_or_cached(error: String) -> OpencodeUsage {
 }
 
 pub fn fetch_opencode_usage(force_refresh: bool) -> OpencodeUsage {
-    if !opencode_go_base_is_official_at(opencode_config_path().as_deref()) {
+    let _guard = OPENCODE_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Err(error) = opencode_usage_gate() {
         return OpencodeUsage {
             ok: false,
-            error: Some("opencode-go 配的是自定义网关，未调用官方用量接口".to_string()),
+            error: Some(error),
             ..Default::default()
         };
     }
@@ -2518,7 +2642,7 @@ mod tests {
                 ),
             );
             assert!(
-                opencode_go_base_is_official_at(Some(&path)),
+                opencode_usage_gate_for(&[path]).is_ok(),
                 "{official} 应视为官方地址"
             );
         }
@@ -2527,20 +2651,48 @@ mod tests {
             "custom.json",
             r#"{"provider":{"opencode-go":{"options":{"baseURL":"https://example.com/v1"}}}}"#,
         );
-        assert!(!opencode_go_base_is_official_at(Some(&custom)));
+        let error = opencode_usage_gate_for(&[custom]).expect_err("自定义网关要跳过");
+        assert!(error.contains("自定义网关"));
         let lookalike = write(
             "lookalike.json",
             r#"{"provider":{"opencode-go":{"options":{"baseURL":"https://opencode.ai.evil.example/v1"}}}}"#,
         );
         assert!(
-            !opencode_go_base_is_official_at(Some(&lookalike)),
+            opencode_usage_gate_for(&[lookalike]).is_err(),
             "相似域名不能当官方地址"
         );
 
-        // 没有配置文件、没有 opencode-go、没有 baseURL 时都按官方处理。
-        assert!(opencode_go_base_is_official_at(None));
-        let empty = dir.path().join("empty.json");
-        std::fs::write(&empty, "{}").unwrap();
-        assert!(opencode_go_base_is_official_at(Some(&empty)));
+        // JSONC 带注释也要能识别（自定义 → 跳过；官方 → 放行）。
+        let custom_jsonc = write(
+            "opencode.jsonc",
+            "{\n  // 注释里有 https://opencode.ai/ 干扰\n  \"provider\": {\"opencode-go\": {\"options\": {\"baseURL\": \"https://example.com/v1\"}}}\n}",
+        );
+        assert!(opencode_usage_gate_for(&[custom_jsonc]).is_err());
+        let official_jsonc = write(
+            "ok.jsonc",
+            "{\n  /* 官方 */\n  \"provider\": {\"opencode-go\": {\"options\": {\"baseURL\": \"https://opencode.ai/zen/go/v1\"}}}\n}",
+        );
+        assert!(opencode_usage_gate_for(&[official_jsonc]).is_ok());
+
+        // 存在但解析不了：保守跳过，而不是按官方继续查。
+        let broken = write("broken.json", "{ not json ");
+        let error = opencode_usage_gate_for(&[broken]).expect_err("解析不了要保守跳过");
+        assert!(error.contains("无法解析"));
+        // 不存在的路径直接忽略；没有 opencode-go / baseURL 都按官方处理。
+        assert!(opencode_usage_gate_for(&[dir.path().join("missing.json")]).is_ok());
+        let empty = write("empty.json", "{}");
+        assert!(opencode_usage_gate_for(&[empty]).is_ok());
+    }
+
+    #[test]
+    fn opencode_usage_skips_non_ok_windows() {
+        let raw = r#"{"usage":{"rolling":{"status":"exceeded","percent":0},"weekly":{"status":"ok","percent":4,"resetsAt":"2026-09-14T00:00:00.241Z"}}}"#;
+        let usage = parse_opencode_usage(raw).expect("还有 ok 窗口就该成功");
+        assert_eq!(usage.windows.len(), 1);
+        assert_eq!(usage.windows[0].label, "7 天窗口");
+        assert!(
+            parse_opencode_usage(r#"{"usage":{"rolling":{"status":"exceeded","percent":0}}}"#)
+                .is_err()
+        );
     }
 }
