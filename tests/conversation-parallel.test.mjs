@@ -1661,6 +1661,45 @@ test('模型和推理强度带助手归属，换助手时不会把上一家的�
   assert.deepEqual(fx.tuningRows(), ['mode'], 'Claude 这边确实没有模型列表');
 });
 
+test('CLI 目录里没有的模型/强度会被丢掉，不再每轮带着它去撞 Model not found', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'codex'], t });
+  await flush();
+  fx.setSlashLists({
+    models: [{ id: 'claude-opus-5', label: 'Claude Opus 5', efforts: ['low', 'high'] }],
+    efforts: [{ id: 'high', label: 'high' }],
+  });
+  fx.pickAssistant('codex');
+  await flush();
+  fx.pickTuning('model', 'claude-opus-5');
+  fx.pickTuning('effort', 'high');
+  assert.match(fx.el('conversation-tuning-summary').textContent, /claude-opus-5/);
+
+  // CLI 升级/换目录后，这个模型和强度已经不在它的列表里了。
+  fx.setSlashLists({
+    models: [{ id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', efforts: ['low'] }],
+    efforts: [{ id: 'low', label: 'low' }],
+  });
+  fx.pickAssistant('claude');
+  await flush();
+  fx.pickAssistant('codex');
+  await flush();
+  const summary = fx.el('conversation-tuning-summary').textContent;
+  assert.doesNotMatch(summary, /claude-opus-5/, '失效的模型不能继续挂在摘要上');
+  assert.doesNotMatch(summary, /· high/, '失效的强度也不能继续挂着');
+
+  // 仍然有效的选择不能被误删：选一个还在列表里的模型再刷新一次。
+  fx.pickTuning('model', 'gpt-5.6-luna');
+  fx.pickAssistant('claude');
+  await flush();
+  fx.pickAssistant('codex');
+  await flush();
+  assert.match(
+    fx.el('conversation-tuning-summary').textContent,
+    /gpt-5\.6-luna/,
+    '列表里仍有的模型必须保留',
+  );
+});
+
 test('用 /model 换模型，同样丢掉新模型不支持的强度', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex'], t });
   await flush();

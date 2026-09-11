@@ -925,6 +925,11 @@ export function installConversationMode({
       slashEfforts = effortsResult.status === 'fulfilled' && Array.isArray(effortsResult.value?.efforts)
         ? effortsResult.value.efforts
         : [];
+      // 存着的模型/强度这家现在没有了（CLI 升级换过目录、或从别的会话继承来的）
+      // 就丢掉。留着它每一轮都会原样发给 CLI，对方只回一句 "Model not found"，
+      // 用户看到每轮都失败却不知道为什么。模式表早就是这套做法；列表为空
+      // （探测失败）时不能清，免得把有效选择误删。
+      dropStaleTuning(provider.id, slashModels, slashEfforts);
     } catch (_) {
       if (destroyed || revision !== slashRevision) {
         if (revision === slashRevision) slashModelsLoading = false;
@@ -993,6 +998,22 @@ export function installConversationMode({
   // 归属对不上就当没有：宁可少列几项，也不能把上一个助手的模型和命令挂在这家名下。
   function ownsSlashLists() {
     return slashOwner === currentProvider().id;
+  }
+
+  // 列表非空才校验：空列表代表"探测失败或不支持"，不能拿它清掉用户的有效选择。
+  function dropStaleTuning(providerId, models, efforts) {
+    const storedModel = String(providerModels[providerId] || '').trim();
+    if (models.length && storedModel
+      && !models.some(item => String(item?.id || '') === storedModel)) {
+      delete providerModels[providerId];
+      persistProviderModels();
+    }
+    const storedEffort = String(providerEfforts[providerId] || '').trim();
+    if (efforts.length && storedEffort
+      && !efforts.some(item => String(item?.id || '') === storedEffort)) {
+      delete providerEfforts[providerId];
+      persistProviderEfforts();
+    }
   }
 
   function activeSlashModels() {
