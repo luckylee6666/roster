@@ -2291,6 +2291,10 @@ fn sqlite_transcript_candidates_bounded(
     for group in groups {
         let mut texts = Vec::new();
         let mut attachments = Vec::new();
+        // 占位符编号按消息里第几个 file part 数（跳过的也算），只删真正恢复成
+        // 图片的那些；否则一跳过就按重排后的序号删，会删错别的图的占位。
+        let mut file_index = 0usize;
+        let mut attached_indices = Vec::new();
         for part in &group.parts {
             match part.get("type").and_then(serde_json::Value::as_str) {
                 Some("text") => {
@@ -2302,6 +2306,7 @@ fn sqlite_transcript_candidates_bounded(
                 // part；正文里只留 [Image N] 占位。这里按 JSONL 路径同一套魔数与
                 // 体积校验恢复图片，占位文本在有图可显示时去掉。
                 Some("file") => {
+                    file_index += 1;
                     if attachment_count >= TRANSCRIPT_ATTACHMENT_LIMIT || remaining_image_bytes == 0
                     {
                         continue;
@@ -2314,6 +2319,7 @@ fn sqlite_transcript_candidates_bounded(
                         inline_image_attachment(&data_url, &alt, &mut remaining_image_bytes)
                     {
                         attachments.push(attachment);
+                        attached_indices.push(file_index);
                         attachment_count += 1;
                     }
                 }
@@ -2322,9 +2328,13 @@ fn sqlite_transcript_candidates_bounded(
         }
         let mut text = sanitize_handoff_text(&texts.join("\n"));
         if !attachments.is_empty() {
-            for index in 1..=attachments.len() {
-                text = text.replace(&format!("[Image {index}]"), "");
-                text = text.replace(&format!("[Image #{index}]"), "");
+            for index in attached_indices {
+                // 先连尾随空格一起删，免得句子中间留下双空格；空格不匹配时再删裸占位。
+                text = text
+                    .replace(&format!("[Image {index}] "), "")
+                    .replace(&format!("[Image #{index}] "), "")
+                    .replace(&format!("[Image {index}]"), "")
+                    .replace(&format!("[Image #{index}]"), "");
             }
             text = sanitize_handoff_text(&text);
         }
@@ -2947,6 +2957,7 @@ mod tests {
                 "INSERT INTO message (id, session_id, data)
                  VALUES ('msg-user', ?1, '{\"role\":\"user\"}'),
                         ('msg-image-only', ?1, '{\"role\":\"user\"}'),
+                        ('msg-partial', ?1, '{\"role\":\"user\"}'),
                         ('msg-assistant', ?1, '{\"role\":\"assistant\"}')",
                 rusqlite::params![session_id],
             )
@@ -2960,14 +2971,24 @@ mod tests {
             "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
         })
         .to_string();
+        let skipped_file = serde_json::json!({
+            "type": "file",
+            "mime": "application/pdf",
+            "filename": "doc.pdf",
+            "url": "data:application/pdf;base64,JVBERi0="
+        })
+        .to_string();
         connection
             .execute(
                 "INSERT INTO part (id, message_id, session_id, data)
                  VALUES ('p1', 'msg-user', ?1, '{\"type\":\"text\",\"text\":\"[Image 1] 修复下这个问题\"}'),
                         ('p2', 'msg-user', ?1, ?2),
                         ('p3', 'msg-image-only', ?1, ?2),
+                        ('p5', 'msg-partial', ?1, '{\"type\":\"text\",\"text\":\"[Image 1] [Image 2] 部分图片\"}'),
+                        ('p6', 'msg-partial', ?1, ?3),
+                        ('p7', 'msg-partial', ?1, ?2),
                         ('p4', 'msg-assistant', ?1, '{\"type\":\"text\",\"text\":\"修好了\"}')",
-                rusqlite::params![session_id, file_part],
+                rusqlite::params![session_id, file_part, skipped_file],
             )
             .unwrap();
 
@@ -2975,7 +2996,7 @@ mod tests {
             sqlite_transcript_candidates_bounded(&db, cwd, session_id, 100).unwrap();
 
         assert!(!truncated);
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, "user");
         assert_eq!(
             messages[0].text, "修复下这个问题",
@@ -2988,7 +3009,12 @@ mod tests {
             .starts_with("data:image/png;base64,"));
         assert_eq!(messages[1].text, "", "只有图片的消息也必须保留");
         assert_eq!(messages[1].attachments.len(), 1);
-        assert_eq!(messages[2].text, "修好了");
+        assert_eq!(
+            messages[2].text, "[Image 1] 部分图片",
+            "跳过的 file part 保留自己的占位；只删真正恢复成图片的那张"
+        );
+        assert_eq!(messages[2].attachments.len(), 1);
+        assert_eq!(messages[3].text, "修好了");
     }
 
     #[test]

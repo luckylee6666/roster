@@ -448,9 +448,14 @@ fn parse_anthropic_line(value: &Value) -> ParsedLine {
 }
 
 fn first_string<'a>(value: &'a Value, pointers: &[&str]) -> Option<&'a str> {
-    pointers
-        .iter()
-        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+    // 空串视为没命中：某个高优先级 pointer 恰好是空串时，不能让它把后面
+    // 有内容的字段（比如顶层 message）挡掉。
+    pointers.iter().find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+    })
 }
 
 // OpenCode and MiMo Code use the same public `run --format json` event family.
@@ -2839,6 +2844,14 @@ mod tests {
             "message": "旧的顶层错误"
         }));
         assert_eq!(legacy_top.error.as_deref(), Some("旧的顶层错误"));
+
+        // 高优先级 pointer 是空串时不能把后面有内容的字段挡掉。
+        let empty_shadow = parse_opencode_line(&json!({
+            "type": "error",
+            "message": "顶层有效错误",
+            "error": { "message": "" }
+        }));
+        assert_eq!(empty_shadow.error.as_deref(), Some("顶层有效错误"));
     }
 
     #[test]
