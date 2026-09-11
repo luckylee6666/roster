@@ -6567,7 +6567,8 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-message {
   position: relative;
-  margin-bottom: 22px;
+  /* 悬停工具栏高 20px，消息间距要容下它：气泡与工具栏、工具栏与下一条各 6px。 */
+  margin-bottom: 32px;
 }
 
 .conversation-message.is-collapsed .conversation-message-content {
@@ -6613,7 +6614,7 @@ html[data-app-view="developer"] #conversation-surface {
    hover never reflows the transcript. */
 .conversation-message-tools {
   position: absolute;
-  bottom: -16px;
+  bottom: -26px;
   left: 0;
   display: flex;
   gap: 4px;
@@ -7643,7 +7644,6 @@ html[data-app-view="developer"] #conversation-surface {
       .conversation-empty { padding-top: 16px; padding-bottom: 4px; }
   .conversation-starter-list { margin-bottom: 8px; }
   .conversation-messages { padding-top: 20px; padding-bottom: 24px; }
-  .conversation-message { margin-bottom: 20px; }
   .conversation-compose-wrap { padding-top: 7px; padding-bottom: 8px; }
   .conversation-composer-box textarea { min-height: 44px; padding-top: 11px; padding-bottom: 3px; }
   .conversation-composer-foot { min-height: 36px; padding-top: 3px; padding-bottom: 4px; }
