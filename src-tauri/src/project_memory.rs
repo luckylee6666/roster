@@ -324,6 +324,14 @@ fn write_if_changed(path: &Path, next: &str) -> io::Result<()> {
                 "目标不是普通文件，未修改",
             ));
         }
+        // 原地写入年代 read-only 会自然失败；改成原子替换后目录可写就能换掉它，
+        // 这里显式保留「只读文件不动」的语义。
+        if meta.permissions().readonly() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "目标文件只读，未修改",
+            ));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -336,38 +344,41 @@ fn write_if_changed(path: &Path, next: &str) -> io::Result<()> {
         }
     }
     let mut options = fs::OpenOptions::new();
-    options.read(true).write(true).create(true);
+    // 只读打开、不 create：缺文件时走下面的新建分支，不先建出一个空文件再替换。
+    options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    let mut file = options.open(path)?;
     let mut current = String::new();
-    file.read_to_string(&mut current)?;
-    if current == next {
-        return Ok(());
+    match options.open(path) {
+        Ok(mut file) => {
+            file.read_to_string(&mut current)?;
+            if current == next {
+                return Ok(());
+            }
+            // 复用编辑器同款原子替换：同目录临时文件 + 落盘同步 + 替换前复核内容，
+            // 崩溃时不再留下半截文件，并保留权限/所有者/ACL/扩展属性。
+            crate::atomic_replace_file(path, next.as_bytes(), current.as_bytes())
+                .map_err(io::Error::other)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // 新建（例如仓库还没有 .gitignore）：没有原文件可复制元数据，同样走
+            // 同目录临时文件 + 原子替换，避免留下半截内容。
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::other("无法确定文件所在目录"))?;
+            let mut temp = tempfile::Builder::new()
+                .prefix(".roster-memory-")
+                .tempfile_in(parent)?;
+            temp.write_all(next.as_bytes())?;
+            temp.as_file().sync_all()?;
+            temp.persist(path).map_err(|error| error.error)?;
+            Ok(())
+        }
+        Err(error) => Err(error),
     }
-    drop(file);
-    if path.exists() {
-        // 复用编辑器同款原子替换：同目录临时文件 + 落盘同步 + 替换前复核内容，
-        // 崩溃时不再留下半截文件，并保留权限/所有者/ACL/扩展属性。
-        crate::atomic_replace_file(path, next.as_bytes(), current.as_bytes())
-            .map_err(io::Error::other)?;
-        return Ok(());
-    }
-    // 新建（例如仓库还没有 .gitignore）：没有原文件可复制元数据，同样走
-    // 同目录临时文件 + 原子替换，避免留下半截内容。
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("无法确定文件所在目录"))?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".roster-memory-")
-        .tempfile_in(parent)?;
-    temp.write_all(next.as_bytes())?;
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|error| error.error)?;
-    Ok(())
 }
 
 fn create_dir_symlink(target: &Path, link: &Path) -> io::Result<()> {
@@ -849,6 +860,20 @@ mod tests {
         let error =
             crate::atomic_replace_file(&path, b"next", "# 已被外部改写\n".as_bytes()).unwrap_err();
         assert!(error.contains("已被其他程序修改"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# 约束\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_update_readonly_instruction_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, _home) = temp_home();
+        let path = root.path().join("CLAUDE.md");
+        fs::write(&path, "# 约束\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        let error = upsert_instruction_file(&path).unwrap_err();
+        assert!(error.contains("只读"), "{error}");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "# 约束\n");
     }
 }
