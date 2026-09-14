@@ -4779,6 +4779,10 @@ function watchDprChange() {
   const onChange = () => {
     sessions.forEach(s => clearTermAtlas(s.term));
     scheduleFitVisibleSessions();
+    watchDprChange();
+  };
+  mq.addEventListener('change', onChange, { once: true });
+}
 watchDprChange();
 
 // 页面从后台恢复时清一次图集：WKWebView 后台可能回收 GPU 上下文或留下错位字形。
@@ -4786,15 +4790,14 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   requestAnimationFrame(() => sessions.forEach(s => clearTermAtlas(s.term)));
 });
-  };
-  mq.addEventListener('change', onChange, { once: true });
-}
-watchDprChange();
 
 // ===== 文件树 + 内容预览 =====
 
 let treeRoot = null;      // 当前树根（活动会话的 cwd）
 let treeActiveRow = null; // 当前选中的文件行
+// 目录读取是异步的：切标签/关会话会并发触发 renderTree，旧目录的结果不能
+// 覆盖新树（否则行上是 A 项目的路径，点一下却填进 B 项目的终端）。
+let treeRenderRevision = 0;
 
 const TREE_ICONS = {
   folder: '<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="#7aa2cf" stroke-width="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>',
@@ -4892,6 +4895,7 @@ function makeTreeRow(entry, depth) {
 }
 
 async function renderTree(cwd) {
+  const revision = ++treeRenderRevision;
   treeRoot = cwd || null;
   treeActiveRow = null;
   void syncSessionRail(cwd);
@@ -4906,10 +4910,12 @@ async function renderTree(cwd) {
   termEl.treeBody.innerHTML = '<div class="tree-loading">加载中…</div>';
   try {
     const items = await invoke('list_dir', { path: cwd });
+    if (revision !== treeRenderRevision) return;
     termEl.treeBody.innerHTML = '';
     if (!items.length) { termEl.treeBody.innerHTML = '<div class="tree-empty">空目录</div>'; return; }
     items.forEach(it => makeTreeRow(it, 0).forEach(n => termEl.treeBody.appendChild(n)));
   } catch (e) {
+    if (revision !== treeRenderRevision) return;
     termEl.treeBody.innerHTML = `<div class="tree-empty">${esc(String(e))}</div>`;
   }
 }
@@ -6211,6 +6217,7 @@ function removeSessionFromPane(id, force = false) {
     if (next) renderTree(next.cwd);
     else {
       treeRoot = null;
+      treeRenderRevision += 1;
       termEl.treeRootName.textContent = '文件树';
       termEl.treeRootName.title = '';
       termEl.treeBody.innerHTML = '<div class="tree-empty">选择上方标签以显示会话</div>';
@@ -6419,10 +6426,15 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     fitSession(id);
     const memoryProject = projects.find(p => String(p.localPath || '').replace(/[\\/]+$/, '') === String(cwd || '').replace(/[\\/]+$/, ''));
     if (memoryProject) {
-      const shared = await invoke('shared_memory_state', { projectId: memoryProject.id });
-      if (shared.enabled) {
-        const memory = await mountProjectMemory(cwd, session);
-        writeMemoryBanner(term, memory);
+      // 记忆状态/挂载失败只少一张提示，不能连带把已经建好的终端标成"启动失败"。
+      try {
+        const shared = await invoke('shared_memory_state', { projectId: memoryProject.id });
+        if (shared.enabled) {
+          const memory = await mountProjectMemory(cwd, session);
+          writeMemoryBanner(term, memory);
+        }
+      } catch (error) {
+        appLog('warn', `终端记忆信息读取失败：${error?.message || error}`);
       }
     }
     let proxyHook = '';

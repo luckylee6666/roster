@@ -72,6 +72,29 @@ test('start 失败会清掉排队取消，不向未注册运行发送 cancel', a
   assert.equal(calls.filter(call => call.command === 'conversation_chat_cancel').length, 0);
 });
 
+test('start 未落地时取消失败，排队意图要保留到 start 落地后补发', async () => {
+  let cancelFails = true;
+  const calls = [];
+  const invoke = async (command, payload) => {
+    calls.push({ command, payload });
+    if (command === 'conversation_chat_start') return null;
+    if (cancelFails) {
+      cancelFails = false;
+      throw new Error('运行未注册');
+    }
+    return true;
+  };
+  const controller = createConversationRunController({ invoke });
+  const start = controller.start({ projectId: 'a', providerId: 'claude', runId: 'chat-q', prompt: 'x' });
+  await assert.rejects(controller.cancel('chat-q'), /运行未注册/);
+  await start;
+  assert.equal(
+    calls.filter(call => call.command === 'conversation_chat_cancel').length,
+    2,
+    '第一次取消被拒后，start 落地应该再补发一次',
+  );
+});
+
 test('两个项目同时连接中取消，先排队的取消不会被覆盖', async () => {
   const gates = new Map();
   const calls = [];

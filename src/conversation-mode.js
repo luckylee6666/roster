@@ -527,6 +527,9 @@ export function installConversationMode({
   let usageAgentIds = ['claude', 'codex'];
   let selectedProject = null;
   let pendingAttachments = [];
+  // 正在异步读取（尚未落进待发送区）的图片数：并发粘贴/拖放的预检要把它们算上，
+  // 否则两次事件都看到旧长度，合计会超过上限、发送时才被后端整轮拒绝。
+  let attachmentLoadReservations = 0;
   let createFolderValue = '';
   let state = createConversationState({ providerId: initialPreference.providerId });
   let projectContext = null;
@@ -986,8 +989,11 @@ export function installConversationMode({
       modeOptions = { providerId: provider, entries: [] };
     }
     // 存着的档位这家没有（换过 CLI、升级过版本）就丢掉，别留个用不了的值。
+    // 列表为空只代表探测失败，不能拿它当"这家没有"——那样一次 IPC 抖动
+    // 就会删掉用户选的写入档。
     const stored = String(providerModes[provider] || '').trim();
-    if (stored && !modeOptions.entries.some(entry => entry.id === stored)) {
+    if (stored && modeOptions.entries.length
+      && !modeOptions.entries.some(entry => entry.id === stored)) {
       delete providerModes[provider];
       persistProviderModes();
     }
@@ -1063,9 +1069,22 @@ export function installConversationMode({
    * 会照单收下再降级、什么都不说。调音面板和 `/model` 命令都必须过这一道。
    */
   function dropEffortUnsupportedByModel(providerId) {
-    const kept = providerEfforts[providerId];
+    const kept = String(providerEfforts[providerId] || '').trim();
     if (!kept) return;
-    if (activeSlashEfforts().some(item => item.id === kept)) return;
+    // 模型自己报了支持列表：不在其中就是真不支持，可以丢。
+    const model = currentModel();
+    const supported = model
+      ? activeSlashModels().find(item => item.id === model)?.efforts
+      : null;
+    if (Array.isArray(supported) && supported.length) {
+      if (supported.includes(kept)) return;
+    } else {
+      // 没有模型级信息时，只有"权威且非空"的强度列表才有资格判定陈旧；
+      // 探测失败的空列表和 OpenCode/MiMo 的示例列表都不能拿来删手打的值
+      // （与 dropStaleTuning 同一约定）。
+      if (!tuningListAuthoritative(providerId, 'effort') || !slashEfforts.length) return;
+      if (slashEfforts.some(item => item.id === kept)) return;
+    }
     delete providerEfforts[providerId];
     persistProviderEfforts();
   }
@@ -1722,12 +1741,16 @@ export function installConversationMode({
       return;
     }
     if (!button) return;
-    const original = button.textContent;
+    // 连点两次时第二次不能把 "已复制" 当成静止标签存下来；每次重置旧计时器，
+    // 静止标签只在第一次捕获。
+    if (button.copyResetTimer) clearTimeout(button.copyResetTimer);
+    if (button.idleLabel === undefined) button.idleLabel = button.textContent;
     button.textContent = '已复制';
     button.classList.add('is-done');
-    setTimeout(() => {
+    button.copyResetTimer = setTimeout(() => {
+      button.copyResetTimer = null;
       if (destroyed) return;
-      button.textContent = original;
+      button.textContent = button.idleLabel;
       button.classList.remove('is-done');
     }, 1400);
   }
@@ -2431,22 +2454,27 @@ export function installConversationMode({
   async function answerApproval(decision) {
     const pending = state.approval;
     if (!pending || pending.submitting || !state.runId) return;
+    // 提交期间用户可能切到别的项目：后续写回必须按项目归属找状态，
+    // 否则 catch 里拿到的是别的项目的 state，失败后按钮永远停在提交中。
+    const projectId = state.projectId;
+    const runId = state.runId;
     state = { ...state, approval: { ...pending, submitting: true } };
-    commitState(state.projectId, state);
+    commitState(projectId, state);
     renderApproval();
     try {
       await invoke('conversation_chat_approve', {
-        runId: state.runId,
+        runId,
         approvalId: pending.id,
         decision,
       });
     } catch (error) {
       // 后端拒了（这轮已结束、或这条已处理过）：把按钮放开，让卡片跟着
       // 后续事件收掉，不自己猜结果。
-      if (state.approval?.id === pending.id) {
-        state = { ...state, approval: { ...state.approval, submitting: false } };
-        commitState(state.projectId, state);
-        renderApproval();
+      const current = stateForProject(projectId);
+      if (current?.approval?.id === pending.id) {
+        const next = { ...current, approval: { ...current.approval, submitting: false } };
+        if (commitState(projectId, next)) renderApproval();
+        else renderProjects();
       }
       notify?.(`提交批准失败：${error?.message || error}`, 'error');
     }
@@ -3062,6 +3090,9 @@ export function installConversationMode({
 
   const IMAGE_PATH_PATTERN = /\.(?:png|jpe?g|gif|webp)$/i;
 
+  const attachmentCount = () => pendingAttachments.length + attachmentLoadReservations;
+  const attachmentCapacity = () => CONVERSATION_ATTACHMENT_LIMITS.maxCount - attachmentCount();
+
   const attachmentDropAllowed = () => Boolean(
     document.documentElement?.dataset?.appView !== 'developer'
     && selectedProject
@@ -3080,10 +3111,11 @@ export function installConversationMode({
     }
     const projectId = selectedProject?.id || '';
     for (const path of candidates) {
-      if (pendingAttachments.length >= CONVERSATION_ATTACHMENT_LIMITS.maxCount) {
+      if (attachmentCapacity() <= 0) {
         notify?.(`一条消息最多附带 ${CONVERSATION_ATTACHMENT_LIMITS.maxCount} 张图片`, 'error');
         break;
       }
+      attachmentLoadReservations += 1;
       try {
         const media = await invoke('read_conversation_attachment_image', { path });
         // 逐张读取期间可能已经切了项目：图片属于发起拖放的项目，不能追加进
@@ -3099,6 +3131,8 @@ export function installConversationMode({
         renderPendingAttachments();
       } catch (error) {
         notify?.(`添加图片失败：${error?.message || error}`, 'error');
+      } finally {
+        attachmentLoadReservations -= 1;
       }
     }
     renderControls();
@@ -3107,17 +3141,27 @@ export function installConversationMode({
   function addPastedImages(files) {
     const accepted = [];
     for (const file of files) {
-      const checked = inspectPastedImage(file, pendingAttachments.length + accepted.length);
+      // 读取是异步的：预检要算上"已排队但还没落进待发送区"的那几张，
+      // 否则连续两次粘贴会各自看到旧长度，合计超过上限。
+      const checked = inspectPastedImage(file, attachmentCount());
       if (!checked.ok) {
         notify?.(checked.reason, 'error');
         continue;
       }
       accepted.push(file);
+      attachmentLoadReservations += 1;
     }
     accepted.forEach(file => {
       const projectId = selectedProject?.id || '';
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        attachmentLoadReservations -= 1;
+      };
       const reader = new FileReader();
       reader.onload = () => {
+        release();
         if (selectedProject?.id !== projectId) return;
         const dataUrl = String(reader.result || '');
         if (!dataUrl.startsWith('data:image/')) return;
@@ -3129,6 +3173,7 @@ export function installConversationMode({
         renderPendingAttachments();
         renderControls();
       };
+      reader.onerror = release;
       reader.readAsDataURL(file);
     });
   }

@@ -9,12 +9,14 @@ export function createConversationRunController({ invoke }) {
     if (issuedRunId === runId) issuedRunId = '';
   };
 
-  const issueCancel = async runId => {
-    if (!runId || issuedRunId === runId) return false;
+  // 低层发送：不做"同一 run 已在途"去重。start 落地后的补发必须走这里，
+  // 否则第一次取消还在途时会被守卫挡住、排队意图被吞掉。
+  const sendCancel = async runId => {
     issuedRunId = runId;
-    queuedCancelRunIds.delete(runId);
+    queuedCancelRunIds.add(runId);
     try {
       await invoke('conversation_chat_cancel', { runId });
+      queuedCancelRunIds.delete(runId);
       return true;
     } catch (error) {
       if (issuedRunId === runId) issuedRunId = '';
@@ -35,7 +37,7 @@ export function createConversationRunController({ invoke }) {
       // successfully even if its later stop request cannot reach the backend.
       if (queuedCancelRunIds.has(runId)) {
         try {
-          await issueCancel(runId);
+          await sendCancel(runId);
         } catch (_) {
           // The caller keeps the turn live and presents a retryable stop UI.
         }
@@ -48,7 +50,7 @@ export function createConversationRunController({ invoke }) {
         queuedCancelRunIds.add(runId);
         return false;
       }
-      return issueCancel(runId);
+      return sendCancel(runId);
     },
 
     clear,

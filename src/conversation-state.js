@@ -315,7 +315,16 @@ export function applyConversationChatEvent(state, envelope) {
     }
     case 'cancelled': {
       const next = updateAssistant(state, message => ({ ...message, pending: false }));
-      return { ...next, status: 'cancelled', notice: '已停止这次处理', noticeRetry: false, approval: null };
+      // 取消可能覆盖一个已经失败的终态（cancellationWinsTerminalRace）：界面
+      // 以 error 优先显示，所以这里必须连 error 一起清，别留下"处理失败"的
+      // 旧报错与"已停止"的顶栏状态互相矛盾。
+      return {
+        ...next,
+        status: 'cancelled',
+        notice: '已停止这次处理',
+        error: '',
+        approval: null,
+      };
     }
     case 'error': {
       const next = updateAssistant(state, message => ({ ...message, pending: false }));
