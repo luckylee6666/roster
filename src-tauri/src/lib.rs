@@ -838,6 +838,14 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// 拉起外部进程后必须有人 wait，否则进程退出后会留成僵尸；这里只回收状态，
+/// 不阻塞命令本身。
+fn reap_in_background(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
 #[tauri::command]
 fn open_terminal(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -849,15 +857,16 @@ fn open_terminal(path: String) -> Result<(), String> {
             "tell application \"Terminal\"\n\tactivate\n\tdo script \"{}\"\nend tell",
             as_escaped
         );
-        std::process::Command::new("osascript")
+        let child = std::process::Command::new("osascript")
             .args(["-e", &script])
             .spawn()
             .map_err(|e| e.to_string())?;
+        reap_in_background(child);
     }
     #[cfg(target_os = "linux")]
     {
         // bash -c 收到独立 argv，路径再用单引号包裹，无嵌套引号问题
-        std::process::Command::new("x-terminal-emulator")
+        let child = std::process::Command::new("x-terminal-emulator")
             .args([
                 "-e",
                 "bash",
@@ -866,16 +875,18 @@ fn open_terminal(path: String) -> Result<(), String> {
             ])
             .spawn()
             .map_err(|e| e.to_string())?;
+        reap_in_background(child);
     }
     #[cfg(target_os = "windows")]
     {
         // 不要拼 `cd /d "…" && claude`：路径里出现引号或 & 会被 cmd 拆成额外命令。
         // 让 cmd 以项目目录为工作目录启动新窗口，路径不再进命令行字符串。
-        std::process::Command::new("cmd")
+        let child = std::process::Command::new("cmd")
             .args(["/C", "start", "cmd", "/K", "claude"])
             .current_dir(&path)
             .spawn()
             .map_err(|e| e.to_string())?;
+        reap_in_background(child);
     }
     Ok(())
 }
@@ -1330,6 +1341,12 @@ fn read_file_bounded(p: &Path, limit: u64) -> Result<(Vec<u8>, u64, bool), Strin
 /// 从同一个已打开句柄完成类型、大小检查和有界读取，避免 metadata 与 fs::read
 /// 之间文件被替换或增长，绕过预览内存上限。
 fn read_binary_file_bounded(p: &Path, limit: u64, too_large: &str) -> Result<Vec<u8>, String> {
+    // 先查类型再 open：直接 open 一个 FIFO 会阻塞在打开上（没有写端时永不返回），
+    // 把 IPC 线程挂死。symlink_metadata 不跟随符号链接，只放行普通文件。
+    let precheck = fs::symlink_metadata(p).map_err(|e| e.to_string())?;
+    if !precheck.file_type().is_file() {
+        return Err("不是文件".to_string());
+    }
     let file = fs::File::open(p).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     if !metadata.is_file() {
@@ -2575,7 +2592,10 @@ fn newest_jsonl(dir: &std::path::Path) -> Option<PathBuf> {
         if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let mtime = entry.metadata().and_then(|m| m.modified()).ok()?;
+        // 单个条目读不到 mtime 不能让整个搜索失败：跳过它，继续看别的候选。
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
         if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
             best = Some((mtime, p));
         }
@@ -3191,18 +3211,27 @@ fn terminal_create(
 
 /// 把前端的键入（已是 UTF-8 文本）写进对应会话的 PTY。
 #[tauri::command]
-fn terminal_write(state: State<TerminalState>, id: String, data: String) -> Result<(), String> {
+async fn terminal_write(
+    state: State<'_, TerminalState>,
+    id: String,
+    data: String,
+) -> Result<(), String> {
     // 只在锁内取出该会话的 writer 句柄（clone Arc，廉价），随即释放全局 sessions 锁，
     // 再做可能阻塞的 write_all/flush——否则向「暂不读 stdin 的前台程序」灌大段内容时，
     // 阻塞的写会一直攥着全局锁，把 create/resize/close 所有会话（含关掉这个卡住的）全楔死。
+    // 写入放 spawn_blocking：这个命令是每次键入都会走的，同步命令阻塞的是 IPC 线程。
     let writer = {
         let sessions = state.hub.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&id).ok_or("会话不存在")?.writer.clone()
     };
-    let mut w = writer.lock().map_err(|e| e.to_string())?;
-    w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-    w.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut w = writer.lock().map_err(|e| e.to_string())?;
+        w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        w.flush().map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 终端尺寸变化时同步 PTY 窗口大小（让 TUI 正确换行）。
