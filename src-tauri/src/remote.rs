@@ -27,7 +27,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -108,6 +108,10 @@ pub struct RemoteHub {
     /// axum 服务是否已起。按需启动：用户首次打开「手机远程」面板才监听端口，
     /// 关闭面板时 `stop()` 会把这个复位，允许下次重新按需启动（新 PIN、新监听）。
     started: Arc<AtomicBool>,
+    /// 停止代数：每次 stop() 自增。spawn_server 在订阅广播前先记下当前代数，
+    /// 绑定端口后再核对——覆盖"stop 发生在订阅之前、关闭信号收不到"的竞态，
+    /// 否则旧服务会一直监听并把下次打开的新 PIN 服务挤掉（端口占用）。
+    stop_epoch: Arc<AtomicU64>,
     auth: Arc<Mutex<AuthGuard>>,
     /// 广播一次即：(1) 通知 axum accept 循环优雅关闭，不再接受新连接；
     /// (2) 所有正在桥接的 WS 会话各自收到信号后主动断开——两者共用一个信号，
@@ -129,6 +133,7 @@ impl RemoteHub {
             token: Arc::new(Mutex::new(String::new())),
             port,
             started: Arc::new(AtomicBool::new(false)),
+            stop_epoch: Arc::new(AtomicU64::new(0)),
             auth: Arc::new(Mutex::new(AuthGuard::default())),
             shutdown_tx,
         }
@@ -145,6 +150,7 @@ impl RemoteHub {
     /// 生成新 PIN 并监听）、广播关闭信号（accept 循环停止 + 所有已连接的手机会话断开）。
     pub fn stop(&self) {
         self.started.store(false, Ordering::SeqCst);
+        self.stop_epoch.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut t) = self.token.lock() {
             t.clear();
         }
@@ -196,6 +202,9 @@ impl RemoteHub {
 /// 在独立线程里起一个 tokio 运行时跑 axum 服务（不依赖 Tauri 的异步运行时）。
 pub fn spawn_server(hub: RemoteHub) {
     std::thread::spawn(move || {
+        // 先记下停止代数：如果 stop() 在这个线程真正订阅之前就发生了，
+        // 广播信号会丢，必须靠代数核对补上。
+        let epoch = hub.stop_epoch.load(Ordering::SeqCst);
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -218,9 +227,16 @@ pub fn spawn_server(hub: RemoteHub) {
                 .route("/ws", get(ws_handler))
                 .layer(middleware::from_fn(security_headers))
                 .layer(middleware::from_fn(require_private_peer))
-                .with_state(hub);
+                .with_state(hub.clone());
             match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
                 Ok(listener) => {
+                    if hub.stop_epoch.load(Ordering::SeqCst) != epoch
+                        || !hub.started.load(Ordering::SeqCst)
+                    {
+                        // 绑定前就已被 stop：直接放弃监听，别占用端口拦住下次启动。
+                        println!("[remote] 启动信号已失效，不再监听");
+                        return;
+                    }
                     println!("[remote] 手机端服务监听 0.0.0.0:{port}");
                     let serve = axum::serve(
                         listener,
