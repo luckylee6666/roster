@@ -208,8 +208,14 @@ fn read_claude_oauth_token() -> Option<String> {
             }
         }
     }
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(s) = std::fs::read_to_string(home.join(".claude").join(".credentials.json")) {
+    // 凭据文件跟随 Claude Code 的配置目录：设了 CLAUDE_CONFIG_DIR 就不在 ~/.claude。
+    let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .and_then(non_empty_config_value)
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")));
+    if let Some(dir) = config_dir {
+        if let Ok(s) = std::fs::read_to_string(dir.join(".credentials.json")) {
             if let Ok(v) = serde_json::from_str::<Value>(&s) {
                 if let Some(t) = pick(&v) {
                     return Some(t);
@@ -218,7 +224,7 @@ fn read_claude_oauth_token() -> Option<String> {
         }
     }
     crate::log_warn!(
-        "读取登录凭据失败：钥匙串未授权/无此项，且 ~/.claude/.credentials.json 不可用"
+        "读取登录凭据失败：钥匙串未授权/无此项，且配置目录下的 .credentials.json 不可用"
     );
     None
 }
@@ -241,7 +247,8 @@ fn fetch_oauth_usage_raw(endpoint: &str, token: &str) -> Result<String, String> 
     use std::io::Write;
     use std::process::Stdio;
     let bin = curl_bin();
-    let mut child = std::process::Command::new(bin)
+    let mut command = std::process::Command::new(bin);
+    command
         .args([
             "-sS",
             "--max-time",
@@ -254,7 +261,10 @@ fn fetch_oauth_usage_raw(endpoint: &str, token: &str) -> Result<String, String> 
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // 与其余网络请求用同一套代理设置：用户开了代理时 OAuth 用量查询也要走。
+    crate::proxy_settings::apply_to_std_command(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|e| format!("启动 curl 失败（{bin}）：{e}"))?;
     {
@@ -262,9 +272,13 @@ fn fetch_oauth_usage_raw(endpoint: &str, token: &str) -> Result<String, String> 
         let cfg = format!(
             "header = \"Authorization: Bearer {token}\"\nheader = \"anthropic-beta: oauth-2025-04-20\"\nheader = \"user-agent: claude-code/2.1\"\n"
         );
-        stdin
-            .write_all(cfg.as_bytes())
-            .map_err(|e| format!("写 curl 配置失败：{e}"))?;
+        if let Err(error) = stdin.write_all(cfg.as_bytes()) {
+            // 写不进去要先把子进程收掉，否则会留下收不到 EOF 的 curl 和僵尸进程。
+            drop(stdin);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("写 curl 配置失败：{error}"));
+        }
     }
     let out = child
         .wait_with_output()
