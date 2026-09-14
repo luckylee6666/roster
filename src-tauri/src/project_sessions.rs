@@ -15,6 +15,9 @@ const HANDOFF_FILE_READ_LIMIT: u64 = 512 * 1024;
 const HANDOFF_MESSAGE_LIMIT: usize = 24;
 const HANDOFF_TEXT_LIMIT: usize = 18_000;
 const TRANSCRIPT_FILE_READ_LIMIT: u64 = 32 * 1024 * 1024;
+// Claude 转录单行可能非常长（大段粘贴、工具结果）。逐行读取时给每行封顶，
+// 避免一行就把内存拉爆。
+const TRANSCRIPT_LINE_LIMIT: usize = 256 * 1024;
 // Codex appends compaction/guardian state without removing original messages.
 // Leave bounded headroom so a compaction does not immediately hide old chat.
 const CODEX_TRANSCRIPT_FILE_READ_LIMIT: u64 = 64 * 1024 * 1024;
@@ -191,9 +194,9 @@ fn claude_jsonl_cwd(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     for _ in 0..8 {
-        let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
-            break;
+        let line = read_line_bounded(&mut reader, TRANSCRIPT_LINE_LIMIT)?;
+        if line.trim().is_empty() {
+            continue;
         }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim_end()) else {
             continue;
@@ -205,6 +208,43 @@ fn claude_jsonl_cwd(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// 单行读取但有上限：超长行的剩余部分直接丢弃（不累积进内存），
+/// 避免下一行接上残尾导致 JSON 解析错位。
+fn read_line_bounded<R: BufRead>(reader: &mut R, max: usize) -> Option<String> {
+    let mut buffer = Vec::new();
+    {
+        let mut limited = (&mut *reader).take((max + 1) as u64);
+        if limited.read_until(b'\n', &mut buffer).ok()? == 0 {
+            return None;
+        }
+    }
+    if buffer.last() != Some(&b'\n') && buffer.len() > max {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if chunk[..read].contains(&b'\n') {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        buffer.truncate(max);
+    }
+    Some(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+/// 有界读取小体积文本文件：符号链接、非常规文件与超限内容都当读不到。
+fn read_text_bounded(path: &Path, limit: u64) -> Option<String> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return None;
+    }
+    fs::read_to_string(path).ok()
 }
 
 fn claude_file_matches_cwd(path: &Path, cwd: &str, allow_missing: bool) -> bool {
@@ -678,11 +718,14 @@ fn list_opencode_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHisto
 
 fn list_opencode_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     for path in opencode_db_paths(home) {
-        if path.is_file() {
-            let sessions = list_opencode_sessions_from_db(&path, cwd);
-            if !sessions.is_empty() || path.exists() {
-                return sessions;
-            }
+        if !path.is_file() {
+            continue;
+        }
+        let sessions = list_opencode_sessions_from_db(&path, cwd);
+        // 空结果不能让第一个存在的库短路掉后面的候选：主库可能是旧路径留下的
+        // 空壳，真正的当前库在后面（OpenCode 换过数据目录位置）。
+        if !sessions.is_empty() {
+            return sessions;
         }
     }
     Vec::new()
@@ -756,11 +799,12 @@ fn list_mimo_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHistorySe
 
 fn list_mimo_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     for path in mimo_db_paths(home) {
-        if path.is_file() {
-            let sessions = list_mimo_sessions_from_db(&path, cwd);
-            if !sessions.is_empty() || path.exists() {
-                return sessions;
-            }
+        if !path.is_file() {
+            continue;
+        }
+        let sessions = list_mimo_sessions_from_db(&path, cwd);
+        if !sessions.is_empty() {
+            return sessions;
         }
     }
     Vec::new()
@@ -911,7 +955,7 @@ fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     let history = home.join(".gemini/antigravity-cli/history.jsonl");
     let mut by_id: std::collections::BTreeMap<String, (String, u64)> =
         std::collections::BTreeMap::new();
-    if let Ok(text) = fs::read_to_string(&history) {
+    if let Some(text) = read_text_bounded(&history, TRANSCRIPT_FILE_READ_LIMIT) {
         for line in text.lines() {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
@@ -948,9 +992,10 @@ fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
             }
         }
     }
-    if let Ok(text) =
-        fs::read_to_string(home.join(".gemini/antigravity-cli/cache/last_conversations.json"))
-    {
+    if let Some(text) = read_text_bounded(
+        &home.join(".gemini/antigravity-cli/cache/last_conversations.json"),
+        TRANSCRIPT_FILE_READ_LIMIT,
+    ) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(id) = value.get(cwd).and_then(|item| item.as_str()) {
                 by_id
@@ -1372,6 +1417,20 @@ fn transcript_content_items<'a>(
         .unwrap_or_default()
 }
 
+/// 正文里的 `[Image N]` / `[Image #N]` 占位按消息里第几个图片项编号（跳过的
+/// 也算）。这里只判断"这是个会占号的图片项"，不要求真能还原成 data URL。
+fn transcript_image_slot(item: &serde_json::Value) -> bool {
+    let typed = item
+        .get("type")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.contains("image"));
+    typed
+        || item.get("image_url").is_some()
+        || item.get("image").is_some()
+        || item.get("inlineData").is_some()
+        || item.get("inline_data").is_some()
+}
+
 fn transcript_message_from_value(
     tool: &str,
     value: &serde_json::Value,
@@ -1387,10 +1446,18 @@ fn transcript_message_from_value(
         _ => None,
     };
     let mut attachments = Vec::new();
+    // 与 SQLite 路径同一套编号语义：占位按图片项序号删，跳过的图不能重排
+    // 后面的编号，否则会删掉别的图的占位文本。
+    let mut attached_indices = Vec::new();
+    let mut image_index = 0usize;
     if *attachment_count < TRANSCRIPT_ATTACHMENT_LIMIT && *remaining_image_bytes > 0 {
         for item in transcript_content_items(tool, value) {
+            if !transcript_image_slot(item) {
+                continue;
+            }
+            image_index += 1;
             if *attachment_count >= TRANSCRIPT_ATTACHMENT_LIMIT || *remaining_image_bytes == 0 {
-                break;
+                continue;
             }
             let Some(data_url) = inline_data_url_from_item(item) else {
                 continue;
@@ -1400,14 +1467,20 @@ fn transcript_message_from_value(
                 inline_image_attachment(&data_url, &alt, remaining_image_bytes)
             {
                 attachments.push(attachment);
+                attached_indices.push(image_index);
                 *attachment_count += 1;
             }
         }
     }
     let mut text = base.map(|message| message.text).unwrap_or_default();
     if !attachments.is_empty() {
-        for index in 1..=attachments.len() {
-            text = text.replace(&format!("[Image #{index}]"), "");
+        for index in attached_indices {
+            // 先连尾随空格一起删，免得句子中间留下双空格；空格不匹配时再删裸占位。
+            text = text
+                .replace(&format!("[Image {index}] "), "")
+                .replace(&format!("[Image #{index}] "), "")
+                .replace(&format!("[Image {index}]"), "")
+                .replace(&format!("[Image #{index}]"), "");
         }
         text = sanitize_handoff_text(&text);
     }
@@ -1799,6 +1872,14 @@ fn delete_opencode(home: &Path, cwd: &str, session_id: &str) -> Result<(), Strin
     let id = require_component_id(session_id)?;
     let db_path = find_opencode_db(home).ok_or_else(|| "找不到 OpenCode 会话库".to_string())?;
     let connection = rusqlite::Connection::open(&db_path).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    // OpenCode 的 message/part 表带 ON DELETE CASCADE；不开启外键约束时这里
+    // 只删 session 行，消息与部件会变成永久孤儿（磁盘只涨不缩）。
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|error| error.to_string())?;
     let normalized = crate::project_memory::normalize_project_cwd(cwd);
     let slash = format!("{normalized}/");
     let backslash = format!("{normalized}\\");
@@ -2007,7 +2088,7 @@ fn preview_agy(home: &Path, cwd: &str, session_id: &str) -> Result<ProjectHistor
     let history = home.join(".gemini/antigravity-cli/history.jsonl");
     let mut parts = Vec::new();
     let mut at_ms = 0;
-    if let Ok(text) = fs::read_to_string(&history) {
+    if let Some(text) = read_text_bounded(&history, TRANSCRIPT_FILE_READ_LIMIT) {
         for line in text.lines() {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
@@ -2069,7 +2150,13 @@ fn delete_agy(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
     let history = home.join(".gemini/antigravity-cli/history.jsonl");
     let mut kept = Vec::new();
     let mut removed = false;
-    if let Ok(text) = fs::read_to_string(&history) {
+    if let Ok(metadata) = fs::symlink_metadata(&history) {
+        // 删除要把整份历史重写回去：超过上限时宁可直接报错，也不能只读一部分
+        // 就写回，那样会把前面的会话整段丢掉。
+        if !metadata.is_file() || metadata.len() > TRANSCRIPT_FILE_READ_LIMIT {
+            return Err("agy 历史文件过大或不是普通文件，无法安全删除".into());
+        }
+        let text = fs::read_to_string(&history).map_err(|error| error.to_string())?;
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -3015,6 +3102,40 @@ mod tests {
         );
         assert_eq!(messages[2].attachments.len(), 1);
         assert_eq!(messages[3].text, "修好了");
+    }
+
+    #[test]
+    fn jsonl_transcript_removes_placeholders_by_image_slot() {
+        // JSONL 路径与 SQLite 路径同一套编号语义：第一张图坏掉（跳过）时，
+        // 第二张图的占位号仍是 2，只删 [Image #2]，不能顺手把 [Image #1] 删掉。
+        let value = serde_json::json!({
+            "type": "user",
+            "isSidechain": false,
+            "message": {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "两张图 [Image #1] [Image #2] 看看" },
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "!!!" } },
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUg==" } }
+                ]
+            }
+        });
+        let mut remaining = TRANSCRIPT_INLINE_IMAGE_LIMIT;
+        let mut count = 0usize;
+        let message =
+            transcript_message_from_value("claude", &value, &mut remaining, &mut count).unwrap();
+        assert_eq!(message.attachments.len(), 1);
+        assert!(
+            message.text.contains("[Image #1]"),
+            "跳过的图片占位要保留：{}",
+            message.text
+        );
+        assert!(
+            !message.text.contains("[Image #2]"),
+            "恢复的图片要按原始序号删占位：{}",
+            message.text
+        );
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -4200,5 +4321,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(leftover, 1);
+    }
+
+    #[test]
+    fn delete_opencode_session_cascades_to_messages_and_parts() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/app";
+        let db_dir = home.join(".local/share/opencode");
+        fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("opencode.db");
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    slug TEXT NOT NULL,
+                    directory TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL
+                );
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE part (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated)
+                VALUES ('ses_main', 'p1', NULL, 's', '/Users/lucky/git/app', '本项目', '1', 1, 200);
+                INSERT INTO message (id, session_id, data) VALUES ('m1', 'ses_main', '{}');
+                INSERT INTO part (id, message_id, session_id, data) VALUES ('p1', 'm1', 'ses_main', '{}');",
+            )
+            .unwrap();
+        drop(connection);
+
+        delete_project_session_with_home(cwd, "opencode", "ses_main", &home).unwrap();
+
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        let messages: i64 = connection
+            .query_row("SELECT COUNT(*) FROM message", [], |row| row.get(0))
+            .unwrap();
+        let parts: i64 = connection
+            .query_row("SELECT COUNT(*) FROM part", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(messages, 0, "开启外键约束后消息要跟着会话级联删除");
+        assert_eq!(parts, 0, "部件也要跟着级联删除，不能留孤儿");
     }
 }
