@@ -722,6 +722,39 @@ fn backup_id(id: &str) -> bool {
     id.strip_suffix(".json")
         .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
 }
+
+/// 备份目录是项目级共享上限：满了就淘汰最旧的一批，给新备份腾位。
+/// 不能直接报错——项目一旦攒满 100 份，之后每次保存都会永久失败。
+fn prune_backups(folder: &Path) -> Result<(), String> {
+    let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    for entry in fs::read_dir(folder).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !backup_id(&name) {
+            continue;
+        }
+        // DirEntry::metadata 不跟随符号链接，非普通文件一律跳过不删。
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        entries.push((
+            metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
+            entry.path(),
+        ));
+    }
+    let keep = MAX_BACKUPS.saturating_sub(1);
+    if entries.len() <= keep {
+        return Ok(());
+    }
+    entries.sort_by_key(|(at, _)| *at);
+    let remove_count = entries.len() - keep;
+    for (_, path) in entries.into_iter().take(remove_count) {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 pub fn read_backup(home: &Path, project: &str, name: &str, id: &str) -> Result<Document, String> {
     filename(name)?;
     if !backup_id(id) {
@@ -775,14 +808,7 @@ pub fn save(
     if let Some(old) = old {
         let folder = dir.join(".roster-history");
         let history = Root::open(&folder, true)?;
-        if fs::read_dir(&folder)
-            .map_err(|e| e.to_string())?
-            .take(MAX_BACKUPS)
-            .count()
-            >= MAX_BACKUPS
-        {
-            return Err("记忆备份已达 100 份，请先备份并清理旧版本".into());
-        }
+        prune_backups(&folder)?;
         let b = Backup {
             kind: "roster-memory-v1".into(),
             file: name.into(),
@@ -970,6 +996,29 @@ mod tests {
         )
         .unwrap();
         assert!(!enabled(&data, &p).unwrap());
+    }
+
+    #[test]
+    fn prune_backups_removes_oldest_and_keeps_room_for_new() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path();
+        let mut paths = Vec::new();
+        for index in 0..(MAX_BACKUPS + 1) {
+            let path = folder.join(format!("{}.json", uuid::Uuid::new_v4()));
+            fs::write(&path, "{}").unwrap();
+            // 显式错开 mtime，避免同一纳秒内创建导致排序不稳定。
+            let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(index as u64 + 1),
+            )
+            .unwrap();
+            paths.push(path);
+        }
+        prune_backups(folder).unwrap();
+        let left = fs::read_dir(folder).unwrap().flatten().count();
+        assert_eq!(left, MAX_BACKUPS - 1, "应腾出一位给新备份");
+        assert!(!paths[0].exists(), "最旧的备份要先被淘汰");
+        assert!(paths[MAX_BACKUPS].exists());
     }
 
     #[test]
