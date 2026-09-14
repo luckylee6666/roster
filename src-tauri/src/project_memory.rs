@@ -297,11 +297,61 @@ fn count_inbox(memory_dir: &Path) -> u32 {
         .count() as u32
 }
 
-fn write_if_changed(path: &Path, next: &str) -> io::Result<()> {
-    match fs::read_to_string(path) {
-        Ok(current) if current == next => Ok(()),
-        _ => fs::write(path, next),
+/// 读普通文件；符号链接、目录、特殊文件都返回 None。项目目录来自任意仓库，
+/// `CLAUDE.md` / `.gitignore` 可能是恶意链接，不能顺着它读写项目外文件。
+fn read_regular_file(path: &Path) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
     }
+    fs::read_to_string(path).ok()
+}
+
+/// 写前拒绝符号链接与多硬链接：同一个仓库里的 `CLAUDE.md` / `.gitignore`
+/// 被做成链接时，不能顺链写到项目外（orchestra.rs 已有同款防线）。
+fn write_if_changed(path: &Path, next: &str) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    if let Ok(meta) = path.symlink_metadata() {
+        if meta.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "目标是符号链接，未修改",
+            ));
+        }
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "目标不是普通文件，未修改",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if meta.nlink() > 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "目标有多个硬链接，未修改",
+                ));
+            }
+        }
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    let mut current = String::new();
+    file.read_to_string(&mut current)?;
+    if current == next {
+        return Ok(());
+    }
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(next.as_bytes())?;
+    Ok(())
 }
 
 fn create_dir_symlink(target: &Path, link: &Path) -> io::Result<()> {
@@ -367,11 +417,8 @@ fn ensure_workspace_link(project_dir: &Path, memory_dir: &Path) -> Result<(), St
 }
 
 fn upsert_instruction_file(path: &Path) -> Result<(), String> {
-    let current = if path.exists() {
-        fs::read_to_string(path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?
-    } else {
-        String::new()
-    };
+    let current = read_regular_file(path)
+        .ok_or_else(|| format!("{} 不是可安全写入的普通文件，未修改", path.display()))?;
     let next = upsert_memory_pointer(&current);
     write_if_changed(path, &next).map_err(|e| format!("写入 {} 失败：{e}", path.display()))
 }
@@ -379,7 +426,11 @@ fn upsert_instruction_file(path: &Path) -> Result<(), String> {
 fn ensure_instruction_pointers(project_dir: &Path) -> Result<(), String> {
     for name in ["CLAUDE.md", "AGENTS.md"] {
         let path = project_dir.join(name);
-        if path.is_file() {
+        // symlink_metadata 对链接返回 symlink 而不是 file：链接一律跳过。
+        if fs::symlink_metadata(&path)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+        {
             upsert_instruction_file(&path)?;
         }
     }
@@ -403,10 +454,13 @@ fn ensure_gitignore(project_dir: &Path) -> Result<(), String> {
         return Ok(());
     };
     let path = git_root.join(".gitignore");
-    let current = if path.exists() {
-        fs::read_to_string(&path).map_err(|e| format!("读取 .gitignore 失败：{e}"))?
-    } else {
-        String::new()
+    let current = match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() => {
+            fs::read_to_string(&path).map_err(|e| format!("读取 .gitignore 失败：{e}"))?
+        }
+        // 链接、目录或特殊文件：不碰，避免顺着链接写到项目外。
+        Ok(_) => return Ok(()),
+        Err(_) => String::new(),
     };
     let next = ensure_memory_gitignore(&current);
     write_if_changed(&path, &next).map_err(|e| format!("写入 .gitignore 失败：{e}"))
@@ -533,7 +587,11 @@ pub fn detach_project_memory(project_path: &str) -> Result<ProjectMemoryState, S
 fn remove_instruction_pointers(project_dir: &Path) -> Result<(), String> {
     for name in ["CLAUDE.md", "AGENTS.md"] {
         let path = project_dir.join(name);
-        if !path.is_file() {
+        // 链接/非普通文件一律不碰：detach 不能顺着链接改项目外文件。
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
             continue;
         }
         let current =
@@ -618,6 +676,34 @@ mod tests {
         assert!(memory.join("inbox").is_dir());
         let agents = fs::read_to_string(project.join("AGENTS.md")).unwrap();
         assert!(agents.contains(MEMORY_POINTER_START));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_instruction_files_and_gitignore_are_never_written_through() {
+        let (root, home) = temp_home();
+        let project = home.join("code").join("evil");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        // 模拟恶意仓库：CLAUDE.md / .gitignore 指向项目外的真实文件。
+        let outside_md = root.path().join("outside.md");
+        let outside_ignore = root.path().join("outside-ignore");
+        fs::write(&outside_md, "# 外部文件\n").unwrap();
+        fs::write(&outside_ignore, "node_modules\n").unwrap();
+        std::os::unix::fs::symlink(&outside_md, project.join("CLAUDE.md")).unwrap();
+        std::os::unix::fs::symlink(&outside_ignore, project.join(".gitignore")).unwrap();
+
+        ensure_project_memory_with_home(project.to_str().unwrap(), &home).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&outside_md).unwrap(),
+            "# 外部文件\n",
+            "符号链接的 CLAUDE.md 不能被写入"
+        );
+        assert_eq!(
+            fs::read_to_string(&outside_ignore).unwrap(),
+            "node_modules\n",
+            "符号链接的 .gitignore 不能被写入"
+        );
     }
 
     #[test]
