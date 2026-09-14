@@ -2756,7 +2756,7 @@ async fn context_usage(
         if cached_limit.is_none() {
             if let Some(limit) = resolved_limit {
                 if let Ok(mut limits) = ctx_window.lock() {
-                    limits.insert(id, limit);
+                    limits.insert(id.clone(), limit);
                 }
             }
         }
@@ -2819,19 +2819,26 @@ async fn context_usage(
             .or_else(|| fs::read_to_string(&jsonl).ok().and_then(|c| scan(&c)));
         if let Some((tokens, model)) = found {
             // 显式配置（环境变量 / `/context` 里的分母）最权威；没有就按模型推断，
-            // 再不行才用兜底常量。
-            let limit = match resolved_limit {
-                Some(explicit) => explicit,
-                None => {
-                    let guess = context_window_for_model(&model).unwrap_or(DEFAULT_CONTEXT_WINDOW);
-                    // 一个会话装不下超过自己窗口的 token——观测值超过了推断上限，
-                    // 说明推断错了，抬到装得下的那一档。这样即便将来又出现窗口更大
-                    // 的模型、模型表还没跟上，也不会再一路显示 100%。
-                    // 只在已知档位之间抬，不凭空造一个更大的窗口；真的超过最大已知
-                    // 档位（自动压缩前的溢出）仍旧如实显示 100%。
-                    raise_context_window_to_fit(guess, tokens)
+            // 再不行才用兜底常量。无论哪一档，观测到的 token 超过它都说明这个值
+            // 过时/错了（一个会话装不下超过自己窗口的 token），抬到装得下的已知档
+            // ——否则缓存里的小值会让占比永远顶在 100%（v1.2.x 写死 200k 的老毛病，
+            // 只是换成了"缓存写死"）。只在已知档位之间抬，不凭空造窗口。
+            let limit = raise_context_window_to_fit(
+                match resolved_limit {
+                    Some(explicit) => explicit,
+                    None => context_window_for_model(&model).unwrap_or(DEFAULT_CONTEXT_WINDOW),
+                },
+                tokens,
+            );
+            // 抬过之后写回缓存，后续轮询不再拿旧的小值重新算。
+            if resolved_limit
+                .map(|current| limit > current)
+                .unwrap_or(false)
+            {
+                if let Ok(mut limits) = ctx_window.lock() {
+                    limits.insert(id, limit);
                 }
-            };
+            }
             cu.ok = true;
             cu.tokens = tokens;
             cu.limit = limit;
