@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.5.0** — resident sessions for all seven conversation CLIs, automatic project shared memory, a dedicated Roster Dev build, and OpenCode Go usage, plus restored history images and clearer CLI protocol errors. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.5.1** — a fixes-and-hardening update: stable WebGL terminals, safer project-memory writes and file previews, a LAN-only phone remote server, and a round of conversation/session bug fixes. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 

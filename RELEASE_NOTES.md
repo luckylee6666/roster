@@ -1,29 +1,30 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.5.0 / 本版更新
+## What's new in v1.5.1 / 本版更新
 
 **English**
 
-- All seven conversation CLIs now reuse resident sessions: Claude/agy/Qwen over bidirectional JSON and Grok/OpenCode/MiMo Code over stdio ACP (Codex already had its resident App Server). Consecutive messages in the same project and thread reuse the loaded CLI session instead of restarting it; a bounded idle pool is cleaned up on cancel, errors, settings changes, switching to Developer mode, history deletion and exit.
-- Project shared memory now runs automatically in the conversation workspace: a compact status replaces the management dialog, successful substantive turns record bounded source-labelled progress excerpts, and later requests reuse them. Curated topics are never overwritten; manual editing stays optional in Developer mode.
-- A dedicated development build: `pnpm dev` / `pnpm build:dev` launches Roster Dev with its own application id, data directory, backups and WebView preferences, and can run alongside the production app.
-- OpenCode Go subscription usage joins the usage panel and the assistant badge: 5-hour / weekly / monthly percentages with reset times, read from OpenCode's own `auth.json` through the official usage endpoint. Custom `opencode-go` gateways are skipped and the key only ever goes to the official host.
-- Conversation history now restores pasted images from OpenCode/MiMo Code sessions, and protocol errors show their real message instead of a silent empty reply (MiMo) or a misleading "check the CLI is installed and logged in" hint (OpenCode).
-- A saved model or reasoning effort that the CLI no longer lists is dropped on refresh instead of being sent every turn; lists that are only examples never delete manual choices.
-- Developer-mode Codex resume can load sessions created by the conversation workspace again (native transport alias), and long-thread resume only requests metadata so it no longer fails before the first new prompt.
-- Message hover actions (copy / ask again) keep a 6px gap from the bubble and stay reachable while the pointer travels to them.
+- Terminals no longer garble long or side-by-side WebGL sessions (xterm.js atlas fix), WebGL context loss re-attaches automatically, and returning from background clears the glyph atlas.
+- A round of conversation and Developer-view fixes: approval answers stay bound to the run that asked, stopping while a turn is still connecting is queued and replayed, concurrent image paste/drop can no longer exceed the attachment limit, and stale file-tree results no longer overwrite the active tree.
+- Session history fixes: OpenCode deletion cascades to messages and parts, transcript image placeholders are removed by their original index, OpenCode/MiMo history falls through to the next database instead of stopping at an empty one, HEIC/HEIF photos are no longer misclassified as video, and transcript/history reads are size-bounded.
+- Terminal and system reliability: input no longer blocks the IPC thread, FIFO files no longer hang reads, "Open in terminal" child processes are reaped, and a single unreadable entry no longer aborts the newest-transcript search.
+- Usage panel: Claude credentials follow `CLAUDE_CONFIG_DIR`, OAuth usage requests honor the configured proxy, and failed curl runs are cleaned up.
+- The phone remote panel releases its port reliably when stopped and quickly reopened.
+- Shared-memory backups prune the oldest history instead of blocking saving after 100 backups.
+- Security hardening: project-memory writes and internal reads refuse symlinks and special files; file preview editing is confined to saved projects; the file tree no longer lists symlinks; front-end attributes and Markdown previews are escaped/sanitized; `open_url` allows only http/https; the data directory is tightened to 0700/0600; the phone remote server accepts only LAN/Tailscale peers and returns 403 to public sources; highlight.js is updated to 11.12.0 (C/C++ ReDoS fix).
 
 **中文**
 
-- 七家对话 CLI 全部接入常驻会话：Claude/agy/Qwen 走双向 JSON，Grok/OpenCode/MiMo Code 走 stdio ACP（Codex 此前已是常驻 App Server）。同项目、同会话的连续消息复用已加载的 CLI 会话，不再每轮重启；有界空闲池在取消/错误、设置变化、切换开发模式、删除历史和退出时清理。
-- 对话工作台的项目共享记忆改为后台自动运行：只显示简短状态，正常结束且有实质进度的对话自动记录有来源标记的摘录，后续请求自动复用。人工专题不自动覆盖，编辑/恢复仅作为开发模式的可选高级操作。
-- 独立开发版：`pnpm dev` / `pnpm build:dev` 启动 Roster Dev，使用单独应用标识、数据目录、备份和 WebView 偏好，可与正式版并行。
-- 用量面板与对话助手徽标新增 OpenCode Go 订阅用量：5 小时 / 周 / 月三档百分比与重置时间，读取 OpenCode 自己 `auth.json` 经官方用量接口获取。配了自定义 `opencode-go` 网关时跳过，key 只发官方地址。
-- 会话历史恢复 OpenCode/MiMo Code 的粘贴图片；协议错误带上真实原因，不再静默空回复（MiMo）或误报「请确认已安装并已登录」（OpenCode）。
-- CLI 目录里不再提供的模型/推理强度会在刷新时丢掉，而不是每轮原样发出；只是示例的列表不会用来删手打的选择。
-- 开发模式续接 Codex 能重新加载会话模式创建的线程（原生传输别名）；长会话续接只请求元数据，不会在第一个新提问前就失败。
-- 消息悬停按钮（复制 / 重新提问）与气泡留 6px 间距，且鼠标移过去时保持可点。
+- 终端不再花屏（xterm.js 图集修复）；WebGL 上下文丢失会自动重挂；从后台恢复时清空字形图集。
+- 一批对话与开发模式修复：审批回答绑定发起运行；连接中停止会排队并在 start 后被补发；并发粘贴/拖放不再超附件上限；过期文件树结果不再覆盖当前树。
+- 会话历史修复：OpenCode 删除级联清理消息与部件；图片占位按原始序号删除；OpenCode/MiMo 历史在空库时回退下一个数据库；HEIC/HEIF 照片不再被当成视频；转录/历史读取有界。
+- 终端与系统可靠性：输入不再阻塞 IPC 线程；FIFO 不再挂住读取；「打开 CLI」子进程会被回收；单个坏条目不再中止最新转录搜索。
+- 用量面板：Claude 凭据跟随 `CLAUDE_CONFIG_DIR`；OAuth 用量查询走已配置代理；curl 失败会清理子进程。
+- 手机远程面板停止后立即重开不再残留旧监听，端口正常释放。
+- 共享记忆备份满载后淘汰最旧历史，不再拒绝保存。
+- 安全加固：项目记忆写出与内部读取拒绝符号链接和特殊文件；预览编辑限定项目内；文件树不列符号链接；前端属性转义、Markdown 预览净化；`open_url` 只放行 http/https；数据目录收紧到 0700/0600；手机远程只接受局域网/Tailscale 来源、公网直接 403；highlight.js 升级到 11.12.0（C/C++ ReDoS 修复）。
+
 
 ## Upgrade / 升级
 

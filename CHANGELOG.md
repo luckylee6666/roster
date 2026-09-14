@@ -2,6 +2,54 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.5.1
+
+### English
+
+**Fixed**
+- WebGL terminals no longer garble long or side-by-side sessions: the bundled xterm.js trio is updated to the beta carrying the texture-atlas merge/overflow fix (#6038) and the shared-atlas reset fix (#6014), a lost WebGL context is re-attached automatically instead of falling back to the DOM renderer forever, and returning from background clears the atlas.
+- Conversation and Developer views no longer race: an approval answer is bound to the project and run that asked (switching away no longer leaves it stuck in "submitting"), cancelling while a turn is still connecting is queued and replayed once start lands, concurrent paste/drop can no longer exceed the attachment limit, a failed project-memory lookup after terminal creation no longer marks a live terminal as failed, and stale file-tree results no longer overwrite the active tree.
+- OpenCode session deletion enables foreign keys, so messages and parts are removed with the session instead of becoming orphans; transcript image placeholders are removed by the original image index (a skipped image no longer deletes another image's placeholder); OpenCode/MiMo history search falls through to the next database instead of stopping at an empty one.
+- Shared-memory saving no longer fails permanently once 100 backups exist: the oldest history is pruned to make room.
+- Terminal input no longer blocks the IPC thread (writes moved to the blocking pool); FIFO files no longer hang file reads (type is checked before opening); terminals opened from "Open in terminal" are reaped instead of left as zombies; one unreadable transcript entry no longer aborts the newest-file search.
+- Usage panel: Claude credentials follow `CLAUDE_CONFIG_DIR`, OAuth usage requests honor the configured proxy, and a failed curl write no longer leaves a stuck child process.
+- The phone remote panel can no longer leave its previous listener running when stopped and quickly reopened; a stop that happens before the server subscribes is detected, so the port is released.
+- HEIC/HEIF images are classified as images instead of `video/mp4`; Claude transcript and agy history reads are size-bounded, and agy deletion fails closed on oversized history.
+
+**Security**
+- Project-memory writes refuse symlinked `CLAUDE.md` / `AGENTS.md` / `.gitignore`, so a malicious repository can no longer redirect the pointer block into files outside the project (Unix opens with `O_NOFOLLOW`, multi-hardlink targets are rejected, detach skips links too).
+- Internal reads (CLAUDE.md summaries, project settings, git config, state JSON) are capped and refuse links/FIFOs; `open_url` only allows http/https; front-end log lines are limited to 8 KiB; usage-cache temp files get unique names with `create_new`; the data directory is tightened to 0700 and atomic writes to 0600.
+- Project cards, servers, snippets and terminals escape `data-id`, `title` and tool classes; file previews use the same DOMPurify configuration as the conversation workspace; http(s) links in previews go through `open_url`; resume session IDs beginning with `-` are rejected instead of becoming CLI options.
+- `read_file` / `write_file` are confined to saved projects; the file tree no longer lists symlinks (same as the conversation workspace); the instance lock follows the data directory actually in use.
+- The phone remote server accepts only private-network peers (RFC1918, link-local, Tailscale 100.64/10, IPv6 ULA/link-local); public sources get 403 before PIN entry, and mobile pages send `no-store` / `nosniff` / `no-referrer` headers. Plain-HTTP sniffing remains possible on untrusted networks (TLS is not implemented).
+- highlight.js is upgraded to 11.12.0, fixing the quadratic C/C++ `FUNCTION_DECLARATION` ReDoS (issue #4362).
+
+**Changed**
+- The shared-memory dialog now states the canonical file location and what the automatic progress journal does and does not touch.
+
+### 中文
+
+**修复**
+- WebGL 终端不再花屏：xterm.js 三件套升级到含图集合并/溢出修复（#6038）与共享图集重置修复（#6014）的 beta；WebGL 上下文丢失会自动重挂，不再永久退回 DOM 渲染器；从后台恢复时清空图集。
+- 对话与开发模式不再竞态：审批回答绑定发起项目与运行 ID（切走不再卡在「提交中」）；连接中取消会排队并在 start 落地后补发；并发粘贴/拖放不再超过附件上限；终端创建后的项目记忆探测失败不再把存活终端标成启动失败；文件树的过期目录结果不再覆盖当前树。
+- OpenCode 删除会话开启外键约束，消息与部件随会话级联删除，不再留孤儿；转录图片占位按原始图片序号删除（跳过的图片不再误删其他图的占位）；OpenCode/MiMo 历史检索在空库时回退到下一个数据库。
+- 共享记忆备份达到 100 份后不再永久无法保存：淘汰最旧历史腾位。
+- 终端输入不再阻塞 IPC 线程（写入移到阻塞池）；FIFO 不再挂住文件读取（先查类型再打开）；「打开 CLI」拉起的终端会被回收，不再留僵尸进程；单个无法读取的转录条目不再中止最新文件搜索。
+- 用量面板：Claude 凭据跟随 `CLAUDE_CONFIG_DIR`；OAuth 用量查询套用已配置代理；curl 写入失败不再留下挂死的子进程。
+- 手机远程面板「停止后很快重开」不再残留旧监听：服务订阅关闭信号之前发生的 stop 也能被识别，端口正常释放。
+- HEIC/HEIF 图片不再被误判成 `video/mp4`；Claude 转录与 agy 历史改为有界读取，agy 删除在超大文件上直接失败而不是只读写一部分。
+
+**安全**
+- 项目记忆写出拒绝符号链接的 `CLAUDE.md` / `AGENTS.md` / `.gitignore`，恶意仓库不能再把指针块写进项目外文件（Unix 用 `O_NOFOLLOW` 打开，拒绝多硬链接目标，detach 同样跳过链接）。
+- 内部读取（CLAUDE.md 摘要、项目设置、git config、状态 JSON）加限并拒绝链接/FIFO；`open_url` 只放行 http/https；前端日志限长 8 KiB；用量缓存临时文件用唯一名并 `create_new`；数据目录收紧到 0700，原子写文件 0600。
+- 项目卡片、服务器、片段、终端对 `data-id`、`title`、tool class 做转义；文件预览改用与对话工作台同一套 DOMPurify 配置；预览里的 http(s) 链接走 `open_url`；以 `-` 开头的续接会话 ID 会被拒绝，不再变成 CLI 选项。
+- `read_file` / `write_file` 只能操作已保存项目内的文件；文件树不再列出符号链接（与对话工作台同口径）；迁移回退时实例锁跟随实际写入的数据目录。
+- 手机远程只接受私有网段来源（RFC1918、链路本地、Tailscale 100.64/10、IPv6 ULA/链路本地），公网来源在猜 PIN 前直接 403；手机页补 `no-store` / `nosniff` / `no-referrer` 响应头。不可信网络上的明文 HTTP 嗅探风险仍在（尚未实现 TLS）。
+- highlight.js 升级到 11.12.0，修复 C/C++ `FUNCTION_DECLARATION` 的二次方 ReDoS（issue #4362）。
+
+**变更**
+- 项目共享记忆弹窗写明正本位置，以及自动进度记录会做什么、不会动什么。
+
 ## v1.5.0
 
 ### English
