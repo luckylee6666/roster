@@ -14,7 +14,7 @@ import { installThemePointer } from './terminal-theme-pointer.js';
 import { installTerminalCharacterTheme } from './terminal-theme-character.js';
 import { normalizeProjectMachine, projectMachineTag } from './project-form-utils.js';
 import { seedThemePresets } from './terminal-theme-presets.js';
-import { CLI_TOOLS, CLI_TOOL_IDS, CONVERSATION_CLI_TOOL_IDS, HISTORY_CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
+import { CLI_TOOLS, CLI_TOOL_IDS, HISTORY_CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
 import {
   cliToolName,
   restoreSessionLayout,
