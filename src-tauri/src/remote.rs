@@ -3,17 +3,20 @@
 // 数据流：PTY ←→ RemoteHub（会话表 + 滚动缓存 + 广播通道）←→ WebSocket ←→ 手机 xterm.js
 // 桌面窗口仍走 Tauri 事件，手机走这里的 WS，两边订阅同一批会话，互不影响。
 //
-// 安全：服务绑定 0.0.0.0 但要求 6 位 PIN（启动时随机生成，桌面 UI 展示），
+// 安全：服务绑定 0.0.0.0 但**只接受私有网段/Tailscale 来源**（require_private_peer），
+// 公网即便误做端口映射也拿不到握手；应用层仍要求 6 位 PIN（启动时随机生成，桌面 UI 展示），
 // 连续猜错会触发指数退避锁定（见 AuthGuard），比对用定长比较避免时序侧信道。
-// 这一层暴露的是「在本机跑 shell」的能力，PIN 是最低门槛，远程场景（Tailscale）务必保留。
-// 关闭面板会调用 stop()：清空 PIN、断开所有已连接会话、停止监听，下次打开才重新暴露。
+// 这一层暴露的是「在本机跑 shell」的能力，PIN 是最低门槛；明文 HTTP 只建议在可信局域网
+// 或经 Tailscale 使用（防嗅探需要 TLS，尚未实现）。关闭面板会调用 stop()：清空 PIN、
+// 断开所有已连接会话、停止监听，下次打开才重新暴露。
 
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        ConnectInfo, Query, Request, State,
     },
-    http::{header, StatusCode},
+    http::{header, HeaderName, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -23,6 +26,7 @@ use portable_pty::{Child, MasterPty};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -212,11 +216,17 @@ pub fn spawn_server(hub: RemoteHub) {
                 .route("/vendor/addon-fit.js", get(serve_fit_js))
                 .route("/api/sessions", get(list_sessions))
                 .route("/ws", get(ws_handler))
+                .layer(middleware::from_fn(security_headers))
+                .layer(middleware::from_fn(require_private_peer))
                 .with_state(hub);
             match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
                 Ok(listener) => {
                     println!("[remote] 手机端服务监听 0.0.0.0:{port}");
-                    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+                    let serve = axum::serve(
+                        listener,
+                        app.into_make_service_with_connect_info::<SocketAddr>(),
+                    )
+                    .with_graceful_shutdown(async move {
                         let _ = shutdown_rx.recv().await;
                     });
                     if let Err(e) = serve.await {
@@ -228,6 +238,54 @@ pub fn spawn_server(hub: RemoteHub) {
             }
         });
     });
+}
+
+// ===== 网络层守卫 =====
+
+/// 只接受私有网段 / Tailscale 来源：公网（误做端口映射或接在公共网段）直接 403，
+/// 连 PIN 都不用猜。Tailscale 的 100.64.0.0/10 与 IPv6 ULA/链路本地一并放行。
+fn is_private_peer(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || (v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1]))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_peer(IpAddr::V4(v4));
+            }
+            v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+        }
+    }
+}
+
+async fn require_private_peer(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !is_private_peer(addr.ip()) {
+        return (StatusCode::FORBIDDEN, "仅允许局域网或 Tailscale 访问").into_response();
+    }
+    next.run(request).await
+}
+
+/// 手机页与接口一律不缓存，顺带补两个常规安全头。
+async fn security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
 }
 
 // ===== 静态资源（编译期嵌入二进制，离线可用，不走 CDN）=====
@@ -487,6 +545,38 @@ async fn handle_client_msg(hub: &RemoteHub, id: &str, txt: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_peer_filter_allows_lan_and_tailscale_only() {
+        for allowed in [
+            "127.0.0.1",
+            "192.168.1.20",
+            "10.0.0.5",
+            "172.16.3.4",
+            "169.254.1.1",
+            "100.64.0.7",
+            "100.127.255.254",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:192.168.1.1",
+        ] {
+            assert!(
+                is_private_peer(allowed.parse().unwrap()),
+                "应放行 {allowed}"
+            );
+        }
+        for denied in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "100.63.0.1",
+            "100.128.0.1",
+            "2001:4860:4860::8888",
+            "::ffff:8.8.8.8",
+        ] {
+            assert!(!is_private_peer(denied.parse().unwrap()), "应拒绝 {denied}");
+        }
+    }
 
     #[test]
     fn client_input_accepts_small_input_only() {
