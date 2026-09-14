@@ -1241,6 +1241,13 @@ fn list_dir(path: String) -> Result<Vec<DirEntryInfo>, String> {
             Ok(e) => e,
             Err(_) => continue,
         };
+        // 符号链接一律不列出：顺着链接能翻到项目外（对话工作台的
+        // project_files 也是同样口径）。
+        match entry.file_type() {
+            Ok(kind) if kind.is_symlink() => continue,
+            Ok(_) => {}
+            Err(_) => continue,
+        }
         let p = entry.path();
         result.push(DirEntryInfo {
             name: entry.file_name().to_string_lossy().to_string(),
@@ -1399,12 +1406,30 @@ fn read_text_file(p: &Path) -> Result<FileContent, String> {
     })
 }
 
+/// 已保存项目内的可编辑文件：文件树只浏览项目目录，命令层再兜底复核，
+/// 防止主 WebView 被注入后把 IPC 当任意文件读写原语。
+fn editable_project_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
+    let target = fs::canonicalize(Path::new(path)).map_err(|e| e.to_string())?;
+    let allowed = state.projects.iter().any(|project| {
+        fs::canonicalize(&project.local_path)
+            .map(|root| target == root || target.starts_with(&root))
+            .unwrap_or(false)
+    });
+    if !allowed {
+        return Err("只能编辑已保存项目内的文件".into());
+    }
+    Ok(target)
+}
+
 /// 读取文本文件内容预览：>1MB 截断，含 NUL 字节判为二进制拒绝。
 /// 可编辑性、换行符和 UTF-8 BOM 一并返回，前端保存时据此保持原格式。
 #[tauri::command]
-fn read_file(path: String) -> Result<FileContent, String> {
-    let p = fs::canonicalize(Path::new(&path)).map_err(|e| e.to_string())?;
-    read_text_file(&p)
+fn read_file(state: State<Mutex<AppState>>, path: String) -> Result<FileContent, String> {
+    let target = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        editable_project_path(&guard, &path)?
+    };
+    read_text_file(&target)
 }
 
 #[cfg(target_os = "macos")]
@@ -1543,18 +1568,16 @@ fn atomic_replace_file(path: &Path, data: &[u8], expected_current: &[u8]) -> Res
 
 /// 保存 UTF-8 文本文件。保存前和原子替换前逐字节核对打开时的内容，尽力检测
 /// 终端、Git 或其他编辑器在此期间写入的新版本。
-#[tauri::command]
-fn write_file(
-    path: String,
+fn write_text_file(
+    target: &Path,
     content: String,
     expected_content: String,
     utf8_bom: bool,
 ) -> Result<FileContent, String> {
-    let target = fs::canonicalize(Path::new(&path)).map_err(|e| e.to_string())?;
     if !target.is_file() {
         return Err("不是文件".to_string());
     }
-    let metadata = fs::metadata(&target).map_err(|e| e.to_string())?;
+    let metadata = fs::metadata(target).map_err(|e| e.to_string())?;
     if metadata.len() > MAX_TEXT_FILE_SIZE {
         return Err("文件超过 1MB，不能在应用内编辑".to_string());
     }
@@ -1562,7 +1585,7 @@ fn write_file(
         return Err("文件为只读，无法保存修改".to_string());
     }
 
-    let (current_bytes, _, current_truncated) = read_file_bounded(&target, MAX_TEXT_FILE_SIZE)?;
+    let (current_bytes, _, current_truncated) = read_file_bounded(target, MAX_TEXT_FILE_SIZE)?;
     if current_truncated {
         return Err("文件超过 1MB，不能在应用内编辑".to_string());
     }
@@ -1588,8 +1611,23 @@ fn write_file(
         return Err("编辑后的文件超过 1MB，未保存".to_string());
     }
 
-    atomic_replace_file(&target, &encoded, &current_bytes)?;
-    read_text_file(&target)
+    atomic_replace_file(target, &encoded, &current_bytes)?;
+    read_text_file(target)
+}
+
+#[tauri::command]
+fn write_file(
+    state: State<Mutex<AppState>>,
+    path: String,
+    content: String,
+    expected_content: String,
+    utf8_bom: bool,
+) -> Result<FileContent, String> {
+    let target = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        editable_project_path(&guard, &path)?
+    };
+    write_text_file(&target, content, expected_content, utf8_bom)
 }
 
 #[tauri::command]
@@ -3629,7 +3667,8 @@ pub fn run() {
     } else {
         "Roster"
     };
-    let _instance_lock = match instance_lock::acquire(&preferred_data_dir()) {
+    let preferred = preferred_data_dir();
+    let _instance_lock = match instance_lock::acquire(&preferred) {
         Ok(lock) => lock,
         Err(error) => {
             rfd::MessageDialog::new()
@@ -3647,6 +3686,23 @@ pub fn run() {
     );
     let active_data_dir = initialize_data_dir();
     let _ = ACTIVE_DATA_DIR.set(active_data_dir.clone());
+    // 迁移失败时会回退使用旧数据目录：锁也要跟着落在实际写入的那个目录，
+    // 否则两个实例可能分别锁新目录、共写旧目录。
+    let _active_instance_lock = if active_data_dir != preferred {
+        match instance_lock::acquire(&active_data_dir) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                rfd::MessageDialog::new()
+                    .set_title(app_name)
+                    .set_description(&error)
+                    .set_level(rfd::MessageLevel::Warning)
+                    .show();
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let state = Mutex::new(AppState::new(&active_data_dir));
     let term_state = TerminalState::default();
     let activity_for_monitor = term_state.activity.clone();
@@ -4165,8 +4221,8 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o754)).unwrap();
         }
 
-        let saved = write_file(
-            path.to_string_lossy().to_string(),
+        let saved = write_text_file(
+            &path,
             "name = \"new\"\r\n".to_string(),
             "name = \"old\"\r\n".to_string(),
             true,
@@ -4184,8 +4240,8 @@ mod tests {
         }
 
         fs::write(&path, b"\xEF\xBB\xBFname = \"external\"\r\n").unwrap();
-        let error = write_file(
-            path.to_string_lossy().to_string(),
+        let error = write_text_file(
+            &path,
             "name = \"mine\"\r\n".to_string(),
             "name = \"new\"\r\n".to_string(),
             true,
@@ -4232,13 +4288,7 @@ mod tests {
         assert!(!file.editable);
         assert_eq!(file.content.len(), MAX_TEXT_FILE_SIZE as usize);
 
-        let error = write_file(
-            path.to_string_lossy().to_string(),
-            String::new(),
-            file.content,
-            false,
-        )
-        .unwrap_err();
+        let error = write_text_file(&path, String::new(), file.content, false).unwrap_err();
         assert!(error.contains("超过 1MB"));
     }
 
@@ -4272,13 +4322,7 @@ mod tests {
         let attribute = "user.roster.test";
         file.set_xattr(attribute, b"kept").unwrap();
 
-        write_file(
-            path.to_string_lossy().to_string(),
-            "new\n".to_string(),
-            "old\n".to_string(),
-            false,
-        )
-        .unwrap();
+        write_text_file(&path, "new\n".to_string(), "old\n".to_string(), false).unwrap();
 
         let saved = fs::File::open(&path).unwrap();
         assert_eq!(saved.get_xattr(attribute).unwrap(), Some(b"kept".to_vec()));
