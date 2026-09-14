@@ -469,7 +469,7 @@ function renderGroups() {
       </a>
       <div class="group-children">
         ${groupProjects.map(p => `
-          <a class="menu-child-item" href="#" data-id="${p.id}">
+          <a class="menu-child-item" href="#" data-id="${escAttr(p.id)}">
             <span>${esc(p.name)}</span>
           </a>
         `).join('')}
@@ -722,7 +722,7 @@ function render(list) {
   el.list.style.display = 'flex';
 
   el.list.innerHTML = list.map(p => `
-    <div class="project-card" data-id="${p.id}">
+    <div class="project-card" data-id="${escAttr(p.id)}">
       <div class="card-row">
         <div class="card-main">
           <div class="card-title">
@@ -2455,7 +2455,7 @@ function bind() {
     if (!a) return;
     e.preventDefault();
     const href = a.getAttribute('href') || '';
-    if (/^https?:\/\//i.test(href)) invoke('open_folder', { path: href }).catch(() => {});
+    if (/^https?:\/\//i.test(href)) invoke('open_url', { url: href }).catch(() => {});
   });
   setupTreeSplitter();
   setupSessionRail();
@@ -3086,7 +3086,7 @@ function renderServerList() {
   el.serverList.style.display = '';
 
   el.serverList.innerHTML = servers.map(s => `
-    <div class="server-card" data-id="${s.id}">
+    <div class="server-card" data-id="${escAttr(s.id)}">
       <div class="server-card-main">
         <div class="server-card-name">${esc(s.name)}</div>
         <div class="server-card-info">
@@ -4062,7 +4062,7 @@ function renderSnippetMenu() {
   const menu = $('snippet-menu');
   const items = snippets.length
     ? snippets.map(s => `
-        <div class="snippet-item" data-id="${s.id}" title="${escAttr(s.content)}">
+        <div class="snippet-item" data-id="${escAttr(s.id)}" title="${escAttr(s.content)}">
           <span class="snippet-item-title">${esc(s.title)}</span>
           <span class="snippet-item-preview">${esc(snippetPreview(s.content))}</span>
         </div>`).join('')
@@ -4193,7 +4193,7 @@ function renderSnippetList() {
       ? `<button class="action-btn snippet-sched-toggle${sc.enabled ? ' on' : ''}" title="${sc.enabled ? '暂停定时' : '启用定时'}">${SNIPPET_ICONS.clock}</button>`
       : '';
     return `
-    <div class="snippet-row" data-id="${s.id}">
+    <div class="snippet-row" data-id="${escAttr(s.id)}">
       <div class="snippet-row-main">
         <div class="snippet-row-title">${esc(s.title)}${badge}</div>
         <div class="snippet-row-preview">${esc(snippetPreview(s.content))}</div>
@@ -4437,7 +4437,7 @@ function renderContext(p, ctx) {
     html += `<div class="ctx-section"><div class="ctx-section-title">改动文件 ${ctx.changed + ctx.untracked}</div><div class="ctx-files">`;
     ctx.files.forEach(f => {
       const s = ctxStatusLabel(f.status);
-      html += `<div class="ctx-file"><span class="ctx-fstatus ctx-${s.cls}" title="${esc(s.name)}">${esc(s.t)}</span><span class="ctx-fpath" title="${escAttr(f.path)}">${esc(f.path)}</span></div>`;
+      html += `<div class="ctx-file"><span class="ctx-fstatus ctx-${s.cls}" title="${escAttr(s.name)}">${esc(s.t)}</span><span class="ctx-fpath" title="${escAttr(f.path)}">${esc(f.path)}</span></div>`;
     });
     if (ctx.filesMore) html += `<div class="ctx-files-more">还有 ${ctx.filesMore} 个未列出…</div>`;
     html += '</div></div>';
@@ -5180,7 +5180,15 @@ function renderRich() {
     termEl.previewRich.className = 'file-preview-rich markdown-body';
     // marked 默认透传原始 HTML 且不净化 → 必须 DOMPurify 过滤，防止恶意 .md 在应用内执行脚本
     const raw = window.marked ? window.marked.parse(content) : esc(content);
-    termEl.previewRich.innerHTML = window.DOMPurify ? window.DOMPurify.sanitize(raw) : esc(content);
+    // 与对话工作台的 Markdown 用同一套净化配置：预览 .md 同样不允许 <style>、
+    // style 属性等，避免恶意文件覆盖应用 UI。
+    termEl.previewRich.innerHTML = window.DOMPurify
+      ? window.DOMPurify.sanitize(raw, {
+          USE_PROFILES: { html: true },
+          FORBID_TAGS: ['style', 'iframe', 'object', 'embed'],
+          FORBID_ATTR: ['style', 'id', 'name'],
+        })
+      : esc(content);
     showPreviewView('rich');
   } else {
     termEl.previewRich.className = 'file-preview-rich';
@@ -6327,12 +6335,12 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   tabEl.dataset.id = id;
   // 徽标只显示工具名（命令首词），不显示参数——否则恢复命令会整条塞进徽标
   const toolBadge = toolName
-    ? `<span class="term-tab-tool tool-${esc(toolName)}">${esc(toolName)}</span>`
+    ? `<span class="term-tab-tool tool-${escAttr(toolName)}">${esc(toolName)}</span>`
     : '';
   tabEl.innerHTML =
     `<span class="term-tab-dot"></span>` +
     `<span class="term-tab-pane"></span>` +
-    `<span class="term-tab-name" title="${esc(label)}">${esc(label)}</span>` +
+    `<span class="term-tab-name" title="${escAttr(label)}">${esc(label)}</span>` +
     toolBadge +
     `<span class="term-tab-branch" style="display:none;"></span>` +
     `<span class="term-tab-ctx" style="display:none;" title="上下文用量"></span>` +

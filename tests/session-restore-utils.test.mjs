@@ -51,6 +51,12 @@ test('历史会话按工具生成指定 ID 的续接命令', () => {
   assert.equal(resumeCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
   assert.equal(resumeCliCommand('gemini', 'x'), '', 'Gemini 已移除，不再生成续接命令');
   assert.equal(resumeCliCommand('claude', ''), '');
+  assert.equal(
+    resumeCliCommand('claude', '--dangerously-skip-permissions'),
+    '',
+    '以 - 开头的会话 ID 会被 CLI 当成选项，必须拒绝',
+  );
+  assert.equal(launchCliCommand('claude', '--resume'), 'claude', '拒绝后回退成普通启动命令');
   assert.equal(launchCliCommand('grok', '019ff9ad'), 'grok --resume 019ff9ad');
   assert.equal(launchCliCommand('claude', 'abc-1'), 'claude --resume abc-1');
   assert.equal(launchCliCommand('codex', 'x-1'), withCodexNativeProvider('codex resume x-1'));

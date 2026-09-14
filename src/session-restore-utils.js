@@ -75,7 +75,8 @@ export function quoteCliArg(value) {
 export function resumeCliCommand(tool, sessionId) {
   const name = String(tool || '').trim();
   const id = String(sessionId || '').trim();
-  if (!name || !id) return '';
+  // 以 - 开头的 ID 会被 CLI 当成选项解析（会话文件名可被本地伪造），拒绝续接。
+  if (!name || !id || id.startsWith('-')) return '';
   if (name === 'claude') return `claude --resume ${quoteCliArg(id)}`;
   if (name === 'grok') return `grok --resume ${quoteCliArg(id)}`;
   if (name === 'codex') return withCodexNativeProvider(`codex resume ${quoteCliArg(id)}`);
