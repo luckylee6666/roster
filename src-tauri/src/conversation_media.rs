@@ -65,6 +65,14 @@ fn media_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
         return Some(("image", mime));
     }
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        // HEIF/HEIC 也是 ftyp 容器，不能一律当 mp4 视频：否则相册里的
+        // iPhone 照片会被当成 video/mp4 塞给前端，播放器直接坏掉。
+        if matches!(
+            &bytes[8..12],
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+        ) {
+            return Some(("image", "image/heic"));
+        }
         return Some(("video", "video/mp4"));
     }
     if bytes.starts_with(b"\x1a\x45\xdf\xa3") {
