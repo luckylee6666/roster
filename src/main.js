@@ -3570,7 +3570,7 @@ function applyThemeDef(def) {
     s.term.options.cursorBlink = def.cursorBlink !== false;
     // 带图主题必须 DOM 渲染：拆掉 WebGL；切回无图主题再装回（恢复防 ghosting）
     if (hasBg && s.webgl) { try { s.webgl.dispose(); } catch (_) {} s.webgl = null; }
-    else if (!hasBg && !s.webgl) { s.webgl = attachWebgl(s.term); }
+    else if (!hasBg && !s.webgl) { attachSessionWebgl(s); }
     clearTermAtlas(s.term);
     if (hasBg) scheduleImageCellBackgroundSync(s);
   });
@@ -4568,16 +4568,37 @@ function clearTermAtlas(term) {
   try { term.clearTextureAtlas && term.clearTextureAtlas(); } catch (_) {}
 }
 
-// 挂 WebGL 渲染器（防选区 ghosting）；无 WebGL 环境安全降级回 DOM 渲染器。返回 addon 或 null。
-function attachWebgl(term) {
+// 挂 WebGL 渲染器（防选区 ghosting）；无 WebGL 环境安全降级回 DOM 渲染器。
+// onLost 在 GPU 上下文丢失后回调，交给调用方决定是否重挂。
+function attachWebgl(term, onLost) {
   try {
     const w = new window.WebglAddon.WebglAddon();
-    w.onContextLoss(() => w.dispose());
+    w.onContextLoss(() => {
+      try { w.dispose(); } catch (_) {}
+      if (typeof onLost === 'function') onLost();
+    });
     term.loadAddon(w);
     return w;
   } catch (_) {
     return null;
   }
+}
+
+// 给会话挂 WebGL，并在 GPU 上下文丢失后自动重挂：WKWebView 会在后台/显存紧张时
+// 回收上下文，丢掉后不重挂就会永久退回 DOM 渲染器（选区 ghosting 回来）。连续
+// 丢两次就留在 DOM 兜底，不再反复抢 GPU。
+function attachSessionWebgl(session) {
+  if (session.webgl || (currentThemeDef && currentThemeDef.bg)) return;
+  session.webgl = attachWebgl(session.term, () => {
+    session.webgl = null;
+    session.contextLosses = (session.contextLosses || 0) + 1;
+    if (session.contextLosses > 2 || !sessions.has(session.id)) return;
+    setTimeout(() => {
+      if (!sessions.has(session.id)) return;
+      attachSessionWebgl(session);
+      clearTermAtlas(session.term);
+    }, 300);
+  });
 }
 
 async function setTermTheme(key, persist = true) {
@@ -4758,7 +4779,13 @@ function watchDprChange() {
   const onChange = () => {
     sessions.forEach(s => clearTermAtlas(s.term));
     scheduleFitVisibleSessions();
-    watchDprChange();
+watchDprChange();
+
+// 页面从后台恢复时清一次图集：WKWebView 后台可能回收 GPU 上下文或留下错位字形。
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  requestAnimationFrame(() => sessions.forEach(s => clearTermAtlas(s.term)));
+});
   };
   mq.addEventListener('change', onChange, { once: true });
 }
@@ -6339,12 +6366,8 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   term.loadAddon(fit);
   term.open(terminalHostEl);
   // WebGL 渲染器：默认 DOM 渲染器在触控板滚动时选区会糊成一大块（ghosting），
-  // 改用 GPU 渲染正确重绘选区/滚动。WebGL 不可用或上下文丢失时安全降级回默认渲染器。
+  // 改用 GPU 渲染正确重绘选区/滚动；挂载与上下文丢失恢复见 attachSessionWebgl。
   // 图片主题的 xterm 必须走 DOM 渲染——xterm WebGL 画布是像素级不透明，背景透不上来。
-  let webgl = null;
-  if (!(currentThemeDef && currentThemeDef.bg)) {
-    webgl = attachWebgl(term);
-  }
   const inputBuffer = createTerminalInputBuffer({
     send: data => invoke('terminal_write', { id, data }),
     onError: error => appLog('warn', `终端输入写入失败（${id}）：${error}`),
@@ -6353,7 +6376,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   term.onData(data => inputBuffer.write(data));
 
   const session = {
-    term, fit, tabEl, bodyEl, webgl, name: label, status: 'running', cwd, tool: autoCmd,
+    term, fit, tabEl, bodyEl, webgl: null, contextLosses: 0, name: label, status: 'running', cwd, tool: autoCmd,
     inputBuffer,
     paneHeadEl,
     paneIndexEl: paneHeadEl.querySelector('.term-pane-index'),
@@ -6364,6 +6387,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     startedAt: Date.now(), restorable: false,
   };
   sessions.set(id, session);
+  attachSessionWebgl(session);
   term.onRender(renderRange => scheduleImageCellBackgroundSync(session, renderRange));
 
   openDock();
