@@ -56,6 +56,10 @@ opencode.json
 # Multi-CLI orchestra session files
 .vibe/
 
+# Local agent/tool scratch directories
+.superpowers/
+.claude/
+
 # Generated Python bytecode and local-only 3D experiments.
 __pycache__/
 *.py[cod]
@@ -64,6 +68,8 @@ __pycache__/
 /design/guofeng-3d/experimental-depth-relief/
 /design/guofeng-3d/previews/
 /design/guofeng-3d/full-frame-reference/
+# 帧与贴图属于本地设计中间产物（65MB），不入库；脚本、sequence.txt 与 README 保留。
+/design/guofeng-3d/**/*.png
 
 # Stitch 设计系统文档可保留；云端元数据与生成稿属于本地中间产物。
 /.stitch/metadata.json
