@@ -61,6 +61,8 @@ test('概览里的专题点一条就能编辑，并显示上次带入回执',asy
 
   f.controller.record('a',{files:['MEMORY.md','wow3d.md'],bytes:30});
   assert.match(f.el('shared-memory-receipt').textContent,/上次对话带入了 2 个文件/);
+  assert.match(f.el('shared-memory-location').textContent,/文件实际在 \/memory\/project/);
+  assert.match(f.el('shared-memory-location').textContent,/\.memory 是它的快捷方式/);
 });
 
 test('自动进度的七家适配器使用同一结果收集边界',()=>{

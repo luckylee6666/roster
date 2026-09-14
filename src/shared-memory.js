@@ -21,7 +21,7 @@ export function sharedMemoryOverview(index, files) {
 
 export function installSharedMemory({document,invoke,confirm,notify,onFloating}) {
   const el=id=>document.getElementById(id);
-  const ui={open:el('conversation-memory-open'),status:el('conversation-memory-status'),overlay:el('shared-memory-overlay'),project:el('shared-memory-project'),enabled:el('shared-memory-enabled'),directory:el('shared-memory-directory'),files:el('shared-memory-files'),name:el('shared-memory-name'),content:el('shared-memory-content'),save:el('shared-memory-save'),fresh:el('shared-memory-new'),close:el('shared-memory-close'),reload:el('shared-memory-reload'),backups:el('shared-memory-backups'),restore:el('shared-memory-restore'),message:el('shared-memory-message')};
+  const ui={open:el('conversation-memory-open'),status:el('conversation-memory-status'),overlay:el('shared-memory-overlay'),project:el('shared-memory-project'),enabled:el('shared-memory-enabled'),directory:el('shared-memory-directory'),location:el('shared-memory-location'),files:el('shared-memory-files'),name:el('shared-memory-name'),content:el('shared-memory-content'),save:el('shared-memory-save'),fresh:el('shared-memory-new'),close:el('shared-memory-close'),reload:el('shared-memory-reload'),backups:el('shared-memory-backups'),restore:el('shared-memory-restore'),message:el('shared-memory-message')};
   let current=null, editing=null, expected=null, loadedName='', busy=false, revision=0, initialText='', initialName='';
   const overview=el('shared-memory-overview'),summary=el('shared-memory-summary'),advanced=el('shared-memory-advanced'),feedback=el('shared-memory-feedback'),receipt=el('shared-memory-receipt'),overviewHint=el('shared-memory-overview-hint');
   let memoryFiles=[],indexText='',recentCount=0;
@@ -57,9 +57,10 @@ export function installSharedMemory({document,invoke,confirm,notify,onFloating})
     }
     if(overviewHint){
       overviewHint.hidden=view.items.length===0;
+      const tail='inbox 草稿不会自动发送，自动进度只是未核实的摘要、不会覆盖专题。';
       overviewHint.textContent=view.count>view.items.length
-        ?`点一条可在下面查看或编辑；还有 ${view.count-view.items.length} 个专题在下面的文件列表里。inbox 草稿不会自动发送。`
-        :'点一条可在下面查看或编辑；inbox 草稿不会自动发送。';
+        ?`点一条可在下面查看或编辑；还有 ${view.count-view.items.length} 个专题在下面的文件列表里。${tail}`
+        :`点一条可在下面查看或编辑；${tail}`;
     }
     renderReceipt();
   }
@@ -109,6 +110,7 @@ export function installSharedMemory({document,invoke,confirm,notify,onFloating})
     try{
       const state=await invoke('shared_memory_state',{projectId:editing.id});if(token!==revision)return;
       ui.enabled.checked=state.enabled;ui.directory.textContent=state.directory;
+      if(ui.location){ui.location.hidden=!state.directory;ui.location.textContent=state.directory?`文件实际在 ${state.directory}；项目里的 .memory 是它的快捷方式，所有助手共用这一份。`:'';}
       memoryFiles=state.files;recentCount=state.recentCount||0;renderOverview();
       policies.set(editing.id,state.enabled);sidebar();
       ui.files.replaceChildren();addOption(ui.files,'','选择记忆文件');

@@ -1056,10 +1056,11 @@
           <h3 id="shared-memory-project"></h3>
           <label class="shared-memory-switch"><input id="shared-memory-enabled" type="checkbox"> 让这个项目的助手共享记忆</label>
           <p class="shared-memory-note">开启后不用手动操作：每次对话会自动读取下面的记忆交给当前助手，换助手或交接也会带上。想补充或整理时，直接让助手更新，或点下面的专题自己改。内容会发送给模型，请勿存放密码、令牌或敏感资料。</p>
+          <p id="shared-memory-location" class="shared-memory-note" hidden></p>
           <p id="shared-memory-receipt" class="shared-memory-receipt"></p>
           <p id="shared-memory-summary" class="shared-memory-summary">正在读取记忆…</p>
           <ul id="shared-memory-overview" class="shared-memory-overview"></ul>
-          <p id="shared-memory-overview-hint" class="shared-memory-note">点一条可在下面查看或编辑；inbox 草稿不会自动发送。</p>
+          <p id="shared-memory-overview-hint" class="shared-memory-note">点一条可在下面查看或编辑；inbox 草稿不会自动发送，自动进度只是未核实的摘要、不会覆盖专题。</p>
           <p id="shared-memory-feedback" class="shared-memory-note" role="status"></p>
           <details id="shared-memory-advanced" class="shared-memory-advanced">
           <summary>查看或编辑记忆文件</summary>
