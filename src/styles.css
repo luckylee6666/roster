@@ -6376,7 +6376,10 @@ html[data-app-view="developer"] #conversation-surface {
 .shared-memory-switch { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
 .shared-memory-summary { font-size: 13px; font-weight: 600; margin: 22px 0 10px; }
 .shared-memory-overview { list-style: none; padding: 0; margin: 0; max-height: 240px; overflow: auto; }
-.shared-memory-overview li { margin-bottom: 8px; padding: 12px; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.shared-memory-overview li { margin-bottom: 8px; padding: 12px; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; transition: border-color 0.12s ease, background 0.12s ease; }
+.shared-memory-overview li:hover { border-color: var(--blue, #4f46e5); background: var(--bg-0, #f7f8fa); }
+.shared-memory-topic { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; font-size: 13px; line-height: 1.6; cursor: pointer; overflow-wrap: anywhere; }
+.shared-memory-receipt { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-0, #f7f8fa); color: var(--text-secondary, #777); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .shared-memory-advanced { border-top: 1px solid var(--border, #e5e7eb); margin-top: 20px; padding-top: 14px; }
 .shared-memory-advanced > summary { cursor: pointer; color: var(--text-secondary, #777); font-size: 12px; }
 .conversation-memory-indicator { display: flex; justify-content: space-between; gap: 12px; color: var(--chat-faint); font-size: 12px; }

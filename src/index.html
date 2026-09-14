@@ -1055,12 +1055,14 @@
         <div class="modal-body">
           <h3 id="shared-memory-project"></h3>
           <label class="shared-memory-switch"><input id="shared-memory-enabled" type="checkbox"> 让这个项目的助手共享记忆</label>
-          <p class="shared-memory-note">切换助手时，也能带上相关项目记忆。内容会发给所选模型，请勿存放密码或敏感资料。</p>
+          <p class="shared-memory-note">开启后不用手动操作：每次对话会自动读取下面的记忆交给当前助手，换助手或交接也会带上。想补充或整理时，直接让助手更新，或点下面的专题自己改。内容会发送给模型，请勿存放密码、令牌或敏感资料。</p>
+          <p id="shared-memory-receipt" class="shared-memory-receipt"></p>
           <p id="shared-memory-summary" class="shared-memory-summary">正在读取记忆…</p>
           <ul id="shared-memory-overview" class="shared-memory-overview"></ul>
+          <p id="shared-memory-overview-hint" class="shared-memory-note">点一条可在下面查看或编辑；inbox 草稿不会自动发送。</p>
           <p id="shared-memory-feedback" class="shared-memory-note" role="status"></p>
           <details id="shared-memory-advanced" class="shared-memory-advanced">
-          <summary>高级管理</summary>
+          <summary>查看或编辑记忆文件</summary>
           <p id="shared-memory-directory" class="shared-memory-note"></p>
           <div class="shared-memory-actions"><select id="shared-memory-files" class="form-select" aria-label="选择记忆专题"></select><button id="shared-memory-new" class="btn btn-default" type="button">新建</button><button id="shared-memory-reload" class="btn btn-default" type="button">重新读取</button></div>
           <input id="shared-memory-name" class="form-input" aria-label="记忆文件名" placeholder="MEMORY.md、主题名.md 或 inbox/待整理.md" maxlength="120">

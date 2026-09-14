@@ -16,23 +16,60 @@ export function sharedMemoryOverview(index, files) {
     else if(markdown)descriptions.set(markdown[2],`${markdown[1]} ${markdown[3]}`.trim());
   }
   return { count:topics.length, inbox:(files||[]).filter(f=>f.name.startsWith('inbox/')).length,
-    items:topics.slice(0,6).map(file=>(descriptions.get(file.name)||file.name.replace(/\.md$/,'').replace(/[-_]/g,' ')).slice(0,160)) };
+    items:topics.slice(0,6).map(file=>({name:file.name,text:(descriptions.get(file.name)||file.name.replace(/\.md$/,'').replace(/[-_]/g,' ')).slice(0,160)})) };
 }
 
 export function installSharedMemory({document,invoke,confirm,notify,onFloating}) {
   const el=id=>document.getElementById(id);
   const ui={open:el('conversation-memory-open'),status:el('conversation-memory-status'),overlay:el('shared-memory-overlay'),project:el('shared-memory-project'),enabled:el('shared-memory-enabled'),directory:el('shared-memory-directory'),files:el('shared-memory-files'),name:el('shared-memory-name'),content:el('shared-memory-content'),save:el('shared-memory-save'),fresh:el('shared-memory-new'),close:el('shared-memory-close'),reload:el('shared-memory-reload'),backups:el('shared-memory-backups'),restore:el('shared-memory-restore'),message:el('shared-memory-message')};
   let current=null, editing=null, expected=null, loadedName='', busy=false, revision=0, initialText='', initialName='';
-  const overview=el('shared-memory-overview'),summary=el('shared-memory-summary'),advanced=el('shared-memory-advanced'),feedback=el('shared-memory-feedback');
+  const overview=el('shared-memory-overview'),summary=el('shared-memory-summary'),advanced=el('shared-memory-advanced'),feedback=el('shared-memory-feedback'),receipt=el('shared-memory-receipt'),overviewHint=el('shared-memory-overview-hint');
   let memoryFiles=[],indexText='',recentCount=0;
   const receipts=new Map();
   const policies=new Map(),saveStates=new Map();let sidebarRevision=0;
   const dirty=()=>Boolean(editing&&(busy||ui.content?.value!==initialText||ui.name?.value!==initialName));
   function message(text,error=false){if(ui.message)ui.message.textContent=text;if(feedback)feedback.textContent=error?text:'';}
+  /// 「上次对话实际带上了什么」——比抽象开关更能回答"它到底发没发、发了啥"。
+  function renderReceipt(){
+    if(!receipt)return;
+    const entry=editing&&receipts.get(editing.id);
+    if(!entry){receipt.textContent='还没有附加记录：下次对话会自动读取，并在完成后显示带入了哪些文件。';return;}
+    if(entry.enabled===false){receipt.textContent='共享已关闭，后续对话不再附加记忆。';return;}
+    const files=(entry.files||[]).filter(Boolean);
+    const head=files.length?`上次对话带入了 ${files.length} 个文件：${files.slice(0,3).join('、')}${files.length>3?' 等':''}`:'上次对话没有匹配到可读取的专题';
+    receipt.textContent=entry.warning?`${head}（${entry.warning}）`:head;
+  }
   function renderOverview(){
     const view=sharedMemoryOverview(indexText,memoryFiles);
-    if(summary)summary.textContent=(view.count?`${view.count} 个记忆专题${view.inbox?` · ${view.inbox} 条待整理`:''}`:memoryFiles.length?'已有项目索引，尚无独立专题':'还没有人工专题')+(recentCount?` · ${recentCount} 条自动进度`:'');
-    if(overview){overview.replaceChildren();view.items.forEach(text=>{const row=document.createElement('li');row.textContent=text;overview.appendChild(row);});}
+    if(summary)summary.textContent=(view.count?`${view.count} 个记忆专题`:memoryFiles.length?'只有索引，还没有独立专题':'还没有人工专题')+(view.inbox?` · ${view.inbox} 条 inbox 待整理（不自动发送）`:'')+(recentCount?` · ${recentCount} 条自动进度`:'');
+    if(overview){
+      overview.replaceChildren();
+      view.items.forEach(item=>{
+        const row=document.createElement('li');
+        const button=document.createElement('button');
+        button.type='button';
+        button.className='shared-memory-topic';
+        button.textContent=item.text;
+        button.addEventListener('click',()=>openTopic(item.name));
+        row.appendChild(button);
+        overview.appendChild(row);
+      });
+    }
+    if(overviewHint){
+      overviewHint.hidden=view.items.length===0;
+      overviewHint.textContent=view.count>view.items.length
+        ?`点一条可在下面查看或编辑；还有 ${view.count-view.items.length} 个专题在下面的文件列表里。inbox 草稿不会自动发送。`
+        :'点一条可在下面查看或编辑；inbox 草稿不会自动发送。';
+    }
+    renderReceipt();
+  }
+  /// 点一条专题直接进编辑器：把"查看"和"编辑"合成一个动作，不用先找下拉框。
+  async function openTopic(name){
+    if(!name||busy||!editing)return;
+    if(!await leave())return;
+    if(advanced)advanced.open=true;
+    if(ui.files)ui.files.value=name;
+    await readName(name);
   }
   function controls(){
     [ui.files,ui.name,ui.content,ui.save,ui.fresh,ui.reload,ui.enabled,ui.backups,ui.restore].forEach(node=>{if(node)node.disabled=busy||!editing;});
@@ -124,5 +161,5 @@ export function installSharedMemory({document,invoke,confirm,notify,onFloating})
   return {open,setProject(project){
     current=project||null;const token=++sidebarRevision;sidebar();
     if(current)void invoke('shared_memory_state',{projectId:current.id}).then(state=>{if(token!==sidebarRevision)return;policies.set(current.id,state.enabled);sidebar();}).catch(()=>{if(token===sidebarRevision&&ui.status)ui.status.textContent='读取失败';});
-  },record(projectId,receipt){receipts.set(projectId,receipt);sidebar();},saved(projectId,result){if(result.saved||!result.ok)saveStates.set(projectId,result.ok);sidebar();},hasUnsavedChanges:dirty};
+  },record(projectId,receipt){receipts.set(projectId,receipt);sidebar();if(editing&&editing.id===projectId)renderReceipt();},saved(projectId,result){if(result.saved||!result.ok)saveStates.set(projectId,result.ok);sidebar();},hasUnsavedChanges:dirty};
 }
