@@ -32,24 +32,37 @@ pub(crate) struct ResidentPool {
 
 impl ResidentPool {
     pub(crate) fn release(&self, project: Option<&Path>) {
-        let mut pool = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(project) = project {
-            drop(pool.sessions.remove(project));
-        } else {
-            pool.sessions.clear();
-        }
+        // 会话要拿出锁外再 drop：Session::drop 会杀子进程/进程组，持锁做会卡住
+        // 其他复用请求和看门狗线程。
+        let removed: Vec<Session> = {
+            let mut pool = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(project) = project {
+                pool.sessions.remove(project).into_iter().collect()
+            } else {
+                pool.sessions.drain().map(|(_, session)| session).collect()
+            }
+        };
+        drop(removed);
     }
     pub(crate) fn set_enabled(&self, enabled: bool) {
-        let mut pool = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        pool.suspended = !enabled;
-        if !enabled {
-            pool.sessions.clear();
-        }
+        let removed: Vec<Session> = {
+            let mut pool = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            pool.suspended = !enabled;
+            if enabled {
+                Vec::new()
+            } else {
+                pool.sessions.drain().map(|(_, session)| session).collect()
+            }
+        };
+        drop(removed);
     }
     pub(crate) fn shutdown(&self) {
-        let mut pool = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        pool.stopped = true;
-        pool.sessions.clear();
+        let removed: Vec<Session> = {
+            let mut pool = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            pool.stopped = true;
+            pool.sessions.drain().map(|(_, session)| session).collect()
+        };
+        drop(removed);
     }
     fn reap(&self) {
         if self.reaper_started.swap(true, Ordering::SeqCst) {
@@ -59,12 +72,24 @@ impl ResidentPool {
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_millis(500));
             let Some(inner) = weak.upgrade() else { break };
-            let mut pool = inner.lock().unwrap_or_else(|e| e.into_inner());
-            if pool.stopped {
-                break;
-            }
-            pool.sessions
-                .retain(|_, s| s.idle_since.elapsed() < IDLE_TTL && s.alive());
+            let expired: Vec<Session> = {
+                let mut pool = inner.lock().unwrap_or_else(|e| e.into_inner());
+                if pool.stopped {
+                    break;
+                }
+                let keys: Vec<PathBuf> = pool
+                    .sessions
+                    .iter()
+                    .filter(|(_, session)| {
+                        session.idle_since.elapsed() >= IDLE_TTL || !session.alive()
+                    })
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                keys.into_iter()
+                    .filter_map(|key| pool.sessions.remove(&key))
+                    .collect()
+            };
+            drop(expired);
         });
     }
 }
@@ -427,27 +452,38 @@ fn start_reserved(
         .unwrap_or_else(|_| Err("CLI 常驻协议异常，已停止本轮".into()));
         let mut runs = active.lock().unwrap_or_else(|e| e.into_inner());
         let was_cancelled = cancelled.load(Ordering::SeqCst);
-        let mut pool = idle.lock().unwrap_or_else(|e| e.into_inner());
-        if outcome.is_ok() && !was_cancelled && !pool.stopped && !pool.suspended && session.alive()
+        // 出栈的会话也拿锁外 drop：Session::drop 会 kill 子进程/进程组，
+        // 不能握着常驻池的锁做。
+        let mut retired: Vec<Session> = Vec::new();
         {
-            session.idle_since = Instant::now();
-            pool.sessions.insert(r.cwd.clone(), session);
-            if pool.sessions.len() > MAX_IDLE {
-                if let Some(key) = pool
-                    .sessions
-                    .iter()
-                    .min_by_key(|(_, s)| s.idle_since)
-                    .map(|(p, _)| p.clone())
-                {
-                    pool.sessions.remove(&key);
+            let mut pool = idle.lock().unwrap_or_else(|e| e.into_inner());
+            if outcome.is_ok()
+                && !was_cancelled
+                && !pool.stopped
+                && !pool.suspended
+                && session.alive()
+            {
+                session.idle_since = Instant::now();
+                pool.sessions.insert(r.cwd.clone(), session);
+                if pool.sessions.len() > MAX_IDLE {
+                    if let Some(key) = pool
+                        .sessions
+                        .iter()
+                        .min_by_key(|(_, s)| s.idle_since)
+                        .map(|(p, _)| p.clone())
+                    {
+                        if let Some(evicted) = pool.sessions.remove(&key) {
+                            retired.push(evicted);
+                        }
+                    }
                 }
+            } else {
+                retired.push(session);
             }
-        } else {
-            drop(session);
         }
         runs.remove(&r.run_id);
-        drop(pool);
         drop(runs);
+        drop(retired);
         if was_cancelled {
             sink("cancelled", json!({}));
         } else if let Err(error) = outcome {
