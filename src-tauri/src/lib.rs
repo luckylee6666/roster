@@ -1556,7 +1556,11 @@ fn persist_temp_file(temp: tempfile::NamedTempFile, path: &Path) -> Result<(), S
 
 /// 同目录临时文件落盘后再替换目标：避免崩溃时只留下半截内容，并尽可能完整
 /// 保留原文件的权限、所有者、ACL、扩展属性及平台元数据。
-fn atomic_replace_file(path: &Path, data: &[u8], expected_current: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_replace_file(
+    path: &Path,
+    data: &[u8],
+    expected_current: &[u8],
+) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "无法确定文件所在目录".to_string())?;
