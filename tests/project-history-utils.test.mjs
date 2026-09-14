@@ -171,4 +171,6 @@ test('历史点击去重闸只挡窗口内的同一个 key', () => {
   assert.equal(gate.allow('a', 1000), true, '窗口外允许再次操作');
   assert.equal(gate.allow('b', 1100), true);
   assert.equal(gate.allow('', 1200), true, '空 key 不参与去重');
+  gate.reset();
+  assert.equal(gate.allow('a', 1002), true, 'reset 后同一条立即可再操作');
 });

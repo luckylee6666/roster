@@ -1095,6 +1095,8 @@ function closeSessionPreview() {
   sessionPreviewContext = null;
   // 在途预览的结果不能再回写：关掉弹窗后它已经不是当前上下文了。
   sessionPreviewRevision += 1;
+  // 「关掉预览马上再点同一条」是正常操作，不该被自己的双击去重挡下。
+  historyPreviewGate.reset();
   el.sessionPreview?.classList.remove('active');
 }
 
