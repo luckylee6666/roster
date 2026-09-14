@@ -24,9 +24,11 @@ import {
 import {
   DEFAULT_PROJECT_KIT,
   PROJECT_KIT_LAYOUT,
+  createHistoryActionGate,
   createProjectSessionHistoryLoader,
   filterHistoryGroups,
   findRunningProjectTool,
+  historySessionKey,
   launchCommandForProjectTool,
   runningHistoryLookup,
   runningTerminalIdForHistory,
@@ -1065,6 +1067,14 @@ function toggleProjectSessions(project, card) {
   else void expandProjectSessions(project, card);
 }
 
+const historyOpenGate = createHistoryActionGate(1500);
+const historyPreviewGate = createHistoryActionGate(1200);
+let sessionPreviewRevision = 0;
+
+function historyActionKey(project, session) {
+  return `${project?.id || ''}:${historySessionKey(session?.tool, session?.id)}`;
+}
+
 function openHistorySession(project, session) {
   if (session.runningId && sessions.has(session.runningId)) {
     activateSession(session.runningId);
@@ -1075,12 +1085,16 @@ function openHistorySession(project, session) {
     msg('还不支持续接这个工具的历史会话', 'info');
     return;
   }
+  // 双击续接按钮会连开两个终端；同一条会话短时间内只放行一次。
+  if (!historyOpenGate.allow(historyActionKey(project, session))) return;
   recordProjectActivity(project.id, autoCmd);
   void createSession({ cwd: project.localPath, name: project.name, autoCmd });
 }
 
 function closeSessionPreview() {
   sessionPreviewContext = null;
+  // 在途预览的结果不能再回写：关掉弹窗后它已经不是当前上下文了。
+  sessionPreviewRevision += 1;
   el.sessionPreview?.classList.remove('active');
 }
 
@@ -1095,12 +1109,17 @@ async function previewHistorySession(project, session) {
     msg('这个项目没有本地路径', 'info');
     return;
   }
+  // 双击预览按钮不重复请求同一条。
+  if (!historyPreviewGate.allow(historyActionKey(project, session))) return;
+  const revision = ++sessionPreviewRevision;
   try {
     const preview = await invoke('preview_project_session', {
       path: project.localPath,
       tool: session.tool,
       id: session.id,
     });
+    // 快速连点两条时，先发出的旧请求不能覆盖后点的那条。
+    if (revision !== sessionPreviewRevision) return;
     sessionPreviewContext = { project, session: { ...session, title: preview.title || session.title } };
     el.sessionPreviewTitle.textContent = preview.title || session.title || '会话预览';
     const when = preview.atMs ? relTimeFromMs(preview.atMs) : '';
@@ -1110,6 +1129,7 @@ async function previewHistorySession(project, session) {
     el.sessionPreviewOpen.textContent = session.runningId ? '回到终端' : '续接';
     el.sessionPreview.classList.add('active');
   } catch (error) {
+    if (revision !== sessionPreviewRevision) return;
     msg('预览失败：' + (error?.message || error), 'error');
   }
 }
@@ -1842,8 +1862,12 @@ async function injectToSession(id, text, send = true) {
   if (!data.trim()) return false;
   await waitForCliPrompt(session);
   if (sessions.get(id) !== session || session.status === 'failed' || session.status === 'exited') return false;
-  if (session.inputBuffer) session.inputBuffer.write(data);
-  else await invoke('terminal_write', { id, data });
+  if (session.inputBuffer) {
+    // 队列会吞掉单次发送错误，注入方必须等 flush 才知道有没有真的写进 PTY。
+    if (!session.inputBuffer.write(data)) return false;
+    return session.inputBuffer.flush();
+  }
+  await invoke('terminal_write', { id, data });
   return true;
 }
 

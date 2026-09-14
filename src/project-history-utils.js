@@ -94,6 +94,25 @@ export function historySessionKey(tool, id) {
   return `${String(tool || '').trim()}\0${normalizeProjectMemoryCwd(id) || String(id || '').trim()}`;
 }
 
+/**
+ * 历史会话点击的短时去重闸：双击「续接」按钮会连开两个终端，双击「预览」会
+ * 重复请求；windowMs 内同一个 key 只放行一次。返回 true 表示这次点击生效。
+ */
+export function createHistoryActionGate(windowMs = 1200) {
+  let key = '';
+  let at = 0;
+  return {
+    allow(nextKey, now = Date.now()) {
+      const normalized = String(nextKey || '');
+      if (!normalized) return true;
+      if (key === normalized && now - at < windowMs) return false;
+      key = normalized;
+      at = now;
+      return true;
+    },
+  };
+}
+
 export function runningHistoryLookup(runningSessions, groups, projectCwd) {
   const lookup = new Map();
   const newestByTool = {};

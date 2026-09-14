@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   DEFAULT_PROJECT_KIT,
   PROJECT_KIT_LAYOUT,
+  createHistoryActionGate,
   createProjectSessionHistoryLoader,
   filterHistoryGroups,
   findRunningProjectTool,
@@ -161,4 +162,13 @@ test('历史加载按项目合并请求，失效中的旧请求不能覆盖或�
   assert.deepEqual(await fresh, expected);
   assert.deepEqual(await freshDuplicate, expected);
   assert.equal(loader.pending.has('/Users/lucky/git/app'), false);
+});
+
+test('历史点击去重闸只挡窗口内的同一个 key', () => {
+  const gate = createHistoryActionGate(1000);
+  assert.equal(gate.allow('a', 0), true);
+  assert.equal(gate.allow('a', 500), false, '窗口内重复点击要被挡下');
+  assert.equal(gate.allow('a', 1000), true, '窗口外允许再次操作');
+  assert.equal(gate.allow('b', 1100), true);
+  assert.equal(gate.allow('', 1200), true, '空 key 不参与去重');
 });

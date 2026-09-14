@@ -15,28 +15,49 @@ export function createTerminalInputBuffer({
   let overflowReported = false;
   let buffered = '';
   let sendChain = Promise.resolve();
+  let lastSendFailed = false;
 
   function enqueue(data) {
     if (!data || failed) return sendChain;
     sendChain = sendChain
       .catch(() => {})
-      .then(() => send(data))
-      .catch(error => onError(error));
+      .then(() => {
+        lastSendFailed = false;
+        return send(data);
+      })
+      .catch(error => {
+        lastSendFailed = true;
+        onError(error);
+      });
     return sendChain;
   }
 
+  /**
+   * 返回是否完整收下这段输入：false 表示已失败、已溢出被截断或为空。
+   * 就绪前返回 true 只是"已缓存"，真正发出后可用 flush() 确认结果。
+   */
   function write(data) {
-    if (!data || failed) return;
+    if (!data || failed) return false;
     if (ready) {
       enqueue(data);
-      return;
+      return true;
     }
     const remaining = Math.max(0, maxBufferedLength - buffered.length);
     buffered += data.slice(0, remaining);
-    if (remaining < data.length && !overflowReported) {
-      overflowReported = true;
-      onOverflow();
+    if (remaining < data.length) {
+      if (!overflowReported) {
+        overflowReported = true;
+        onOverflow();
+      }
+      return false;
     }
+    return true;
+  }
+
+  /** 等待已排队的写入跑完，返回这段队列是否全部成功（供注入类调用方判断）。 */
+  async function flush() {
+    await sendChain;
+    return !failed && !lastSendFailed;
   }
 
   async function markReady(prefix = '') {
@@ -54,5 +75,5 @@ export function createTerminalInputBuffer({
     buffered = '';
   }
 
-  return { markFailed, markReady, write };
+  return { flush, markFailed, markReady, write };
 }
