@@ -5024,7 +5024,9 @@ async function discardChangesAndExit(kind) {
 }
 
 function requestDiscardChangesAndExit(kind) {
-  if (exitPromptPending || el.confirm.classList.contains('active')) return;
+  // 别的确认框开着时不能再把退出请求吞掉：showConfirm 本来就会接管旧弹窗
+  // （旧请求按取消结算），所以这里只挡"退出确认已经开着"的重复请求。
+  if (exitPromptPending) return;
   exitPromptPending = true;
   showConfirm({
     title: '修改尚未保存',
