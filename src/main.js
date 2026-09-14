@@ -14,7 +14,7 @@ import { installThemePointer } from './terminal-theme-pointer.js';
 import { installTerminalCharacterTheme } from './terminal-theme-character.js';
 import { normalizeProjectMachine, projectMachineTag } from './project-form-utils.js';
 import { seedThemePresets } from './terminal-theme-presets.js';
-import { CLI_TOOLS, CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
+import { CLI_TOOLS, CLI_TOOL_IDS, CONVERSATION_CLI_TOOL_IDS, HISTORY_CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
 import {
   cliToolName,
   restoreSessionLayout,
@@ -1188,7 +1188,7 @@ async function fetchProjectSessions(project) {
 }
 
 function normalizeProjectTools(tools) {
-  const allowed = new Set(CLI_TOOL_IDS);
+  const allowed = new Set(HISTORY_CLI_TOOL_IDS);
   const seen = new Set();
   const normalized = [];
   for (const value of Array.isArray(tools) ? tools : []) {
@@ -1421,7 +1421,7 @@ function closeSessionHandoff(restoreButtonFocus = true, { force = false } = {}) 
 
 async function openSessionHandoff() {
   const initial = activeSessionHandoffContext();
-  if (!initial.project || !CLI_TOOL_IDS.includes(initial.sourceTool)) {
+  if (!initial.project || !HISTORY_CLI_TOOL_IDS.includes(initial.sourceTool)) {
     msg('请先切到已登记项目的运行中 CLI 终端', 'info');
     return;
   }

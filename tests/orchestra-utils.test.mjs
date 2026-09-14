@@ -22,14 +22,14 @@ test('协作默认 Claude 做大脑，另外两个干活', () => {
   assert.equal(DEFAULT_ORCHESTRA_BRAIN, 'claude');
   assert.deepEqual(DEFAULT_ORCHESTRA_WORKERS, ['codex', 'grok']);
   assert.deepEqual(ORCHESTRA_KIT, [
-    'claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo',
+    'claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'commandcode',
   ]);
   assert.deepEqual(orchestraWorkers('claude'), ['codex', 'grok']);
   assert.deepEqual(orchestraWorkers('codex'), ['claude', 'grok']);
   assert.deepEqual(normalizeOrchestraConfig({ brain: 'grok' }), {
     brain: 'grok',
     workers: ['claude', 'codex'],
-    kit: ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo'],
+    kit: ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'commandcode'],
   });
   assert.equal(orchestraRoleForTool({ brain: 'claude', workers: ['codex', 'grok'] }, 'claude'), 'brain');
   assert.equal(orchestraRoleForTool({ brain: 'claude', workers: ['codex', 'grok'] }, 'codex'), 'worker');
@@ -43,9 +43,10 @@ test('协作配置支持登记表里的任意大脑和多个干活终端', () =>
   }), {
     brain: 'mimo',
     workers: ['qwen', 'agy', 'opencode'],
-    kit: ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo'],
+    kit: ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'commandcode'],
   });
   assert.equal(orchestraToolLabel('mimo'), 'MiMo Code');
+  assert.equal(orchestraToolLabel('commandcode'), 'Command Code');
   assert.equal(orchestraToolLabel('opencode --continue'), 'OpenCode');
   assert.equal(orchestraToolLabel('qwen'), 'Qwen');
 });

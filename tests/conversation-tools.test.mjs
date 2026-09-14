@@ -14,11 +14,20 @@ import {
 test('对话 Provider 基于统一 CLI 登记并为未知工具提供只读回退', () => {
   assert.deepEqual(
     CONVERSATION_PROVIDERS.map(provider => provider.id),
-    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo'],
+    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'commandcode'],
   );
   assert.deepEqual(
     CONVERSATION_PROVIDERS.filter(provider => provider.runnable).map(provider => provider.id),
     ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo'],
+  );
+  // 未接入协议的已登记 CLI 是可识别的，但不能被选为对话 Provider。
+  const pending = conversationProvider('commandcode');
+  assert.equal(pending.known, true);
+  assert.equal(pending.runnable, false);
+  assert.match(pending.unavailableReason, /开发模式/);
+  assert.equal(
+    conversationProviderOptions(['commandcode', 'claude']).map(provider => provider.id).includes('commandcode'),
+    false,
   );
   const unknown = conversationProvider(' FutureCLI ', '未来模型');
   assert.deepEqual(

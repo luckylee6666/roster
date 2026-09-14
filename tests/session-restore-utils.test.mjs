@@ -187,3 +187,19 @@ test('MiMo Code 续接：--session 指定会话，--continue 续最近会话', (
   assert.equal(restoredCliCommand('mimo --session s-1'), 'mimo --session s-1');
   assert.equal(restoredCliCommand('mimo --session=s-1'), 'mimo --session=s-1');
 });
+
+test('Command Code 续接：--session 指定会话，--continue 续最近会话', () => {
+  assert.equal(resumeCliCommand('commandcode', 's-1'), 'commandcode --session s-1');
+  assert.equal(launchCliCommand('commandcode', ''), 'commandcode');
+  assert.equal(extractResumedSessionId('commandcode --session s-1'), 's-1');
+  assert.equal(extractResumedSessionId('commandcode -r last-title'), 'last-title');
+  assert.equal(extractResumedSessionId('commandcode -r'), '');
+  assert.equal(isGenericContinueCommand('commandcode --continue'), true);
+  assert.equal(isGenericContinueCommand('commandcode -c'), true);
+  assert.equal(isGenericContinueCommand('commandcode --session s-1'), false);
+  assert.equal(restoredCliCommand('commandcode'), 'commandcode --continue');
+  assert.equal(restoredCliCommand('commandcode -c'), 'commandcode -c');
+  assert.equal(restoredCliCommand('commandcode --resume'), 'commandcode --resume');
+  assert.equal(restoredCliCommand('commandcode --session s-1'), 'commandcode --session s-1');
+  assert.equal(restoredCliCommand('commandcode --session=s-1'), 'commandcode --session=s-1');
+});

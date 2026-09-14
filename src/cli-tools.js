@@ -9,9 +9,28 @@ export const CLI_TOOLS = Object.freeze([
   Object.freeze({ id: 'agy', label: 'agy', keywords: Object.freeze(['antigravity']) }),
   Object.freeze({ id: 'qwen', label: 'Qwen', keywords: Object.freeze(['alibaba', 'qianwen', 'tongyi']) }),
   Object.freeze({ id: 'mimo', label: 'MiMo Code', keywords: Object.freeze(['mimocode', 'xiaomi']) }),
+  // Command Code：开发模式已登记；磁盘历史（P1）与对话协议（P2）未接入前，
+  // 用能力标记把它挡在对话工作台、卡片历史和交接来源之外。
+  Object.freeze({
+    id: 'commandcode',
+    label: 'Command Code',
+    keywords: Object.freeze(['command-code', 'commandcode', 'cmd', 'cmdc']),
+    conversation: false,
+    history: false,
+  }),
 ]);
 
 export const CLI_TOOL_IDS = Object.freeze(CLI_TOOLS.map(tool => tool.id));
+
+/** 已接入结构化对话协议的 CLI（conversation 未标记即视为已接入）。 */
+export const CONVERSATION_CLI_TOOL_IDS = Object.freeze(
+  CLI_TOOLS.filter(tool => tool.conversation !== false).map(tool => tool.id),
+);
+
+/** 已接入磁盘历史读取的 CLI（卡片历史 / 会话条最近 / 交接来源）。 */
+export const HISTORY_CLI_TOOL_IDS = Object.freeze(
+  CLI_TOOLS.filter(tool => tool.history !== false).map(tool => tool.id),
+);
 
 export function isKnownCliTool(commandOrName) {
   return CLI_TOOL_IDS.includes(cliToolName(commandOrName));

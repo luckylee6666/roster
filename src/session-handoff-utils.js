@@ -17,6 +17,8 @@ export function sessionHandoffAvailability({ running, sourceTool, hasProject, bu
   const sourceLabel = source?.label || '当前 CLI';
   if (!running) return { enabled: false, title: '请先切到运行中的 CLI 终端' };
   if (!source) return { enabled: false, title: '当前终端不是受支持的 CLI' };
+  // 来源必须有磁盘历史抽取器；未接入历史的 CLI 仍可作为接手目标。
+  if (source.history === false) return { enabled: false, title: `当前 ${sourceLabel} 暂不支持作为交接来源` };
   if (!hasProject) return { enabled: false, title: `当前 ${sourceLabel} 终端未关联已登记项目` };
   if (busy) return { enabled: false, title: '正在交接会话…' };
   return { enabled: true, title: `把 ${sourceLabel} 最新会话交给其他 CLI` };
