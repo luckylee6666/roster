@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@highlightjs/cdn-assets':
-        specifier: ^11.11.1
+        specifier: ^11.12.0
         version: 11.12.0
       '@xterm/addon-fit':
         specifier: 0.12.0-beta.301
