@@ -2686,11 +2686,6 @@ body {
   background: rgba(255, 105, 0, 0.16);
 }
 
-.term-tab-tool.tool-commandcode {
-  color: #a78bfa;
-  background: rgba(167, 139, 250, 0.16);
-}
-
 /* 标签上下文用量徽标（claude 会话） */
 .term-tab-ctx {
   flex-shrink: 0;

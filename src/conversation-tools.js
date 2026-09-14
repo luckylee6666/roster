@@ -1,6 +1,6 @@
-import { CLI_TOOLS, CONVERSATION_CLI_TOOL_IDS, normalizeInstalledCliIds } from './cli-tools.js';
+import { CLI_TOOLS, normalizeInstalledCliIds } from './cli-tools.js';
 
-const RUNNABLE_PROVIDER_IDS = new Set(CONVERSATION_CLI_TOOL_IDS);
+const RUNNABLE_PROVIDER_IDS = new Set(CLI_TOOLS.map(tool => tool.id));
 
 /**
  * 对话工作台负责把选择结果作为安全参数交给后端；并不把 CLI 原生 `/...`
@@ -38,7 +38,7 @@ function providerRecord(tool) {
     mark: PROVIDER_MARKS[tool.id] || tool.label.slice(0, 2),
     runnable,
     historyOnly: !runnable,
-    unavailableReason: runnable ? '' : '尚未接入对话协议，请在开发模式直接运行。',
+    unavailableReason: '',
     supportsModel: capabilities.model,
     supportsEffort: capabilities.effort,
     known: true,

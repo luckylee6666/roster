@@ -21,11 +21,6 @@ test('交接目标只包含已安装且不是来源的 CLI', () => {
     handoffTargetTools(['grok', 'claude', 'codex'], 'grok').map(tool => tool.id),
     ['claude', 'codex'],
   );
-  // 未接入磁盘历史的 CLI 不能当来源，但可以作为接手目标（只需新开终端并注入提示）。
-  assert.deepEqual(
-    handoffTargetTools(['commandcode', 'claude'], 'claude').map(tool => tool.id),
-    ['commandcode'],
-  );
 });
 
 test('工具栏只校验当前来源上下文，目标 CLI 在打开弹窗后实时探测', () => {
@@ -40,13 +35,6 @@ test('工具栏只校验当前来源上下文，目标 CLI 在打开弹窗后实
   });
   assert.equal(sessionHandoffAvailability({ running: false }).enabled, false);
   assert.equal(sessionHandoffAvailability({ running: true, sourceTool: 'bash', hasProject: true }).enabled, false);
-  const pendingSource = sessionHandoffAvailability({
-    running: true,
-    sourceTool: 'commandcode',
-    hasProject: true,
-  });
-  assert.equal(pendingSource.enabled, false);
-  assert.match(pendingSource.title, /暂不支持作为交接来源/);
   assert.equal(sessionHandoffAvailability({ running: true, sourceTool: 'codex', hasProject: false }).enabled, false);
   assert.equal(sessionHandoffAvailability({ running: true, sourceTool: 'codex', hasProject: true, busy: true }).enabled, false);
 });
