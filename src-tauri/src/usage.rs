@@ -38,11 +38,26 @@ fn may_use_fresh_cache(force_refresh: bool, age_ms: u64, ok: bool) -> bool {
 
 /// 通用文件缓存：写（带时间戳）。
 fn cache_write<T: Serialize>(path: &PathBuf, data: &T) {
+    use std::io::Write as _;
     let v = serde_json::json!({ "ts": now_ms(), "data": data });
     if let Ok(s) = serde_json::to_string(&v) {
-        let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, s).is_ok() {
+        // 临时名带进程/时间后缀并 create_new：固定 `*.tmp` 会被预先放好的符号链接
+        // 顺着写到别处，也会被并发写者互相覆盖。
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = path.with_extension(format!("{}-{nanos}.tmp", std::process::id()));
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .and_then(|mut file| file.write_all(s.as_bytes()))
+            .is_ok();
+        if written {
             let _ = std::fs::rename(&tmp, path);
+        } else {
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 }

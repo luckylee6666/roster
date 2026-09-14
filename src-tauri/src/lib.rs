@@ -133,6 +133,12 @@ pub(crate) fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
             .write(true)
             .create_new(true)
             .open(&tmp)?;
+        // 数据文件可能有代理凭据/项目路径等内容，仅本人可读写（失败不阻断写入）。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(fs::Permissions::from_mode(0o600));
+        }
         f.write_all(data)?;
         f.sync_all()?;
         drop(f);
@@ -400,12 +406,13 @@ pub(crate) fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path
     if !path.exists() {
         return T::default();
     }
-    let data = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::log_error!("读取 {:?} 失败：{e}", path.file_name().unwrap_or_default());
-            return T::default();
-        }
+    let Some(data) = read_regular_text_capped(path, MAX_STATE_JSON_SIZE) else {
+        crate::log_error!(
+            "读取 {:?} 失败：不是普通文件或超过 {} MiB 上限",
+            path.file_name().unwrap_or_default(),
+            MAX_STATE_JSON_SIZE / 1024 / 1024
+        );
+        return T::default();
     };
     if data.trim().is_empty() {
         return T::default();
@@ -430,6 +437,12 @@ pub(crate) fn load_json_or_backup<T: serde::de::DeserializeOwned + Default>(path
 impl AppState {
     fn new(data_dir: &Path) -> Self {
         fs::create_dir_all(data_dir).ok();
+        // 数据目录含代理凭据、日志与项目路径：收紧到仅本人可访问（失败不阻断启动）。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700));
+        }
         snapshot_data_files();
 
         let data_path = data_dir.join("projects.json");
@@ -856,15 +869,11 @@ fn open_terminal(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // Windows 路径用双引号包裹（路径通常不含 "）
+        // 不要拼 `cd /d "…" && claude`：路径里出现引号或 & 会被 cmd 拆成额外命令。
+        // 让 cmd 以项目目录为工作目录启动新窗口，路径不再进命令行字符串。
         std::process::Command::new("cmd")
-            .args([
-                "/C",
-                "start",
-                "cmd",
-                "/K",
-                &format!("cd /d \"{}\" && claude", path),
-            ])
+            .args(["/C", "start", "cmd", "/K", "claude"])
+            .current_dir(&path)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -1173,9 +1182,9 @@ fn scan_directory(path: String) -> Result<Vec<ScannedProject>, String> {
 
 fn read_git_remote(repo_path: &std::path::Path) -> String {
     let config_path = repo_path.join(".git").join("config");
-    let content = match fs::read_to_string(&config_path) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
+    let content = match read_regular_text_capped(&config_path, MAX_SUMMARY_TEXT_SIZE) {
+        Some(c) => c,
+        None => return String::new(),
     };
     // 简单解析 git config 找 remote "origin" 的 url
     let mut in_origin = false;
@@ -1330,6 +1339,26 @@ fn read_binary_file_bounded(p: &Path, limit: u64, too_large: &str) -> Result<Vec
         return Err(too_large.to_string());
     }
     Ok(bytes)
+}
+
+const MAX_STATE_JSON_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_SUMMARY_TEXT_SIZE: u64 = 512 * 1024;
+
+/// 内部辅助读取（CLAUDE.md 摘要、项目 settings、git config、状态 JSON 等）：
+/// 拒绝符号链接与非普通文件，超过上限按读取失败处理。项目目录来自任意仓库，
+/// 不能让它决定我们要分配多少内存（FIFO 还会把线程挂住）。
+fn read_regular_text_capped(path: &Path, limit: u64) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > limit {
+        return None;
+    }
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::with_capacity(meta.len().min(limit) as usize + 1);
+    file.take(limit + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > limit {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn read_text_file(p: &Path) -> Result<FileContent, String> {
@@ -1792,7 +1821,7 @@ struct ProjectContext {
 fn read_claude_md(dir: &std::path::Path) -> String {
     let candidates = [dir.join("CLAUDE.md"), dir.join(".claude").join("CLAUDE.md")];
     for c in candidates {
-        if let Ok(text) = fs::read_to_string(&c) {
+        if let Some(text) = read_regular_text_capped(&c, MAX_SUMMARY_TEXT_SIZE) {
             // 取前若干非空行，拼成摘要，最长 ~500 字符
             let mut out = String::new();
             for line in text.lines() {
@@ -2006,8 +2035,7 @@ fn context_window_from_settings_json(json: &str) -> Option<u64> {
 }
 
 fn context_window_from_settings(path: &std::path::Path) -> Option<u64> {
-    fs::read_to_string(path)
-        .ok()
+    read_regular_text_capped(path, MAX_SUMMARY_TEXT_SIZE)
         .and_then(|json| context_window_from_settings_json(&json))
 }
 
@@ -3501,7 +3529,13 @@ async fn has_bash() -> bool {
 /// 用系统默认浏览器打开一个 URL（如引导去 nodejs.org 装 Node）。
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    opener::open(&url).map_err(|e| e.to_string())
+    // 前端已按 ^https?:// 过滤，这里兜底：命令层不把任意 scheme（file:/自定义协议）
+    // 交给系统 opener，防止未来新增调用点或前端被注入时放大。
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("只允许打开 http/https 链接".into());
+    }
+    opener::open(trimmed).map_err(|e| e.to_string())
 }
 
 /// 打开日志文件（排查问题用）。文件不存在则先建空文件再打开。
@@ -3520,6 +3554,8 @@ fn open_log() -> Result<(), String> {
 /// 供前端写日志（未捕获异常 / 关键 catch 转发到同一份 app.log）。
 #[tauri::command]
 fn app_log(level: String, msg: String) {
+    // 前端消息做长度上限：日志是只写接口，但不能让它被用来无限撑大 app.log。
+    let msg: String = msg.chars().take(8 * 1024).collect();
     match level.as_str() {
         "error" => applog::error(&format!("[前端] {msg}")),
         "warn" => applog::warn(&format!("[前端] {msg}")),
