@@ -1,6 +1,6 @@
 import { CLI_TOOL_IDS, isKnownCliTool } from './cli-tools.js';
 import { normalizeProjectMemoryCwd } from './project-memory-utils.js';
-import { cliToolName } from './session-restore-utils.js';
+import { normalizeCliToolName } from './session-restore-utils.js';
 import {
   isLiveTerminalSession,
   runningHistoryLookup,
@@ -57,7 +57,7 @@ export function formatRailRelativeTime(atMs, nowMs = Date.now()) {
 }
 
 export function railLiveTitle(session) {
-  const tool = cliToolName(session?.tool);
+  const tool = normalizeCliToolName(session?.tool);
   const name = String(session?.name || '').trim();
   if (!name || name === tool) return tool || '会话';
   const prefix = tool ? `${tool} · ` : '';
@@ -97,7 +97,7 @@ export function buildSessionRailModel({
   const live = liveSessions.map(session => ({
     key: `live:${session.id}`,
     kind: 'live',
-    tool: cliToolName(session.tool),
+    tool: normalizeCliToolName(session.tool),
     title: railLiveTitle(session),
     terminalId: session.id,
     sessionId: '',

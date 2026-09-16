@@ -127,7 +127,7 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
             let Some(args) = model_list_args(provider) else {
                 return Ok(ConversationModelList { models: Vec::new() });
             };
-            let Ok(binary) = crate::cli_detect::resolve_registered_cli_bin(provider) else {
+            let Ok(binary) = resolve_provider_bin(provider) else {
                 return Ok(ConversationModelList { models: Vec::new() });
             };
             let raw = run_cli_output(
@@ -140,7 +140,11 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
                 true,
             )
             .unwrap_or_default();
-            parse_cli_models(&raw)
+            if provider == "cmd" {
+                parse_commandcode_models(&raw)
+            } else {
+                parse_cli_models(&raw)
+            }
         }
     };
     Ok(ConversationModelList { models })
@@ -151,6 +155,8 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
 fn model_list_args(provider: &str) -> Option<&'static [&'static str]> {
     match provider {
         "grok" | "agy" | "opencode" | "mimo" => Some(&["models"]),
+        // Command Code 用标志而不是子命令列模型。
+        "cmd" => Some(&["--list-models"]),
         _ => None,
     }
 }
@@ -161,6 +167,9 @@ fn model_list_args(provider: &str) -> Option<&'static [&'static str]> {
 fn effort_list_args(provider: &str) -> Option<&'static [&'static str]> {
     match provider {
         "claude" => Some(&["--effort", "__roster_probe__"]),
+        // Command Code 的合法取值按当前模型给（实测回 "Supported: low, high, max."）。
+        // 探针带一个 `--print=`，万一将来这个值被接受也不会掉进交互 TUI。
+        "cmd" => Some(&["--effort", "__roster_probe__", "--print=roster-probe"]),
         "grok" => Some(&[
             "--effort",
             "__roster_probe__",
@@ -458,8 +467,8 @@ pub fn list_efforts(
     let efforts = match provider {
         "codex" => parse_codex_models_cache(&read_codex_models_cache().unwrap_or_default()).1,
         "grok" => grok_catalog(&cwd).1,
-        "claude" => {
-            let Ok(binary) = crate::cli_detect::resolve_registered_cli_bin(provider) else {
+        "claude" | "cmd" => {
+            let Ok(binary) = resolve_provider_bin(provider) else {
                 return Ok(ConversationEffortList {
                     efforts: Vec::new(),
                 });
@@ -479,14 +488,18 @@ pub fn list_efforts(
                 true,
             )
             .unwrap_or_default();
-            parse_cli_efforts(&raw)
+            if provider == "cmd" {
+                parse_commandcode_efforts(&raw)
+            } else {
+                parse_cli_efforts(&raw)
+            }
         }
         "agy" => {
             let raw = capture_cli_help("agy", &cwd).unwrap_or_default();
             parse_cli_efforts(&raw)
         }
         "opencode" | "mimo" => {
-            let Ok(binary) = crate::cli_detect::resolve_registered_cli_bin(provider) else {
+            let Ok(binary) = resolve_provider_bin(provider) else {
                 return Ok(ConversationEffortList {
                     efforts: Vec::new(),
                 });
@@ -508,8 +521,15 @@ pub fn list_efforts(
     Ok(ConversationEffortList { efforts })
 }
 
+/// 解析这家 CLI 的可执行文件。登记 id 未必就是命令名（`cmd` 在 Windows 上要换成
+/// `cmdc`，否则会解析到系统 shell），所以能查到 spec 就按 spec 的 binary 找。
+fn resolve_provider_bin(provider: &str) -> Result<std::path::PathBuf, String> {
+    let binary = crate::conversation_chat::provider_binary(provider).unwrap_or(provider);
+    crate::cli_detect::resolve_registered_cli_bin(binary)
+}
+
 fn capture_cli_help(provider: &str, cwd: &Path) -> Option<String> {
-    let binary = crate::cli_detect::resolve_registered_cli_bin(provider).ok()?;
+    let binary = resolve_provider_bin(provider).ok()?;
     let args: &[&str] = if provider == "agy" {
         &["-h"]
     } else {
@@ -620,6 +640,7 @@ fn normalize_provider(id: &str) -> Result<&'static str, String> {
         "opencode" => Ok("opencode"),
         "qwen" => Ok("qwen"),
         "mimo" => Ok("mimo"),
+        "cmd" => Ok("cmd"),
         _ => Err("这个 CLI 还未接入对话模式".into()),
     }
 }
@@ -891,6 +912,40 @@ pub fn parse_cli_models_text(raw: &str) -> Vec<ConversationModel> {
     finish_models(ids)
 }
 
+/// `command-code --list-models` 的列式输出：
+/// `<id>                    <描述>`，按模型家族分段（Open Source / Anthropic / …），
+/// `(default)` 标当前档。描述里带空格，所以必须按**两个以上空格**切列；分段标题、
+/// 页眉页脚（`Available models …`、`Pass the full id …`、`Docs: …`）都只有一列，
+/// 按"id 段必须是单个词、不以冒号结尾"过滤掉。
+pub fn parse_commandcode_models(raw: &str) -> Vec<ConversationModel> {
+    let mut ids: Vec<(String, String, bool)> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+        let Some(split_at) = trimmed.find("  ") else {
+            continue;
+        };
+        let id_column = trimmed[..split_at].trim();
+        let description = trimmed[split_at..].trim();
+        if id_column.is_empty()
+            || description.is_empty()
+            || id_column.split_whitespace().count() != 1
+            || id_column.ends_with(':')
+            || id_column.contains("//")
+        {
+            continue;
+        }
+        let Some(id) = normalize_model_id(id_column) else {
+            continue;
+        };
+        // 标签就用 id：列里显示的要能直接当 `--model` 传下去。
+        ids.push((id.clone(), id, description.contains("(default)")));
+    }
+    finish_models(ids)
+}
+
 fn finish_models(ids: Vec<(String, String, bool)>) -> Vec<ConversationModel> {
     let mut seen = std::collections::HashSet::new();
     let mut models = Vec::new();
@@ -923,6 +978,26 @@ pub fn parse_cli_efforts(raw: &str) -> Vec<ConversationEffort> {
         return Vec::new();
     };
     let list = rest.split(['\n', ';']).next().unwrap_or(rest);
+    finish_efforts(
+        list.split([',', '|', '/', '(', ')'])
+            .filter_map(normalize_effort_id)
+            .map(|id| (id.clone(), effort_label(&id), false)),
+    )
+}
+
+/// Command Code 用非法 `--effort` 探出的档位：
+/// `Unknown effort "…". Supported: low, high, max.`
+/// 它的取值按当前模型给，所以这里只承诺探到的那几个；探不到就返回空列表，
+/// 界面上不出现 `/effort`。
+pub fn parse_commandcode_efforts(raw: &str) -> Vec<ConversationEffort> {
+    let lowered = raw.to_ascii_lowercase();
+    let Some(index) = lowered.find("supported:") else {
+        return Vec::new();
+    };
+    let rest = &raw[index + "supported:".len()..];
+    let list = rest.split(['\n', ';']).next().unwrap_or(rest);
+    // 尾随的括注（"(default)" 之类）不是取值，先切掉再按分隔符拆。
+    let list = list.split('(').next().unwrap_or(list);
     finish_efforts(
         list.split([',', '|', '/', '(', ')'])
             .filter_map(normalize_effort_id)
@@ -1815,9 +1890,15 @@ mod tests {
         assert_eq!(model_list_args("qwen"), None);
         assert_eq!(model_list_args("claude"), None);
         assert_eq!(model_list_args("codex"), None);
+        assert_eq!(model_list_args("cmd"), Some(&["--list-models"][..]));
         assert_eq!(
             effort_list_args("claude"),
             Some(&["--effort", "__roster_probe__"][..])
+        );
+        // Command Code 的探针带 `--print=`：万一那个值将来被接受，也不会掉进 TUI。
+        assert_eq!(
+            effort_list_args("cmd"),
+            Some(&["--effort", "__roster_probe__", "--print=roster-probe"][..])
         );
         assert_eq!(
             effort_list_args("grok"),
@@ -1840,8 +1921,57 @@ mod tests {
     }
 
     #[test]
+    fn commandcode_parses_its_columns_and_reported_efforts() {
+        // 本机 `command-code --list-models` 的真实形状（截取）。
+        let raw = "Available models  ·  70 models\n\nOpen Source\n\ndeepseek/deepseek-v4-flash             fast hybrid-attention reasoning (default)\nmeituan/longcat-2.0:free               FREE trillion-parameter agentic coding with 1M context\n\nAnthropic\n\nclaude-sonnet-5                        best combo of speed & intelligence (recommended)\n\nPass the full id, or just the short name after the last \"/\":\ncmd --model moonshotai/kimi-k2.5\n\nDocs:  https://commandcode.ai/docs/reference/cli/models\n";
+        let models = parse_commandcode_models(raw);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "deepseek/deepseek-v4-flash",
+                "meituan/longcat-2.0:free",
+                "claude-sonnet-5"
+            ]
+        );
+        assert!(models[0].current, "描述里的 (default) 要标出来");
+        assert!(!models[1].current);
+        // 分段标题与页脚都不能混进模型表。
+        assert!(!models.iter().any(|model| {
+            model.id.contains("Available") || model.id.contains("Docs") || model.id.contains("cmd")
+        }));
+
+        let efforts =
+            parse_commandcode_efforts("Unknown effort \"x\". Supported: low, high, max.\n");
+        assert_eq!(
+            efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "high", "max"]
+        );
+        assert_eq!(efforts[1].label, "高");
+        // 尾随括注不是取值，别把 "(default)" 里的词当成档位。
+        let with_note =
+            parse_commandcode_efforts("Unknown effort \"x\". Supported: low, high (default).\n");
+        assert_eq!(
+            with_note
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "high"]
+        );
+        // 探不到就不给列表，界面上不出现 /effort。
+        assert!(parse_commandcode_efforts("ok").is_empty());
+    }
+
+    #[test]
     fn all_conversation_providers_accept_dynamic_slash_discovery() {
-        for provider in ["claude", "grok", "codex", "opencode", "agy", "qwen", "mimo"] {
+        for provider in [
+            "claude", "grok", "codex", "opencode", "agy", "qwen", "mimo", "cmd",
+        ] {
             assert_eq!(normalize_provider(provider).unwrap(), provider);
         }
         assert!(normalize_provider("../../bin/sh").is_err());

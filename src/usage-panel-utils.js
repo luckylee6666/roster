@@ -1,4 +1,4 @@
-export const USAGE_AGENTS = ['claude', 'codex', 'grok', 'opencode'];
+export const USAGE_AGENTS = ['claude', 'codex', 'grok', 'opencode', 'cmd'];
 export const GROK_USAGE_FRESH_MS = 60 * 1000;
 
 export function usageAgentsForInstalledClis(installedIds, supportedIds = USAGE_AGENTS) {
@@ -53,11 +53,12 @@ export function usageCommandForAgent(agent) {
   if (agent === 'codex') return 'codex_usage';
   if (agent === 'grok') return 'grok_usage';
   if (agent === 'opencode') return 'opencode_usage';
+  if (agent === 'cmd') return 'commandcode_usage';
   return '';
 }
 
 export function windowsFromUsagePayload(agent, payload) {
-  if (agent === 'codex' || agent === 'grok' || agent === 'opencode') {
+  if (agent === 'codex' || agent === 'grok' || agent === 'opencode' || agent === 'cmd') {
     return Array.isArray(payload?.windows) ? payload.windows : [];
   }
   return agent === 'claude'
@@ -81,6 +82,31 @@ export function conversationUsageWindows(agent, payload) {
   if (agent !== 'codex') return windows;
   const account = windows.filter(entry => !String(entry?.label || '').includes('·'));
   return account.length ? account : windows;
+}
+
+/**
+ * Command Code 的「本期额度」行。只认真实存在的数字：后端没给字段时是 `null`，
+ * 不能让 `Number(null) === 0` 把它渲染成"剩余 $0.00"这种假账；负值也不显示。
+ * 返回 null 表示这一行不该出现。
+ */
+export function commandCodeCredits(payload) {
+  const read = value => (
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+  );
+  const remaining = read(payload?.creditsRemaining);
+  const total = read(payload?.creditsTotal);
+  const used = read(payload?.creditsUsed);
+  const hasTotal = total !== null && total > 0 && used !== null;
+  if (!hasTotal && remaining === null) return null;
+  const periodEnd = typeof payload?.periodEnd === 'string' ? payload.periodEnd.trim() : '';
+  return {
+    hasTotal,
+    used,
+    total,
+    remaining,
+    percent: hasTotal ? Math.max(0, Math.min(100, Math.round((used / total) * 100))) : 0,
+    periodEnd,
+  };
 }
 
 /** 侧栏那一行只要「窗口 + 百分比」，去掉「窗口」二字免得挤。 */

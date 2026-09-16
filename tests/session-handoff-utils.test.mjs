@@ -21,6 +21,15 @@ test('交接目标只包含已安装且不是来源的 CLI', () => {
     handoffTargetTools(['grok', 'claude', 'codex'], 'grok').map(tool => tool.id),
     ['claude', 'codex'],
   );
+  // Command Code 既能当来源，也能当目标（注入提示后新开终端即可）。
+  assert.deepEqual(
+    handoffTargetTools(['cmd', 'claude', 'mimo'], 'cmd').map(tool => tool.id),
+    ['claude', 'mimo'],
+  );
+  assert.deepEqual(
+    handoffTargetTools(['cmd', 'claude'], 'claude').map(tool => tool.id),
+    ['cmd'],
+  );
 });
 
 test('工具栏只校验当前来源上下文，目标 CLI 在打开弹窗后实时探测', () => {

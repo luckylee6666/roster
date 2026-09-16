@@ -46,6 +46,6 @@ test('打开任一 CLI 先聚焦运行中标签，否则续接最近会话，没
   assert.match(html, /isRailCliTool\(tool\)/);
   assert.match(html, /findRunningProjectTool\(listLiveTerminals\(\), p\.localPath, tool\)/);
   assert.match(html, /name: p\.name/);
-  assert.match(html, /forceNew \? \{ autoCmd: tool \} : launchCommandForProjectTool/);
+  assert.match(html, /forceNew \? \{ autoCmd: cliCommandName\(tool\) \} : launchCommandForProjectTool/);
   assert.match(html, /name: project\.name/);
 });

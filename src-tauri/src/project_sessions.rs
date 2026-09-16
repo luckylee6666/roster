@@ -25,6 +25,9 @@ const TRANSCRIPT_MESSAGE_LIMIT: usize = 500;
 const TRANSCRIPT_TEXT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const TRANSCRIPT_INLINE_IMAGE_LIMIT: usize = 8 * 1024 * 1024;
 const TRANSCRIPT_ATTACHMENT_LIMIT: usize = 32;
+// Command Code 的会话目录名是它自己编的 slug，不可还原，找这个项目的会话只能
+// 逐个读 header 复核 cwd。给扫描封顶，别让一台机器上攒了很多项目时卡住列表。
+const COMMANDCODE_SCAN_LIMIT: usize = 600;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -367,6 +370,324 @@ fn list_claude_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     sessions.sort_by_key(|session| std::cmp::Reverse(session.at_ms));
     sessions.truncate(MAX_SESSIONS_PER_TOOL);
     sessions
+}
+
+/// Command Code 的会话落在 `~/.commandcode/projects/<slug>/<id>.jsonl`，旁挂
+/// `<id>.meta.json` 与 `<id>.checkpoints.jsonl`。`<slug>` 是 CLI 自己的编码
+/// （小写、驼峰再切一刀、非字母数字压成 `-`），还原不可靠，所以一律读会话文件
+/// 首行的 header `cwd` 复核项目归属，目录名只当扫描入口。
+fn commandcode_home(home: &Path) -> PathBuf {
+    home.join(".commandcode")
+}
+
+/// header：`{"type":"session","id":"…","cwd":"…"}`。取到的 id 才算数，
+/// 文件名只是磁盘位置。
+fn commandcode_session_header(path: &Path) -> Option<(String, String)> {
+    // 扫描是全库范围的，先确认是普通文件：FIFO / 设备文件会把读取挂住。
+    if !fs::symlink_metadata(path)
+        .map(|meta| meta.is_file())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    // header 正常就是首行；多读几行，兜住将来前面插了别的记录的情况。
+    for _ in 0..4 {
+        let line = read_line_bounded(&mut reader, TRANSCRIPT_LINE_LIMIT)?;
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim_end()) else {
+            continue;
+        };
+        if value.get("type").and_then(|item| item.as_str()) != Some("session") {
+            continue;
+        }
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())?
+            .to_string();
+        let cwd = value
+            .get("cwd")
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())?
+            .to_string();
+        return Some((id, cwd));
+    }
+    None
+}
+
+/// `<id>.jsonl` 是会话正文；`<id>.checkpoints.jsonl`、`<id>.prompts.jsonl`
+/// 是同一条会话的旁挂文件，不能当独立会话列出来。
+fn is_commandcode_session_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name.ends_with(".jsonl")
+        && !name.ends_with(".checkpoints.jsonl")
+        && !name.ends_with(".prompts.jsonl")
+}
+
+fn commandcode_companion_path(path: &Path, suffix: &str) -> Option<PathBuf> {
+    let stem = path.file_stem()?.to_str()?;
+    Some(path.with_file_name(format!("{stem}{suffix}")))
+}
+
+/// 按修改时间从新到旧（同 mtime 时按名字倒序兜底，保证顺序确定）。
+fn commandcode_sorted_by_mtime_desc(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut entries = paths
+        .into_iter()
+        .map(|path| {
+            let at = path
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map(millis)
+                .unwrap_or(0);
+            (path, at)
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+    entries.into_iter().map(|(path, _)| path).collect()
+}
+
+/// 扫本机全部 Command Code 会话目录，返回属于 `cwd`、且 id 合法的会话。
+/// 目录与文件都按 mtime 从新到旧：扫描封顶时丢的永远是最旧的那批，
+/// 而不是 read_dir 的任意顺序。
+fn commandcode_session_files(home: &Path, cwd: &str) -> Vec<(PathBuf, String)> {
+    let mut files = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut scanned = 0usize;
+    let Ok(projects) = fs::read_dir(commandcode_home(home).join("projects")) else {
+        return files;
+    };
+    let dirs = commandcode_sorted_by_mtime_desc(
+        projects
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect(),
+    );
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        let candidates = commandcode_sorted_by_mtime_desc(
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| is_commandcode_session_file(path))
+                .collect(),
+        );
+        for path in candidates {
+            scanned += 1;
+            if scanned > COMMANDCODE_SCAN_LIMIT {
+                return files;
+            }
+            let Some((id, session_cwd)) = commandcode_session_header(&path) else {
+                continue;
+            };
+            // 文件名必须就是 `<header id>.jsonl`：真实布局两者一致，名字对不上说明
+            // 文件被改过（比如 `...jsonl` 这种 stem 是 `..` 的名字）。这种既不列出来，
+            // 也不给预览/删除/续接的机会——那些入口都是按 id 拼文件名的。
+            if path.file_stem().and_then(|stem| stem.to_str()) != Some(id.as_str()) {
+                continue;
+            }
+            // header 里的 id 会被前端拿去预览/删除/续接：不安全的直接不列出来。
+            if !is_safe_component(&id) || !same_project_cwd(&session_cwd, cwd) {
+                continue;
+            }
+            // 同一个 id 出现在两个 slug 目录（编码变过 / 拷贝）时只留最新的一条。
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            files.push((path, id));
+        }
+    }
+    files
+}
+
+/// 会话条目：`{"type":"message","message":{"role":"user"|"assistant","content":[…]}}`。
+/// thinking / tool_use / tool_result 都不是对话内容，只认 text 段。
+fn commandcode_entry_role(value: &serde_json::Value) -> Option<&str> {
+    if value.get("type").and_then(|item| item.as_str()) != Some("message") {
+        return None;
+    }
+    match value
+        .get("message")?
+        .get("role")
+        .and_then(|item| item.as_str())?
+    {
+        "user" => Some("user"),
+        "assistant" => Some("assistant"),
+        _ => None,
+    }
+}
+
+fn commandcode_message_text(value: &serde_json::Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?;
+    if let Some(text) = content.as_str() {
+        return (!text.trim().is_empty()).then(|| text.to_string());
+    }
+    let parts = content
+        .as_array()?
+        .iter()
+        .filter(|item| item.get("type").and_then(|item| item.as_str()) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(|item| item.as_str()))
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn commandcode_meta_title(path: &Path) -> Option<String> {
+    let meta = commandcode_companion_path(path, ".meta.json")?;
+    let text = read_text_bounded(&meta, CLAUDE_TITLE_READ_LIMIT)?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let title = value
+        .get("title")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())?;
+    Some(title.to_string())
+}
+
+/// `-p`（对话工作台）跑出来的会话没有 meta 标题，就退回首条用户消息——
+/// 与 Claude / Qwen 的列表口径一致。
+fn commandcode_first_user_text(path: &Path) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let buf = read_lossy_prefix(&mut file, CLAUDE_TITLE_READ_LIMIT);
+    buf.lines().find_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        if commandcode_entry_role(&value) != Some("user") {
+            return None;
+        }
+        let text = sanitize_handoff_text(&commandcode_message_text(&value)?);
+        (!text.is_empty() && !is_noise_user_text(&text)).then_some(text)
+    })
+}
+
+fn commandcode_history_session(path: &Path, id: &str) -> ProjectHistorySession {
+    let at_ms = path
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .map(millis)
+        .unwrap_or(0);
+    let raw_title = commandcode_meta_title(path)
+        .or_else(|| commandcode_first_user_text(path))
+        .unwrap_or_default();
+    history_session(id.to_string(), "cmd", &raw_title, at_ms)
+}
+
+fn list_commandcode_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
+    let mut sessions = commandcode_session_files(home, cwd)
+        .into_iter()
+        .map(|(path, id)| commandcode_history_session(&path, &id))
+        .collect::<Vec<_>>();
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.at_ms));
+    sessions.truncate(MAX_SESSIONS_PER_TOOL);
+    sessions
+}
+
+/// 按文件名定位会话：id 先过 `require_component_id`，拼出来的永远是单个文件名
+/// （没有分隔符，也不会是 `.` / `..`）。命中后再读 header 复核 id 与项目归属。
+/// 这里不做扫描封顶——只读命中的那一个文件，且这条路是续接/预览/删除的入口，
+/// 被截断会让用户看到"不属于当前项目"这种错误结论。
+fn commandcode_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
+    let id = require_component_id(session_id)?;
+    let file_name = format!("{id}.jsonl");
+    let Ok(projects) = fs::read_dir(commandcode_home(home).join("projects")) else {
+        return Err("找不到这个 cmd 会话".to_string());
+    };
+    for project in projects.flatten() {
+        let dir = project.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let path = dir.join(&file_name);
+        if !path.is_file() {
+            continue;
+        }
+        let Some((found_id, session_cwd)) = commandcode_session_header(&path) else {
+            continue;
+        };
+        if found_id == id && same_project_cwd(&session_cwd, cwd) {
+            return Ok(path);
+        }
+    }
+    Err("找不到这个 cmd 会话".to_string())
+}
+
+fn collect_commandcode_preview_parts(buf: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    for line in buf.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(role) = commandcode_entry_role(&value) else {
+            continue;
+        };
+        let Some(raw) = commandcode_message_text(&value) else {
+            continue;
+        };
+        let text = sanitize_handoff_text(&raw);
+        if text.is_empty() || (role == "user" && is_noise_user_text(&text)) {
+            continue;
+        }
+        parts.push(text);
+        if parts.len() >= 8 {
+            break;
+        }
+    }
+    parts
+}
+
+fn commandcode_handoff_message(value: &serde_json::Value) -> Option<SessionHandoffMessage> {
+    let role = commandcode_entry_role(value)?;
+    let text = sanitize_handoff_text(&commandcode_message_text(value)?);
+    if text.is_empty() || (role == "user" && is_noise_user_text(&text)) {
+        return None;
+    }
+    Some(SessionHandoffMessage {
+        role: role.to_string(),
+        text,
+    })
+}
+
+fn preview_commandcode(
+    home: &Path,
+    cwd: &str,
+    session_id: &str,
+) -> Result<ProjectHistoryPreview, String> {
+    let path = commandcode_session_path(home, cwd, session_id)?;
+    let id = session_id.trim();
+    let session = commandcode_history_session(&path, id);
+    let mut file = fs::File::open(&path).map_err(|error| error.to_string())?;
+    let buf = read_lossy_prefix(&mut file, PREVIEW_FILE_READ_LIMIT);
+    Ok(preview_result(
+        session,
+        preview_body(&collect_commandcode_preview_parts(&buf)),
+    ))
+}
+
+fn delete_commandcode(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
+    let id = require_component_id(session_id)?;
+    let path = commandcode_session_path(home, cwd, &id)?;
+    fs::remove_file(&path).map_err(|error| error.to_string())?;
+    // 旁挂文件与文件快照一律按**已校验的 id** 拼，绝不用文件名 stem：
+    // `...jsonl` 的 stem 是 `..`，拿它拼出的 file-history 路径会指到
+    // ~/.commandcode 本身，remove_dir_all 会把整个 CLI 目录（含凭据）删掉。
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    for suffix in [".meta.json", ".checkpoints.jsonl", ".prompts.jsonl"] {
+        let companion = dir.join(format!("{id}{suffix}"));
+        if companion.is_file() {
+            let _ = fs::remove_file(companion);
+        }
+    }
+    let history_root = commandcode_home(home).join("file-history");
+    let history = history_root.join(&id);
+    if history.is_dir() && is_within_dir(&history_root, &history) {
+        let _ = fs::remove_dir_all(&history);
+    }
+    Ok(())
 }
 
 fn grok_home(home: &Path) -> PathBuf {
@@ -1060,6 +1381,12 @@ pub fn list_project_history_with_home(project_path: &str, home: &Path) -> Projec
         "MiMo Code",
         list_mimo_sessions(home, &cwd),
     );
+    push_group(
+        &mut groups,
+        "cmd",
+        "cmd",
+        list_commandcode_sessions(home, &cwd),
+    );
     ProjectHistory { groups }
 }
 
@@ -1346,6 +1673,7 @@ fn transcript_role<'a>(tool: &str, value: &'a serde_json::Value) -> Option<&'a s
             "assistant" => Some("assistant"),
             _ => None,
         },
+        "cmd" => commandcode_entry_role(value),
         _ => None,
     }
 }
@@ -1409,6 +1737,9 @@ fn transcript_content_items<'a>(
         "qwen" => value
             .get("message")
             .and_then(|message| message.get("parts")),
+        "cmd" => value
+            .get("message")
+            .and_then(|message| message.get("content")),
         _ => None,
     };
     content
@@ -1443,6 +1774,7 @@ fn transcript_message_from_value(
         "codex" => codex_handoff_message(value),
         "grok" => grok_handoff_message(value),
         "qwen" => qwen_handoff_message(value),
+        "cmd" => commandcode_handoff_message(value),
         _ => None,
     };
     let mut attachments = Vec::new();
@@ -2224,6 +2556,7 @@ fn handoff_tool_label(tool: &str) -> &str {
         "agy" => "agy",
         "qwen" => "Qwen",
         "mimo" => "MiMo Code",
+        "cmd" => "cmd",
         _ => "CLI",
     }
 }
@@ -2527,6 +2860,14 @@ fn source_handoff_messages(
                 truncated,
             )
         }
+        "cmd" => {
+            let path = commandcode_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, HANDOFF_FILE_READ_LIMIT)?;
+            (
+                jsonl_handoff_candidates(&buf, commandcode_handoff_message),
+                truncated,
+            )
+        }
         "agy" => {
             require_component_id(session_id)?;
             let history = home.join(".gemini/antigravity-cli/history.jsonl");
@@ -2626,6 +2967,11 @@ fn source_transcript_messages(
             let path = qwen_session_path(home, cwd, session_id)?;
             let (buf, truncated) = read_lossy_tail(&path, TRANSCRIPT_FILE_READ_LIMIT)?;
             (jsonl_transcript_candidates(&buf, "qwen"), truncated)
+        }
+        "cmd" => {
+            let path = commandcode_session_path(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail(&path, TRANSCRIPT_FILE_READ_LIMIT)?;
+            (jsonl_transcript_candidates(&buf, "cmd"), truncated)
         }
         "agy" => {
             require_component_id(session_id)?;
@@ -2771,6 +3117,7 @@ pub fn preview_project_session_with_home(
         "opencode" => preview_opencode(home, &cwd, session_id),
         "mimo" => preview_mimo(home, &cwd, session_id),
         "agy" => preview_agy(home, &cwd, session_id),
+        "cmd" => preview_commandcode(home, &cwd, session_id),
         "qwen" => {
             let path = qwen_session_path(home, &cwd, session_id)?;
             let session = qwen_session_from_jsonl(&path, &cwd, true)
@@ -2809,6 +3156,7 @@ pub fn delete_project_session_with_home(
         "opencode" => delete_opencode(home, &cwd, session_id),
         "mimo" => delete_mimo(home, &cwd, session_id),
         "agy" => delete_agy(home, &cwd, session_id),
+        "cmd" => delete_commandcode(home, &cwd, session_id),
         "qwen" => {
             let path = qwen_session_path(home, &cwd, session_id)?;
             fs::remove_file(&path).map_err(|error| error.to_string())?;
@@ -3291,6 +3639,137 @@ mod tests {
         delete_project_session_with_home(cwd, "qwen", id, &home).unwrap();
         assert!(!chats.join(format!("{id}.jsonl")).exists());
         assert!(!chats.join(format!("{id}.runtime.json")).exists());
+    }
+
+    #[test]
+    fn commandcode_delete_never_escapes_through_a_hostile_file_name() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/app";
+        let id = "safe-id-1234";
+        let dir = home.join(".commandcode/projects/users-lucky-git-app");
+        fs::create_dir_all(&dir).unwrap();
+        // 文件名 stem 是 `..`，header 里的 id 却是合法值：旧实现会正常列出它，
+        // 删除时用文件名 stem 拼出 `file-history/..`（= ~/.commandcode），
+        // 一次删除把整个 CLI 目录连凭据一起清空。
+        fs::write(
+            dir.join("...jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-08-21T10:00:00Z","cwd":cwd}),
+                serde_json::json!({"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"恶意文件名"}]}}),
+            ),
+        )
+        .unwrap();
+        // 装作会被误删的邻居：CLI 凭据、别人的快照目录、整个 projects 树。
+        fs::write(home.join(".commandcode/auth.json"), r#"{"apiKey":"x"}"#).unwrap();
+        fs::create_dir_all(home.join(".commandcode/file-history/other")).unwrap();
+        fs::write(
+            home.join(".commandcode/file-history/other/keep.txt"),
+            "keep",
+        )
+        .unwrap();
+
+        assert!(
+            list_commandcode_sessions(&home, cwd).is_empty(),
+            "文件名与 header id 对不上的不列出来"
+        );
+        assert!(delete_commandcode(&home, cwd, id).is_err());
+        assert!(dir.join("...jsonl").is_file(), "不能删掉名字对不上的文件");
+        assert!(
+            home.join(".commandcode/auth.json").is_file(),
+            "不能碰到 CLI 凭据"
+        );
+        assert!(home
+            .join(".commandcode/file-history/other/keep.txt")
+            .is_file());
+        assert!(home.join(".commandcode/projects").is_dir());
+    }
+
+    #[test]
+    fn commandcode_lists_previews_and_deletes_only_same_project() {
+        let (_root, home) = temp_home();
+        let cwd = "/Users/lucky/git/app";
+        let id = "44444444-4444-4444-4444-444444444444";
+        let dir = home.join(".commandcode/projects/users-lucky-git-app");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(format!("{id}.jsonl")),
+            format!(
+                "{}\n{}\n{}\n",
+                serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-08-21T10:00:00Z","cwd":cwd}),
+                serde_json::json!({"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"部署到服务器"}]}}),
+                serde_json::json!({"type":"message","id":"m2","message":{"role":"assistant","content":[{"type":"thinking","thinking":"内部推理"},{"type":"text","text":"好的，先看部署方式"}]}}),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.join(format!("{id}.meta.json")),
+            r#"{"entrypoint":"interactive","title":"部署会话"}"#,
+        )
+        .unwrap();
+        // 旁挂文件不是独立会话。
+        fs::write(dir.join(format!("{id}.checkpoints.jsonl")), "{}\n").unwrap();
+        fs::write(dir.join(format!("{id}.prompts.jsonl")), "{}\n").unwrap();
+        fs::create_dir_all(home.join(".commandcode/file-history").join(id)).unwrap();
+
+        // 对话工作台跑出来的会话没有 meta 标题，退回首条用户消息。
+        let print_id = "66666666-6666-6666-6666-666666666666";
+        fs::write(
+            dir.join(format!("{print_id}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"session","version":3,"id":print_id,"timestamp":"2026-08-21T11:00:00Z","cwd":cwd}),
+                serde_json::json!({"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"没有标题的会话"}]}}),
+            ),
+        )
+        .unwrap();
+
+        // 别的项目的会话（目录名不同、header 的 cwd 也不同）不能混进来。
+        let other_id = "55555555-5555-5555-5555-555555555555";
+        let other_dir = home.join(".commandcode/projects/users-lucky-git-other");
+        fs::create_dir_all(&other_dir).unwrap();
+        fs::write(
+            other_dir.join(format!("{other_id}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"session","version":3,"id":other_id,"timestamp":"2026-08-21T10:00:00Z","cwd":"/Users/lucky/git/other"}),
+                serde_json::json!({"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"撞名项目会话"}]}}),
+            ),
+        )
+        .unwrap();
+
+        let history = list_project_history_with_home(cwd, &home);
+        let group = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "cmd")
+            .unwrap();
+        assert_eq!(group.label, "cmd");
+        let titles = group
+            .sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session.title.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(titles.len(), 2, "旁挂文件与别的项目都不该列出来");
+        assert!(titles.contains(&(id, "部署会话")));
+        assert!(titles.contains(&(print_id, "没有标题的会话")));
+
+        let preview = preview_project_session_with_home(cwd, "cmd", id, &home).unwrap();
+        assert_eq!(preview.tool, "cmd");
+        assert!(preview.body.contains("部署到服务器"));
+        assert!(preview.body.contains("好的，先看部署方式"));
+        assert!(!preview.body.contains("内部推理"), "thinking 不是对话内容");
+        assert!(preview_project_session_with_home(cwd, "cmd", other_id, &home).is_err());
+        assert!(delete_project_session_with_home(cwd, "cmd", other_id, &home).is_err());
+        assert!(other_dir.join(format!("{other_id}.jsonl")).exists());
+
+        delete_project_session_with_home(cwd, "cmd", id, &home).unwrap();
+        assert!(!dir.join(format!("{id}.jsonl")).exists());
+        assert!(!dir.join(format!("{id}.meta.json")).exists());
+        assert!(!dir.join(format!("{id}.checkpoints.jsonl")).exists());
+        assert!(!dir.join(format!("{id}.prompts.jsonl")).exists());
+        assert!(!home.join(".commandcode/file-history").join(id).exists());
+        assert!(dir.join(format!("{print_id}.jsonl")).exists(), "别删错会话");
     }
 
     #[test]
@@ -4144,6 +4623,21 @@ mod tests {
         )
         .unwrap();
 
+        let commandcode_id = "command-code-main";
+        let commandcode = home.join(".commandcode/projects/users-lucky-git-all-handoff");
+        fs::create_dir_all(&commandcode).unwrap();
+        fs::write(
+            commandcode.join(format!("{commandcode_id}.jsonl")),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                serde_json::json!({"type":"session","version":3,"id":commandcode_id,"timestamp":"2026-08-21T10:00:00Z","cwd":cwd}),
+                serde_json::json!({"type":"message","id":"m1","message":{"role":"user","content":[{"type":"text","text":"检查 Command Code 登录"}]}}),
+                serde_json::json!({"type":"message","id":"m2","message":{"role":"assistant","content":[{"type":"thinking","thinking":"内部规则"},{"type":"text","text":"Command Code 登录还需要回归测试。"}]}}),
+                serde_json::json!({"type":"message","id":"m3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"工具内容 不能交接"}]}]}}),
+            ),
+        )
+        .unwrap();
+
         seed_sqlite_handoff_db(
             &home.join(".local/share/opencode/opencode.db"),
             cwd,
@@ -4175,6 +4669,12 @@ mod tests {
                 "还需要补失败回滚",
             ),
             ("mimo", "mimo-main", "检查登录实现", "还需要补失败回滚"),
+            (
+                "cmd",
+                commandcode_id,
+                "检查 Command Code 登录",
+                "Command Code 登录还需要回归测试。",
+            ),
         ];
         for (tool, id, first, last) in cases {
             let handoff = preview_session_handoff_with_home(cwd, tool, id, &home).unwrap();

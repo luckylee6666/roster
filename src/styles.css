@@ -86,6 +86,9 @@
   --tool-mimo-ink: #b9581f;
   --tool-mimo-bg: #fff0e6;
   --tool-mimo-line: #f3d7c6;
+  --tool-cmd-ink: #5b49b5;
+  --tool-cmd-bg: #f1eefb;
+  --tool-cmd-line: #ddd5f2;
 
   /* Ant Design 色彩系统 */
   --blue: #1677ff;
@@ -2686,6 +2689,11 @@ body {
   background: rgba(255, 105, 0, 0.16);
 }
 
+.term-tab-tool.tool-cmd {
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.16);
+}
+
 /* 标签上下文用量徽标（claude 会话） */
 .term-tab-ctx {
   flex-shrink: 0;
@@ -5016,11 +5024,14 @@ body {
 .usage-oauth-reset { font-size: 11.5px; color: var(--text-3); }
 
 /* CLI 切换 tab（claude / codex / grok） */
+/* 五档之后标签不再等宽平分：等宽会把「Command Code」挤成两行。
+   改成按内容自适应（有空间时仍一起撑满），放不下就横向滚动兜底。 */
 .usage-tabs { display: flex; gap: 4px; padding: 3px; border-radius: var(--radius-md);
-  background: var(--bg-2); border: 1px solid var(--border); }
-.usage-tab { flex: 1; padding: 6px 10px; border: none; background: transparent; cursor: pointer;
+  background: var(--bg-2); border: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.usage-tabs::-webkit-scrollbar { display: none; }
+.usage-tab { flex: 1 0 auto; padding: 6px 10px; border: none; background: transparent; cursor: pointer;
   border-radius: calc(var(--radius-md) - 2px); font-size: 12.5px; font-weight: 600; color: var(--text-3);
-  transition: background .15s ease, color .15s ease; }
+  white-space: nowrap; transition: background .15s ease, color .15s ease; }
 .usage-tab:hover { color: var(--text-1); }
 .usage-tab.active { background: var(--bg-1); color: var(--blue-active); box-shadow: var(--shadow-sm); }
 
@@ -6245,6 +6256,7 @@ html[data-app-view="developer"] #conversation-surface {
 .conversation-history-tool[data-tool="agy"] { color: var(--tool-agy-ink) !important; background: var(--tool-agy-bg); border-color: var(--tool-agy-line); }
 .conversation-history-tool[data-tool="qwen"] { color: var(--tool-qwen-ink) !important; background: var(--tool-qwen-bg); border-color: var(--tool-qwen-line); }
 .conversation-history-tool[data-tool="mimo"] { color: var(--tool-mimo-ink) !important; background: var(--tool-mimo-bg); border-color: var(--tool-mimo-line); }
+.conversation-history-tool[data-tool="cmd"] { color: var(--tool-cmd-ink) !important; background: var(--tool-cmd-bg); border-color: var(--tool-cmd-line); }
 
 .conversation-history-delete {
   display: inline-flex;
@@ -7749,6 +7761,9 @@ html[data-app-view="developer"] #conversation-surface {
   --tool-mimo-ink: #eba578;
   --tool-mimo-bg: #2f2117;
   --tool-mimo-line: #4d372a;
+  --tool-cmd-ink: #b4a4f2;
+  --tool-cmd-bg: #221d38;
+  --tool-cmd-line: #3a3159;
   color-scheme: dark;
   }
 }
@@ -7837,5 +7852,8 @@ html[data-app-view="conversation"][data-theme="dark"] {
   --tool-mimo-ink: #eba578;
   --tool-mimo-bg: #2f2117;
   --tool-mimo-line: #4d372a;
+  --tool-cmd-ink: #b4a4f2;
+  --tool-cmd-bg: #221d38;
+  --tool-cmd-line: #3a3159;
   color-scheme: dark;
 }

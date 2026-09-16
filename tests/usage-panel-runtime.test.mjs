@@ -6,12 +6,14 @@ const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const page = readFileSync(new URL('../src/index.html', import.meta.url), 'utf8');
 const rust = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
 const usage = readFileSync(new URL('../src-tauri/src/usage.rs', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 
-test('用量面板支持 Claude、Codex、Grok、OpenCode，且不再依赖 ccusage/本地日志', () => {
+test('用量面板支持 Claude、Codex、Grok、OpenCode、cmd，且不再依赖 ccusage/本地日志', () => {
   assert.match(page, /data-agent="claude"/);
   assert.match(page, /data-agent="codex"/);
   assert.match(page, /data-agent="grok"/);
   assert.match(page, /data-agent="opencode" hidden/);
+  assert.match(page, /data-agent="cmd" hidden/);
   assert.match(page, /data-agent="claude" hidden/);
   assert.match(page, /data-agent="codex" hidden/);
   assert.match(page, /data-agent="grok" hidden/);
@@ -23,7 +25,9 @@ test('用量面板支持 Claude、Codex、Grok、OpenCode，且不再依赖 ccus
   assert.match(main, /usageAgentsForInstalledClis\(installedCliIds, usageCapableAgentIds\)/);
   assert.match(main, /tab\.hidden = !visible/);
   assert.match(main, /refreshInstalledClis\(\{ force: forceProbe, syncUsageLoad: false \}\)/);
-  assert.match(main, /本机没有已安装且支持用量查询的 Claude、Codex、Grok 或 OpenCode/);
+  assert.match(main, /本机没有已安装且支持用量查询的 Claude、Codex、Grok、OpenCode 或 cmd/);
+  // 用量 tab 的文案也跟命令名一致（菜单里不写产品名）。
+  assert.match(page, /data-agent="cmd" hidden>cmd</);
   const loadBlock = main.slice(
     main.indexOf('async function loadUsage('),
     main.indexOf('function renderLimitUsage'),
@@ -42,6 +46,10 @@ test('用量面板支持 Claude、Codex、Grok、OpenCode，且不再依赖 ccus
   assert.match(main, /currentRevision: usageRequestRevision/);
   assert.match(main, /overlayOpen: \$\('usage-overlay'\)\.classList\.contains\('active'\)/);
   assert.match(main, /renderLimitUsage\(/);
+  // 额度行是本轮新增的渲染分支：有总额才画条，否则只报剩余。
+  assert.match(main, /const credits = creditsRow\(o\)/);
+  assert.match(main, /function creditsRow\(o\)/);
+  assert.match(main, /agent === 'grok' \|\| agent === 'cmd' \? '订阅用量' : '限流用量'/);
   assert.doesNotMatch(main, /agent_weekly/);
   assert.doesNotMatch(main, /has_npx/);
   assert.doesNotMatch(main, /ccusage/);
@@ -49,7 +57,12 @@ test('用量面板支持 Claude、Codex、Grok、OpenCode，且不再依赖 ccus
   assert.match(rust, /async fn codex_usage/);
   assert.match(rust, /async fn grok_usage/);
   assert.match(rust, /async fn opencode_usage/);
+  assert.match(rust, /async fn commandcode_usage/);
   assert.match(rust, /fn usage_supported_agents/);
+  // 五档之后标签不能再等宽平分：等宽会把「Command Code」挤成两行。
+  assert.match(styles, /\.usage-tab \{[^}]*white-space: nowrap/);
+  assert.match(styles, /\.usage-tabs \{[^}]*overflow-x: auto/);
+  assert.match(styles, /\.usage-tab \{[^}]*flex: 1 0 auto/);
   assert.doesNotMatch(rust, /agent_weekly/);
   assert.doesNotMatch(rust, /fn has_npx/);
   assert.match(usage, /account\/rateLimits\/read/);
@@ -57,6 +70,9 @@ test('用量面板支持 Claude、Codex、Grok、OpenCode，且不再依赖 ccus
   assert.match(usage, /grok agent stdio/);
   assert.match(usage, /_x\.ai\/billing/);
   assert.match(usage, /zen\/go\/v1\/usage/);
+  assert.match(usage, /api\.commandcode\.ai\/alpha\/billing\/credits/);
+  assert.match(usage, /COMMAND_CODE_API_KEY/);
+  assert.match(usage, /COMMANDCODE_API_URL/);
   assert.match(usage, /parse_grok_billing_response/);
   assert.match(usage, /billing: fetched credits config/);
   assert.match(usage, /unified\.jsonl/);

@@ -59,6 +59,7 @@ opencode.json
 # Local agent/tool scratch directories
 .superpowers/
 .claude/
+.commandcode/
 
 # Generated Python bytecode and local-only 3D experiments.
 __pycache__/

@@ -1,5 +1,5 @@
 import { normalizeProjectMemoryCwd } from './project-memory-utils.js';
-import { cliToolName, extractResumedSessionId, isGenericContinueCommand, launchCliCommand } from './session-restore-utils.js';
+import { normalizeCliToolName, extractResumedSessionId, isGenericContinueCommand, launchCliCommand } from './session-restore-utils.js';
 
 export const DEFAULT_PROJECT_KIT = Object.freeze(['claude', 'codex', 'grok']);
 export const PROJECT_KIT_LAYOUT = 'main';
@@ -127,7 +127,7 @@ export function runningHistoryLookup(runningSessions, groups, projectCwd) {
   }
   for (const running of Array.isArray(runningSessions) ? runningSessions : []) {
     if (!isLiveTerminalSession(running) || !sameProjectCwd(running.cwd, projectCwd)) continue;
-    const tool = cliToolName(running.tool);
+    const tool = normalizeCliToolName(running.tool);
     if (!tool) continue;
     const resumed = extractResumedSessionId(running.tool);
     let targetId = '';
@@ -155,7 +155,7 @@ export function findRunningProjectTool(runningSessions, projectCwd, tool) {
   if (!name) return null;
   for (const running of Array.isArray(runningSessions) ? runningSessions : []) {
     if (!isLiveTerminalSession(running) || !sameProjectCwd(running.cwd, projectCwd)) continue;
-    if (cliToolName(running.tool) === name) return running;
+    if (normalizeCliToolName(running.tool) === name) return running;
   }
   return null;
 }

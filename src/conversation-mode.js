@@ -1012,12 +1012,17 @@ export function installConversationMode({
 
   // 只有"这家 CLI 真会全量列出取值"的列表才能拿来删选择：
   // - Claude 的模型来自 `--help` 里的别名示例，完整模型名可以手打；
-  // - OpenCode/MiMo 的强度来自 `run --help` 的 --variant 示例，官方明说不是完整枚举。
+  // - OpenCode/MiMo 的强度来自 `run --help` 的 --variant 示例，官方明说不是完整枚举；
+  // - Command Code 的强度是拿非法 `--effort` 探当前模型探出来的（它按模型给取值），
+  //   换个模型就未必是这几个，同样不能拿来删手打的值。
   // 另外列表是按当前项目探测的（OpenCode/MiMo 会合并项目级配置），而选择按
   // provider 持久化；项目目录不同造成的差异不在这里删。
   function tuningListAuthoritative(providerId, kind) {
     if (kind === 'model' && providerId === 'claude') return false;
-    if (kind === 'effort' && (providerId === 'opencode' || providerId === 'mimo')) return false;
+    if (kind === 'effort'
+      && (providerId === 'opencode' || providerId === 'mimo' || providerId === 'cmd')) {
+      return false;
+    }
     return true;
   }
 

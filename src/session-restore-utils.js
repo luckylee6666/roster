@@ -72,25 +72,63 @@ export function quoteCliArg(value) {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
+/** 同一家的其它命令名（旧布局、用户手敲、Windows 短名）都归到登记 id。 */
+const CLI_TOOL_ALIASES = Object.freeze({ 'command-code': 'cmd', commandcode: 'cmd', cmdc: 'cmd' });
+
+/** Windows 上 `cmd` 被系统 shell 占用，Command Code 官方短名是 `cmdc`；其余同名。 */
+const WINDOWS_COMMAND_NAMES = Object.freeze({ cmd: 'cmdc' });
+
+function hostIsWindows() {
+  try {
+    return typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent || '');
+  } catch (_) {
+    return false;
+  }
+}
+
+/** 把命令/名字规范化成登记 id（先剥路径与参数，再查别名表）。 */
+export function normalizeCliToolName(commandOrName) {
+  const name = cliToolName(commandOrName);
+  return CLI_TOOL_ALIASES[name] || name;
+}
+
+/** 终端里真正要执行的命令名：登记 id 与命令名可能不同（Windows 上的 `cmd` → `cmdc`）。 */
+export function cliCommandName(tool, isWindows = hostIsWindows()) {
+  const name = normalizeCliToolName(tool);
+  const mapped = isWindows ? WINDOWS_COMMAND_NAMES[name] : '';
+  return mapped || name;
+}
+
+/**
+ * 这家的 `--continue` 覆盖不了 Roster 自己造出来的会话，恢复标签时要拿磁盘上的
+ * 精确会话 ID 续：Command Code 的 `--continue` 只认交互会话，对话工作台跑出来的
+ * `-p` 会话不在里面，扑空后 CLI 会直接退出（标签变成死 shell）。
+ */
+export function prefersExactResume(tool) {
+  return normalizeCliToolName(tool) === 'cmd';
+}
+
 export function resumeCliCommand(tool, sessionId) {
-  const name = String(tool || '').trim();
+  const name = normalizeCliToolName(tool);
   const id = String(sessionId || '').trim();
   // 以 - 开头的 ID 会被 CLI 当成选项解析（会话文件名可被本地伪造），拒绝续接。
   if (!name || !id || id.startsWith('-')) return '';
-  if (name === 'claude') return `claude --resume ${quoteCliArg(id)}`;
-  if (name === 'grok') return `grok --resume ${quoteCliArg(id)}`;
+  const exe = cliCommandName(name);
+  if (name === 'claude') return `${exe} --resume ${quoteCliArg(id)}`;
+  if (name === 'grok') return `${exe} --resume ${quoteCliArg(id)}`;
   if (name === 'codex') return withCodexNativeProvider(`codex resume ${quoteCliArg(id)}`);
-  if (name === 'opencode') return `opencode --session ${quoteCliArg(id)}`;
-  if (name === 'agy') return `agy --conversation ${quoteCliArg(id)}`;
-  if (name === 'qwen') return `qwen --resume ${quoteCliArg(id)}`;
-  if (name === 'mimo') return `mimo --session ${quoteCliArg(id)}`;
+  if (name === 'opencode') return `${exe} --session ${quoteCliArg(id)}`;
+  if (name === 'agy') return `${exe} --conversation ${quoteCliArg(id)}`;
+  if (name === 'qwen') return `${exe} --resume ${quoteCliArg(id)}`;
+  if (name === 'mimo') return `${exe} --session ${quoteCliArg(id)}`;
+  if (name === 'cmd') return `${exe} --session ${quoteCliArg(id)}`;
   return '';
 }
 
 export function launchCliCommand(tool, sessionId) {
-  const name = String(tool || '').trim();
+  const name = normalizeCliToolName(tool);
   if (!name) return '';
-  return resumeCliCommand(name, sessionId) || name;
+  return resumeCliCommand(name, sessionId) || cliCommandName(name);
 }
 
 function takeFlagValue(args, flags) {
@@ -110,7 +148,7 @@ function takeFlagValue(args, flags) {
 export function extractResumedSessionId(command) {
   const words = shellWords(command);
   if (!words.length) return '';
-  const tool = cliToolName(words[0]);
+  const tool = normalizeCliToolName(words[0]);
   const args = words.slice(1);
   if (tool === 'claude') return takeFlagValue(args, new Set(['--resume']));
   if (tool === 'grok') return takeFlagValue(args, new Set(['--resume', '-r']));
@@ -125,15 +163,18 @@ export function extractResumedSessionId(command) {
   if (tool === 'agy') return takeFlagValue(args, new Set(['--conversation']));
   if (tool === 'qwen') return takeFlagValue(args, new Set(['--resume', '-r']));
   if (tool === 'mimo') return takeFlagValue(args, new Set(['--session', '-s']));
+  if (tool === 'cmd') {
+    return takeFlagValue(args, new Set(['--session', '--resume', '-r']));
+  }
   return '';
 }
 
 export function isGenericContinueCommand(command) {
   const words = shellWords(command);
   if (!words.length) return false;
-  const tool = cliToolName(words[0]);
+  const tool = normalizeCliToolName(words[0]);
   const args = words.slice(1);
-  if (tool === 'claude' || tool === 'grok' || tool === 'opencode' || tool === 'qwen' || tool === 'mimo') {
+  if (tool === 'claude' || tool === 'grok' || tool === 'opencode' || tool === 'qwen' || tool === 'mimo' || tool === 'cmd') {
     return args.includes('--continue') || args.includes('-c');
   }
   if (tool === 'codex') {
@@ -159,7 +200,7 @@ export function restoredCliCommand(command) {
   const trimmed = String(command || '').trim();
   if (!trimmed) return '';
 
-  const tool = cliToolName(trimmed);
+  const tool = normalizeCliToolName(trimmed);
   if (tool === 'claude') {
     return /(^|\s)(--continue|--resume|-c)(\s|$)/.test(trimmed)
       ? trimmed
@@ -198,6 +239,11 @@ export function restoredCliCommand(command) {
       || /(^|\s)(--session|-s)(=|\s|$)/.test(trimmed);
     return hasRestoreArgument ? trimmed : `${trimmed} --continue`;
   }
+
+  // Command Code 不在这里补 `--continue`：它只认交互会话，对话工作台跑出来的
+  // `-p` 会话不在里面，扑空就会退出、把标签留成一个死 shell。恢复路径会先查
+  // 磁盘历史（`prefersExactResume`），拿精确 ID 续，实在没有才开新会话。
+  if (tool === 'cmd') return trimmed;
 
   return trimmed;
 }

@@ -3429,11 +3429,23 @@ async fn opencode_usage(force: Option<bool>) -> Result<usage::OpencodeUsage, Str
     .map_err(|e| e.to_string())
 }
 
+/// Command Code（`cmd`）订阅与额度：读它自己的 ~/.commandcode/auth.json 取 apiKey，
+/// 调官方 `/alpha/billing/credits`（5 小时 / 每周窗口 + 本期额度）与
+/// `/alpha/billing/subscriptions`（计划与计费周期）；不落盘、不打印 key。
+#[tauri::command]
+async fn commandcode_usage(force: Option<bool>) -> Result<usage::CommandCodeUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        usage::fetch_commandcode_usage(force.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// 返回当前平台具备用量后端能力的来源。CLI 是否安装由另一条命令负责；Grok
 /// 通过跨平台的官方 ACP 查询，不再依赖 Unix 专属的安全日志读取能力。
 #[tauri::command]
 fn usage_supported_agents() -> Vec<&'static str> {
-    vec!["claude", "codex", "grok", "opencode"]
+    vec!["claude", "codex", "grok", "opencode", "cmd"]
 }
 
 /// 在普通用户对话工作台里启动一轮已登记 CLI。项目路径始终从后端保存的项目记录
@@ -3882,6 +3894,7 @@ pub fn run() {
             codex_usage,
             grok_usage,
             opencode_usage,
+            commandcode_usage,
             usage_supported_agents,
             conversation_chat_start,
             conversation_slash_list,
@@ -3960,6 +3973,8 @@ mod tests {
         assert!(agents.contains(&"claude"));
         assert!(agents.contains(&"codex"));
         assert!(agents.contains(&"grok"));
+        assert!(agents.contains(&"opencode"));
+        assert!(agents.contains(&"cmd"));
     }
 
     #[test]

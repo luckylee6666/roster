@@ -16,6 +16,7 @@ export const CONVERSATION_PROVIDER_CAPABILITIES = Object.freeze({
   agy: Object.freeze({ model: true, effort: true }),
   qwen: Object.freeze({ model: true, effort: false }),
   mimo: Object.freeze({ model: true, effort: true }),
+  'cmd': Object.freeze({ model: true, effort: true }),
 });
 
 const PROVIDER_MARKS = Object.freeze({
@@ -26,6 +27,7 @@ const PROVIDER_MARKS = Object.freeze({
   agy: 'Ag',
   qwen: 'Qw',
   mimo: 'Mi',
+  'cmd': 'Cc',
 });
 
 function providerRecord(tool) {

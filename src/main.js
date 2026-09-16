@@ -16,7 +16,10 @@ import { normalizeProjectMachine, projectMachineTag } from './project-form-utils
 import { seedThemePresets } from './terminal-theme-presets.js';
 import { CLI_TOOLS, CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
 import {
-  cliToolName,
+  cliCommandName,
+  extractResumedSessionId,
+  normalizeCliToolName,
+  prefersExactResume,
   restoreSessionLayout,
   resumeCliCommand,
   sessionLayoutEntries,
@@ -30,6 +33,7 @@ import {
   findRunningProjectTool,
   historySessionKey,
   launchCommandForProjectTool,
+  latestHistorySession,
   runningHistoryLookup,
   runningTerminalIdForHistory,
   sameProjectCwd,
@@ -55,6 +59,7 @@ import {
   sessionRailViewLoading,
 } from './session-rail-utils.js';
 import {
+  commandCodeCredits,
   selectUsageAgent,
   shouldApplyUsageResult,
   usageAgentsForInstalledClis,
@@ -631,7 +636,7 @@ function scheduleInstalledCliRetry() {
 }
 
 function cardCliButtonsHtml(project) {
-  const last = cliToolName(getProjectActivity(project?.id)?.cli);
+  const last = normalizeCliToolName(getProjectActivity(project?.id)?.cli);
   return installedCliTools(installedCliIds).map(tool => {
     const recent = tool.id === last;
     return `<button type="button" class="card-cli-btn${recent ? ' is-recent' : ''}" data-cmd="${escAttr(tool.id)}" title="打开 ${escAttr(tool.label)}，续上一次会话">`
@@ -671,7 +676,8 @@ async function refreshInstalledClis({ force = false, syncUsageLoad = true } = {}
   }
   const revision = ++installedCliProbeRevision;
   try {
-    const found = await invoke('list_installed_clis', { names: [...CLI_TOOL_IDS] });
+    // 探测的是终端里真正的命令名（Windows 上 Command Code 是 `cmdc`，`cmd` 被系统占用）。
+    const found = await invoke('list_installed_clis', { names: CLI_TOOL_IDS.map(id => cliCommandName(id)) });
     if (revision !== installedCliProbeRevision) return null;
     const detected = normalizeInstalledCliIds(found);
     // Login-shell startup can fail transiently while the app itself is still
@@ -882,7 +888,7 @@ function invalidateProjectSessionHistory(cwd) {
 
 function invalidateTerminalProjectSessionHistory(session) {
   if (!session || session.historyCacheInvalidated || session.status === 'failed') return '';
-  const tool = cliToolName(session.tool);
+  const tool = normalizeCliToolName(session.tool);
   if (!tool || !isRailCliTool(tool) || !normalizeProjectMemoryCwd(session.cwd)) return '';
   session.historyCacheInvalidated = true;
   return invalidateProjectSessionHistory(session.cwd);
@@ -1214,7 +1220,7 @@ function normalizeProjectTools(tools) {
   const seen = new Set();
   const normalized = [];
   for (const value of Array.isArray(tools) ? tools : []) {
-    const tool = cliToolName(value);
+    const tool = normalizeCliToolName(value);
     if (!allowed.has(tool) || seen.has(tool)) continue;
     seen.add(tool);
     normalized.push(tool);
@@ -1251,8 +1257,8 @@ async function launchProjectTools(project, selectedTools, { forceNew = false, cr
         continue;
       }
     }
-    const launch = forceNew ? { autoCmd: tool } : launchCommandForProjectTool(tool, history.groups);
-    const autoCmd = launch.autoCmd || tool;
+    const launch = forceNew ? { autoCmd: cliCommandName(tool) } : launchCommandForProjectTool(tool, history.groups);
+    const autoCmd = launch.autoCmd || cliCommandName(tool);
     const id = await createProjectToolSession(project, autoCmd);
     createdIds.push(id);
     const created = sessions.get(id);
@@ -1303,7 +1309,7 @@ function activeSessionHandoffContext() {
   const session = id ? sessions.get(id) : null;
   const running = session?.status === 'running'
     && !sessionCloseCoordinator.isClosing(id);
-  const sourceTool = running ? cliToolName(session.tool) : '';
+  const sourceTool = running ? normalizeCliToolName(session.tool) : '';
   const project = running ? findProjectByCwd(session.cwd) : null;
   return { id, session, running, sourceTool, project };
 }
@@ -1569,7 +1575,7 @@ async function startSessionHandoff() {
     if (!created
       || created.status === 'failed'
       || created.status === 'exited'
-      || cliToolName(created.tool) !== targetTool
+      || normalizeCliToolName(created.tool) !== targetTool
       || !sameProjectCwd(created.cwd, context.project.localPath)) {
       throw new Error('目标终端启动失败');
     }
@@ -1804,7 +1810,7 @@ function syncOrchestraChrome() {
   bar.hidden = !active;
   bar.classList.toggle('active', active);
   sessions.forEach((session, id) => {
-    const tool = cliToolName(session.tool);
+    const tool = normalizeCliToolName(session.tool);
     const isBoundSession = active && tool && activeOrchestra.sessionIds?.[tool] === id;
     const role = isBoundSession ? orchestraRoleForTool(activeOrchestra, tool) : '';
     let badge = session.paneHeadEl?.querySelector('.term-pane-role');
@@ -1839,7 +1845,7 @@ function closeOrchestra() {
 
 function detachOrchestraSession(id, session) {
   if (!activeOrchestra) return;
-  const tool = cliToolName(session?.tool);
+  const tool = normalizeCliToolName(session?.tool);
   if (!tool || activeOrchestra.sessionIds?.[tool] !== id) return;
   delete activeOrchestra.sessionIds[tool];
   if (tool === activeOrchestra.brain) {
@@ -2014,7 +2020,7 @@ function isReadyOrchestraSession(id, tool, projectPath) {
     session
     && session.status !== 'failed'
     && session.status !== 'exited'
-    && cliToolName(session.tool) === tool
+    && normalizeCliToolName(session.tool) === tool
     && sameProjectCwd(session.cwd, projectPath),
   );
 }
@@ -2637,7 +2643,7 @@ async function browse() {
 
 async function openTerminal(p, cmd) {
   try {
-    const tool = cliToolName(cmd);
+    const tool = normalizeCliToolName(cmd);
     if (tool && isRailCliTool(tool)) {
       const existing = findRunningProjectTool(listLiveTerminals(), p.localPath, tool);
       if (existing) {
@@ -2652,7 +2658,7 @@ async function openTerminal(p, cmd) {
         history = { groups: [] };
       }
       const launch = launchCommandForProjectTool(tool, history.groups);
-      const autoCmd = launch.autoCmd || tool;
+      const autoCmd = launch.autoCmd || cliCommandName(tool);
       recordProjectActivity(p.id, autoCmd);
       await createSession({
         cwd: p.localPath,
@@ -2906,7 +2912,7 @@ function syncUsageTabs({ loadOnChange = false } = {}) {
   if (previous !== usageAgent) setUsageRefreshStatus('idle');
   if (!available.length && $('usage-overlay').classList.contains('active')) {
     body.dataset.checking = 'false';
-    body.innerHTML = '<div class="usage-error">本机没有已安装且支持用量查询的 Claude、Codex、Grok 或 OpenCode</div>';
+    body.innerHTML = '<div class="usage-error">本机没有已安装且支持用量查询的 Claude、Codex、Grok、OpenCode 或 cmd</div>';
   } else if (loadOnChange
     && (previous !== usageAgent || body.dataset.checking === 'true')
     && usageAgent
@@ -3053,11 +3059,38 @@ function renderLimitUsage(o, windows, agent = usageAgent) {
     ? `<div class="usage-stale-warn">⚠ 当前显示的是旧数据${o.error ? '：' + esc(o.error) : ''}</div>`
     : '';
   const rows = (windows || []).map(w => oauthRow(w.label, w)).join('');
-  const title = agent === 'grok' ? '订阅用量' : '限流用量';
+  const credits = creditsRow(o);
+  const title = agent === 'grok' || agent === 'cmd' ? '订阅用量' : '限流用量';
+  const emptyRow = o?.unlimited
+    ? '<div class="usage-weekly-empty">当前账号不限流</div>'
+    : '<div class="usage-weekly-empty">暂无限流窗口</div>';
   el.innerHTML =
     `<div class="usage-oauth-head">${title}${plan}${age}</div>` +
     staleWarn +
-    (rows || '<div class="usage-weekly-empty">暂无限流窗口</div>');
+    (rows || credits ? rows + credits : emptyRow);
+}
+// Command Code 除限流窗口外还有本期额度余额；数字的取舍在
+// usage-panel-utils.commandCodeCredits 里（null / 负数一律不显示成假账）。
+function creditsRow(o) {
+  const credits = commandCodeCredits(o);
+  if (!credits) return '';
+  const { hasTotal, used, total, remaining, percent, periodEnd } = credits;
+  const cls = percent >= 90 ? 'danger' : percent >= 70 ? 'warn' : '';
+  const detail = hasTotal
+    ? `$${used.toFixed(2)} / $${total.toFixed(2)}` + (remaining !== null ? ` · 剩余 $${remaining.toFixed(2)}` : '')
+    : `剩余 $${remaining.toFixed(2)}`;
+  const period = periodEnd
+    ? `<div class="usage-oauth-reset">本期到 ${esc(periodEnd.slice(0, 10))} 结束</div>`
+    : '';
+  return `<div class="usage-oauth-row">` +
+    `<div class="usage-oauth-row-top"><span class="usage-oauth-label">本期额度</span>` +
+      (hasTotal ? `<span class="usage-oauth-pct ${cls}">${percent}%</span>` : '') + `</div>` +
+    (hasTotal
+      ? `<div class="usage-bar"><div class="usage-bar-fill ${cls}" style="width:${percent}%"></div></div>`
+      : '') +
+    `<div class="usage-oauth-reset">${esc(detail)}</div>` +
+    period +
+    `</div>`;
 }
 // 数据年龄文案（OAuth 限流用量底部"X 分钟前更新"）。
 function fmtUsageAge(secs) {
@@ -3956,7 +3989,7 @@ function maybeRestoreSessions() {
   // 问一次就把记录清掉：恢复会重新落盘最新布局，取消则不再纠缠
   localStorage.removeItem('term-session-layout');
   const cmds = layout.filter(it => it && typeof it.autoCmd === 'string' && it.autoCmd)
-    .map(it => cliToolName(it.autoCmd));
+    .map(it => normalizeCliToolName(it.autoCmd));
   const hasClaude = cmds.includes('claude');
   const hasCodex = cmds.includes('codex');
   const hasOpencode = cmds.includes('opencode');
@@ -3975,10 +4008,37 @@ function maybeRestoreSessions() {
   });
 }
 async function restoreSessions(layout) {
-  await restoreSessionLayout(layout, options => createSession({
-    ...options,
-    name: projectTabName(options.cwd, options.name),
-  }));
+  await restoreSessionLayout(layout, async options => {
+    const autoCmd = await resumeCommandForRestoredTab(options.cwd, options.autoCmd);
+    return createSession({
+      ...options,
+      name: projectTabName(options.cwd, options.name),
+      autoCmd,
+    });
+  });
+}
+
+/**
+ * 恢复标签时要拼的续接命令。多数 CLI 的 `--continue` 能自己找回最近的会话；
+ * Command Code 的 `--continue` 只认交互会话（对话工作台跑出来的 `-p` 会话不在
+ * 里面），扑空就退出、标签会变成一个死 shell——所以先查本项目磁盘历史，拿精确
+ * ID 续，真没有会话再开新会话。查询失败按"没有历史"处理，不拦住恢复。
+ */
+async function resumeCommandForRestoredTab(cwd, toolCommand) {
+  const trimmed = String(toolCommand || '').trim();
+  const tool = normalizeCliToolName(trimmed);
+  if (!tool || !prefersExactResume(tool)) return restoredCliCommand(trimmed);
+  // 布局里已经是精确续接（--session/--resume）就原样用；`--continue` 不可信，重算。
+  if (extractResumedSessionId(trimmed)) return trimmed;
+  let groups = [];
+  try {
+    const history = await loadProjectSessionHistory(cwd);
+    groups = history?.groups || [];
+  } catch (_) {
+    groups = [];
+  }
+  const last = latestHistorySession(groups, tool);
+  return last?.id ? launchCliCommand(tool, last.id) : cliCommandName(tool);
 }
 
 // ===== Prompt/Snippet 库：常用指令一键注入当前终端 =====

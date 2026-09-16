@@ -520,7 +520,7 @@
     <!-- 用量统计（Claude OAuth / Codex app-server / Grok billing snapshot） -->
     <div class="modal-mask" id="usage-overlay">
       <div class="modal-wrap">
-        <div class="modal modal-sm">
+        <div class="modal">
           <div class="modal-header">
             <span class="modal-title">用量统计</span>
             <button class="modal-x" id="usage-close">&times;</button>
@@ -531,6 +531,7 @@
               <button class="usage-tab" data-agent="codex" hidden>Codex</button>
               <button class="usage-tab" data-agent="grok" hidden>Grok</button>
               <button class="usage-tab" data-agent="opencode" hidden>OpenCode</button>
+              <button class="usage-tab" data-agent="cmd" hidden>cmd</button>
             </div>
             <div class="usage-body" id="usage-body">
               <div class="usage-loading">查询中…</div>

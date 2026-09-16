@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   USAGE_AGENTS,
+  commandCodeCredits,
   usageCommandForAgent,
   windowsFromUsagePayload,
   conversationUsageSummary,
@@ -14,12 +15,13 @@ import {
   usageResetLabel,
 } from '../src/usage-panel-utils.js';
 
-test('用量面板支持 Claude、Codex、Grok 与 OpenCode，并对未知助手 fail closed', () => {
-  assert.deepEqual(USAGE_AGENTS, ['claude', 'codex', 'grok', 'opencode']);
+test('用量面板支持 Claude、Codex、Grok、OpenCode 与 cmd，并对未知助手 fail closed', () => {
+  assert.deepEqual(USAGE_AGENTS, ['claude', 'codex', 'grok', 'opencode', 'cmd']);
   assert.equal(usageCommandForAgent('claude'), 'oauth_usage');
   assert.equal(usageCommandForAgent('codex'), 'codex_usage');
   assert.equal(usageCommandForAgent('grok'), 'grok_usage');
   assert.equal(usageCommandForAgent('opencode'), 'opencode_usage');
+  assert.equal(usageCommandForAgent('cmd'), 'commandcode_usage');
   assert.equal(usageCommandForAgent('unknown'), '');
 });
 
@@ -77,6 +79,57 @@ test('Claude 载荷映射为 5h / 7d 窗口', () => {
   assert.equal(windows[0].label, '5 小时窗口');
   assert.equal(windows[0].utilization, 12);
   assert.equal(windows[1].label, '7 天窗口');
+});
+
+test('Command Code 载荷复用统一窗口结构，额度字段单独渲染', () => {
+  const payload = {
+    ok: true,
+    plan: 'GOAT',
+    creditsUsed: 1.12,
+    creditsTotal: 70,
+    creditsRemaining: 68.88,
+    windows: [
+      { label: '5 小时窗口', utilization: 8, resetsAt: '2026-09-16T11:33:30Z' },
+      { label: '每周窗口', utilization: 3, resetsAt: '2026-09-23T11:33:30Z' },
+    ],
+  };
+  assert.deepEqual(windowsFromUsagePayload('cmd', payload), payload.windows);
+  assert.deepEqual(windowsFromUsagePayload('cmd', {}), []);
+  // 顶栏那一行仍然只说窗口百分比，额度不进这一行。
+  assert.equal(conversationUsageSummary('cmd', payload), '5 小时 8% · 每周 3%');
+});
+
+test('Command Code 额度行只认真实数字，缺字段不编成 $0.00', () => {
+  const full = commandCodeCredits({
+    creditsUsed: 1.6,
+    creditsTotal: 70,
+    creditsRemaining: 68.4,
+    periodEnd: '2026-10-16T08:32:02.000Z',
+  });
+  assert.deepEqual(full, {
+    hasTotal: true,
+    used: 1.6,
+    total: 70,
+    remaining: 68.4,
+    percent: 2,
+    periodEnd: '2026-10-16T08:32:02.000Z',
+  });
+
+  // 后端没给数字时字段是 null：不能靠 Number(null) === 0 渲染成"剩余 $0.00"。
+  assert.equal(commandCodeCredits({ creditsRemaining: null, creditsTotal: 70, creditsUsed: null }), null);
+  assert.equal(commandCodeCredits({ creditsRemaining: null }), null);
+  assert.equal(commandCodeCredits({}), null);
+  assert.equal(commandCodeCredits(undefined), null);
+  // 负值 / 非数字同样不显示。
+  assert.equal(commandCodeCredits({ creditsRemaining: -3 }), null);
+  assert.equal(commandCodeCredits({ creditsRemaining: '68.4' }), null);
+  assert.equal(commandCodeCredits({ creditsRemaining: Number.NaN }), null);
+
+  // 只有剩余、没有计划总额：不给百分比，也不编分母。
+  assert.deepEqual(
+    commandCodeCredits({ creditsRemaining: 29.5 }),
+    { hasTotal: false, used: null, total: null, remaining: 29.5, percent: 0, periodEnd: '' },
+  );
 });
 
 test('Codex 载荷直接使用后端窗口列表', () => {

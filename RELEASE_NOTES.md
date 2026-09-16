@@ -1,29 +1,23 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.5.1 / 本版更新
+## What's new in v1.6.0 / 本版更新
 
 **English**
 
-- Terminals no longer garble long or side-by-side WebGL sessions (xterm.js atlas fix), WebGL context loss re-attaches automatically, and returning from background clears the glyph atlas.
-- A round of conversation and Developer-view fixes: approval answers stay bound to the run that asked, stopping while a turn is still connecting is queued and replayed, concurrent image paste/drop can no longer exceed the attachment limit, and stale file-tree results no longer overwrite the active tree.
-- Session history fixes: OpenCode deletion cascades to messages and parts, transcript image placeholders are removed by their original index, OpenCode/MiMo history falls through to the next database instead of stopping at an empty one, HEIC/HEIF photos are no longer misclassified as video, and transcript/history reads are size-bounded.
-- Terminal and system reliability: input no longer blocks the IPC thread, FIFO files no longer hang reads, "Open in terminal" child processes are reaped, and a single unreadable entry no longer aborts the newest-transcript search.
-- Usage panel: Claude credentials follow `CLAUDE_CONFIG_DIR`, OAuth usage requests honor the configured proxy, and failed curl runs are cleaned up.
-- The phone remote panel releases its port reliably when stopped and quickly reopened.
-- Shared-memory backups prune the oldest history instead of blocking saving after 100 backups.
-- Security hardening: project-memory writes and internal reads refuse symlinks and special files; file preview editing is confined to saved projects; the file tree no longer lists symlinks; front-end attributes and Markdown previews are escaped/sanitized; `open_url` allows only http/https; the data directory is tightened to 0700/0600; the phone remote server accepts only LAN/Tailscale peers and returns 403 to public sources; highlight.js is updated to 11.12.0 (C/C++ ReDoS fix).
+- **Command Code (`cmd`) joins as the eighth CLI** — the project card can launch it in Developer mode, its on-disk sessions (list / preview / delete) join the history rail and cross-CLI handoff, and the conversation workspace runs it as another assistant. The command name, menu label and tab badge all read `cmd` (`cmdc` on Windows, where `cmd` is the system shell); the earlier `command-code` spelling remains an alias.
+- Command Code conversations are **read-only**: that CLI's own print mode blocks file writes and shell commands unless its `--yolo` bypass is passed, and Roster never adds bypass flags, so the mode picker offers only its `plan` mode — use Developer mode when you want it to edit files. Each turn is one `cmd --print=… --output-format json` process (the fourth protocol, NDJSON) and is resumed with `--session <id>`; `/model` and `/effort` are wired to its own catalog.
+- The usage panel gains a **cmd tab**: it reads the key from that CLI's own `~/.commandcode/auth.json`, calls the official billing endpoints and shows the 5-hour / weekly windows, the plan and the period's credit balance. A custom `COMMANDCODE_API_URL` is skipped, the key is never stored or logged, and a failed refresh falls back to a clearly labelled cached snapshot.
+- Restoring a Command Code terminal no longer appends `--continue` (that flag only resumes interactive conversations, so a headless session made the CLI exit into a dead shell): the newest on-disk session for the project is resumed by exact id, or a fresh session is started when there is none.
+- Its session history re-verifies project ownership from each transcript's header `cwd` and only lists files whose name matches the header id, so a stray file can no longer make a delete reach outside the session.
 
 **中文**
 
-- 终端不再花屏（xterm.js 图集修复）；WebGL 上下文丢失会自动重挂；从后台恢复时清空字形图集。
-- 一批对话与开发模式修复：审批回答绑定发起运行；连接中停止会排队并在 start 后被补发；并发粘贴/拖放不再超附件上限；过期文件树结果不再覆盖当前树。
-- 会话历史修复：OpenCode 删除级联清理消息与部件；图片占位按原始序号删除；OpenCode/MiMo 历史在空库时回退下一个数据库；HEIC/HEIF 照片不再被当成视频；转录/历史读取有界。
-- 终端与系统可靠性：输入不再阻塞 IPC 线程；FIFO 不再挂住读取；「打开 CLI」子进程会被回收；单个坏条目不再中止最新转录搜索。
-- 用量面板：Claude 凭据跟随 `CLAUDE_CONFIG_DIR`；OAuth 用量查询走已配置代理；curl 失败会清理子进程。
-- 手机远程面板停止后立即重开不再残留旧监听，端口正常释放。
-- 共享记忆备份满载后淘汰最旧历史，不再拒绝保存。
-- 安全加固：项目记忆写出与内部读取拒绝符号链接和特殊文件；预览编辑限定项目内；文件树不列符号链接；前端属性转义、Markdown 预览净化；`open_url` 只放行 http/https；数据目录收紧到 0700/0600；手机远程只接受局域网/Tailscale 来源、公网直接 403；highlight.js 升级到 11.12.0（C/C++ ReDoS 修复）。
+- **新增第八家 CLI Command Code（`cmd`）** — 项目卡片可在开发模式直接启动，磁盘会话（列表/预览/删除）并入历史侧栏与跨 CLI 交接，对话工作台也多了一家助手。命令名、菜单显示名与标签徽标统一是 `cmd`（Windows 上用 `cmdc`，`cmd` 是系统 shell）；旧的 `command-code` 写法保留为别名。
+- 它的对话是**只读**的：该 CLI 自己的 print 模式会拦下文件写入与 shell 命令，除非传内置 `--yolo` 绕过，而 Roster 从不添加这类参数，所以档位选择器只有 `plan` 一档——需要它改文件请用开发模式。每轮跑一个 `cmd --print=… --output-format json` 进程（第四种协议 NDJSON），续接用 `--session <id>`；`/model` 与 `/effort` 接它自己的目录。
+- 用量面板新增 **cmd 档**：读它自己 `~/.commandcode/auth.json` 里的 key，调官方接口显示 5 小时 / 每周窗口、计划档位与本期额度余额。自定义 `COMMANDCODE_API_URL` 直接跳过；key 不落盘、不打印，查询失败会回退到明确标记的缓存快照。
+- 恢复 Command Code 终端不再补 `--continue`（该参数只认交互会话，无头会话会让 CLI 直接退出、标签变成死 shell）：改为按磁盘上最新会话的精确 ID 续接，没有会话才新开。
+- 它的会话历史一律用文件首行 header 的 `cwd` 复核项目归属，且只列出文件名与 header id 一致的文件——不让一个名字异常的会话把删除操作带出会话目录。
 
 
 ## Upgrade / 升级

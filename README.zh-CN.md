@@ -10,32 +10,32 @@
 
 <p align="center">多 AI CLI 指挥台桌面应用，基于 Tauri v2 构建。</p>
 
-最新版本：**v1.5.1** — 修复与安全加固版：终端花屏修复、项目记忆写出与文件预览的多项收紧、手机远程仅限局域网，以及一批对话与会话缺陷修复。详情见[更新日志](CHANGELOG.md)。
+最新版本：**v1.6.0** — 新增第八家 CLI Command Code（`cmd`）：开发模式启动、磁盘会话历史、跨 CLI 交接、只读对话适配与用量面板。详情见[更新日志](CHANGELOG.md)。
 
 ## 功能特性
 
 每个数据目录只允许一个实例。`pnpm dev` 或 `pnpm build:dev` 启动/构建独立的 **Roster Dev**（`com.lucky.roster.dev`），使用 `~/.roster-dev/` 及独立备份、WebView 偏好，可与使用 `~/.roster/` 的正式版同时运行。开发版首次只复制项目列表，后续应用数据独立；项目文件和 CLI 历史仍指向原位置。
 
 - **双工作台** — 默认进入更适合普通用户的对话工作台；需要终端、文件编辑、分屏或多 CLI 协作时，可随时切换到完整开发模式
-- **结构化多 CLI 对话** — 对话工作台只显示本机已安装的助手，可直接使用全部 7 家已登记 CLI：**Claude / Grok / Codex / OpenCode / agy / Qwen / MiMo Code**；最近对话统一混排并显示来源色标，支持预览、删除、原工具续接及切换另一家接手。历史浏览不再复用较短的交接摘要，历史截图及项目内图片/视频链接可直接显示
+- **结构化多 CLI 对话** — 对话工作台只显示本机已安装的助手，可直接使用全部 8 家已登记 CLI：**Claude / Grok / Codex / OpenCode / agy / Qwen / MiMo Code / Command Code（`cmd`）**；最近对话统一混排并显示来源色标，支持预览、删除、原工具续接及切换另一家接手。历史浏览不再复用较短的交接摘要，历史截图及项目内图片/视频链接可直接显示
 - **按项目识别 `/` 命令** — 支持 Roster 自己的 `/model`、按能力出现的 `/effort`、`/new`、`/help`，也会发现当前项目、当前 CLI 的 skill/自定义命令；真正启动前由后端再次发现并核对，失效或跨 CLI 的命令直接拒绝
 - **项目管理** — 添加、编辑、删除项目
 - **运行环境（可选）** — 可选本地电脑 / 服务器，也可暂不设置
 - **服务器管理** — 配置 SSH 服务器（IP、端口、用户名、密码/秘钥登录方式）
 - **分组管理** — 项目分组，侧边栏展开/折叠，点击定位，分组就地重命名（hover → 铅笔，组内项目一起迁移）
 - **内置终端** — 应用内底部抽屉多标签终端，集中管理所有会话；支持文件树导览、文件预览与编辑、配色主题、字号调整、拖拽插路径；关标签前先确认并提醒让 AI 更新记忆（详见下方[内置终端使用](#内置终端使用)）
-- **多 AI CLI 启动** — 项目卡片一键在项目目录启动 **Claude / Grok / Codex / opencode / agy / Qwen / MiMo Code**，标签上有工具色标区分。打开时先聚焦该工具已在跑的标签，否则续接最近一次磁盘会话；没有历史才新开
+- **多 AI CLI 启动** — 项目卡片一键在项目目录启动 **Claude / Grok / Codex / opencode / agy / Qwen / MiMo Code / Command Code**，标签上有工具色标区分。打开时先聚焦该工具已在跑的标签，否则续接最近一次磁盘会话；没有历史才新开
 - **项目历史** — 展开卡片即可搜索、预览、续接或删除各家 CLI 磁盘会话；运行中只对齐明确续接
 - **开一套 / 开协作** — 一键打开 Claude + Codex + Grok 主从三窗；协作可从已安装 CLI 中单选一个大脑、多选一个或多个干活终端，共用 `.vibe/orchestra/`
 - **统一记忆到 Claude**（可选）— 项目 `.memory` 链到 Claude 项目记忆，默认关闭，不会自动创建 `CLAUDE.md` / `AGENTS.md`
 - **终端代理** — 顶栏可选开关，新启动的 CLI 带上 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，Clash/Surge 本地端口即可，不必 TUN
 - **会话状态感知** — 终端会话「持续输出后突然安静」即判定 AI 跑完 / 在等你输入，弹桌面通知 + 提示音 + 标签琥珀呼吸点；正盯着看的会话不打扰，工具栏铃铛可开关
 - **Git 状态徽标** — 本地项目卡片显示当前分支、工作区改动（● 已追踪 / + 未追踪）、相对上游领先/落后（↑/↓），干净则绿色 ✓；后台并行扫描，启动 + 窗口聚焦时刷新
-- **会话恢复** — 记住上次终端标签布局（目录 + CLI），重开应用询问是否恢复；Claude、OpenCode、Grok、Qwen 与 MiMo Code 用 `--continue` 接回最近对话，Codex 在原项目目录用 `resume --last`；从历史列表指定 Qwen 或 MiMo Code 会话时分别使用 `qwen --resume <id>`、`mimo --session <id>`
+- **会话恢复** — 记住上次终端标签布局（目录 + CLI），重开应用询问是否恢复；Claude、OpenCode、Grok、Qwen、MiMo Code 与 Command Code 用 `--continue` 接回最近对话，Codex 在原项目目录用 `resume --last`；从历史列表指定会话时：Qwen 用 `qwen --resume <id>`、MiMo Code 用 `mimo --session <id>`、Command Code 用 `cmd --session <id>`
 - **Prompt 片段库** — 存常用 Prompt/命令；开发模式可管理并注入终端，对话工作台可直接选一条放入输入框，始终不会代替用户发送，数据存于 `snippets.json`
 - **跨 CLI 交接** — 任意一家已登记 CLI 都能把当前项目的最新会话和 Git 现场交给另一家已安装 CLI，例如 Grok 交给 Claude，来源会话保持不动
 - **恢复现场** — 项目卡片历史图标，一张速览接回上次工作：git 概览 + 最近提交 + 改动文件 + CLAUDE.md 摘要 + 上次启动的 CLI；底部一键打开终端 / Claude
-- **限流用量（零 Node）** — 只显示本机已安装且具备对应用量后端能力的 Claude/Codex/Grok/OpenCode 标签。应用启动和窗口重新聚焦时维护安装结果；打开面板直接复用。手动刷新会显示明确状态、重查安装与平台能力，并绕过各家的普通 60 秒缓存。Claude 走官方 `api/oauth/usage`（5 小时 / 7 天）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`；Grok 通过官方本机 `grok agent stdio` 进程查询 `x.ai/billing`，实时返回周/月百分比、重置时间与订阅档位，不创建对话、也不发送模型请求；OpenCode Go 读取 OpenCode 自己 `auth.json` 里的 key，调用官方 `GET /zen/go/v1/usage` 拿 5 小时 / 周 / 月百分比（配了自定义 `opencode-go` 网关时跳过）。Roster 不读取 Grok 凭据；只有实时 ACP 查询失败时，macOS/Linux 才会把 CLI 的有界本地 billing 快照作为明确标记的旧数据兜底
+- **限流用量（零 Node）** — 只显示本机已安装且具备对应用量后端能力的 Claude/Codex/Grok/OpenCode/Command Code 标签。应用启动和窗口重新聚焦时维护安装结果；打开面板直接复用。手动刷新会显示明确状态、重查安装与平台能力，并绕过各家的普通 60 秒缓存。Claude 走官方 `api/oauth/usage`（5 小时 / 7 天）；Codex 走本机 `codex app-server` 的 `account/rateLimits/read`；Grok 通过官方本机 `grok agent stdio` 进程查询 `x.ai/billing`，实时返回周/月百分比、重置时间与订阅档位，不创建对话、也不发送模型请求；OpenCode Go 读取 OpenCode 自己 `auth.json` 里的 key，调用官方 `GET /zen/go/v1/usage` 拿 5 小时 / 周 / 月百分比（配了自定义 `opencode-go` 网关时跳过）；Command Code 读取它自己 `~/.commandcode/auth.json` 里的 key，调用官方 `/alpha/billing/credits` 与 `/alpha/billing/subscriptions`，显示 5 小时 / 每周窗口、计划档位和本期额度余额（配了自定义 `COMMANDCODE_API_URL` 时跳过）。Roster 不读取 Grok 凭据；只有实时 ACP 查询失败时，macOS/Linux 才会把 CLI 的有界本地 billing 快照作为明确标记的旧数据兜底
 - **菜单栏托盘** — macOS 菜单栏可打开应用、打开日志或退出，不再显示用量；额度在会话顶栏、紧挨当前助手
 - **终端上下文 %** — Claude 会话标签显示 `NN%` 上下文占用（读启动横幅判窗口大小 + transcript 估算，≥70% 橙、≥90% 红），新会话发话前为 0
 - **扫描导入** — 扫描目录批量导入 git 项目（自动读取 remote、按路径去重）
@@ -68,14 +68,14 @@
 
 需要人工修订时，开发模式的“项目共享记忆 → 高级管理”仍支持专题编辑、外部修改检测和历史版本恢复，不是正常聊天的必经步骤。每份人工正文最多 64 KiB，备份最多 100 份。自动进度只是可回溯的助手回复摘录，不会自动升级为已核实结论；原始聊天历史不删除。共享内容可能发给所选模型服务，勿存密钥或不应跨服务共享的资料。
 
-全部七家 CLI 现已接入常驻结构化会话：Codex 使用 App Server，Claude、agy、Qwen 使用双向 JSON 输入，Grok、OpenCode、MiMo Code 使用 stdio ACP。同项目、同会话且启动设置不变时，后续消息复用同一进程。Codex 最多保留 4 个空闲服务，其余六家共用另一组最多 4 个；空闲 30 分钟回收。取消/异常、设置变化、切换开发模式、删除历史和退出应用时释放；全应用同时处理仍最多 4 轮。第一条仍需加载历史，常驻也不消除模型和网络耗时；CLI 登录及订阅必须有效。
+八家里的七家已接入常驻结构化会话：Codex 使用 App Server，Claude、agy、Qwen 使用双向 JSON 输入，Grok、OpenCode、MiMo Code 使用 stdio ACP。Command Code（`cmd`）没有 ACP / app-server，是唯一的例外：每轮跑一个 `cmd --print=<prompt> --output-format json` 进程（NDJSON 事件流），续接用 `--session <id>`。同项目、同会话且启动设置不变时，后续消息复用同一进程（限常驻那七家）。Codex 最多保留 4 个空闲服务，其余六家共用另一组最多 4 个；空闲 30 分钟回收。取消/异常、设置变化、切换开发模式、删除历史和退出应用时释放；全应用同时处理仍最多 4 轮。第一条仍需加载历史，常驻也不消除模型和网络耗时；CLI 登录及订阅必须有效。
 
 macOS 下 Codex 后台会沿用已启用的系统 HTTPS 代理，显式 Roster/进程代理优先（不解析 PAC）。官方连接优先使用原生 WebSocket，短重试后由 CLI 自动回退 HTTP，不读取凭据、不关闭证书校验。超长历史仍可能较慢；上下文压缩需要用户明确决定。
 
-- 先在本机安装并登录至少一家支持的 CLI。参与者列表只显示本机已安装且已接入结构化对话的 **Claude / Grok / Codex / OpenCode / agy / Qwen / MiMo Code**
-- 在左侧选择项目；最近对话会混排 Claude、Grok、Codex、OpenCode、agy、Qwen 和 MiMo Code，并用色标注明来源。打开一条后可继续使用原 CLI，也可从右上角选择另一家接手；跨 CLI 时会读取经过过滤的最近自然语言上下文，不会把来源会话 ID 冒充成目标会话
-- 每轮默认使用所选 CLI 的**只读/计划策略**。每家的第一档都是只读，空模式和未知模式也落在只读上。在发送按钮旁选择权限档位；前端只传档位 ID，后端不认就拒，不会退回成写入权限。额外交互审批不会自动放行；第三方 CLI 的插件、本机配置与联网行为仍遵循其自身策略，并非 Roster 提供的系统级隔离
-- 在输入框键入 `/` 可打开命令菜单。CLI 无法枚举模型时仍可手动输入 `/model <id>`；只有已映射强度/变体参数的 CLI 才显示 `/effort`，OpenCode 与 MiMo Code 会映射到 `--variant`。项目 skill 和自定义命令按当前 CLI 发现，发送前由后端再次核对；命令已删除、项目或 CLI 不匹配时会明确拒绝，不会偷偷当普通聊天发送。跨 CLI 交接轮不能同时执行 `/` 命令
+- 先在本机安装并登录至少一家支持的 CLI。参与者列表只显示本机已安装且已接入结构化对话的 **Claude / Grok / Codex / OpenCode / agy / Qwen / MiMo Code / Command Code（`cmd`）**
+- 在左侧选择项目；最近对话会混排 Claude、Grok、Codex、OpenCode、agy、Qwen、MiMo Code 和 Command Code，并用色标注明来源。打开一条后可继续使用原 CLI，也可从右上角选择另一家接手；跨 CLI 时会读取经过过滤的最近自然语言上下文，不会把来源会话 ID 冒充成目标会话
+- 发送前按所选 CLI 自己的**只读/计划策略**起步：每家第一档固定只读，空档位或不认识的档位也留在只读。发送按钮旁可切换权限档位，前端只传档位 ID，后端不认就拒，不会退化成“给个写入权限算了”；Roster 不会自动补额外批准，第三方插件、本机配置与联网行为仍由该 CLI 自己决定，而不是 Roster 提供的 OS 级沙箱。Command Code 是这条规则的极端情形：它的无头模式自己就拦下文件写入与 shell 命令，除非传内置的 `--yolo`，而 Roster 从不加绕过参数，所以这家在这里只有只读档——需要它改文件请用开发模式
+- 在输入框键入 `/` 可打开命令菜单。CLI 无法枚举模型时仍可手动输入 `/model <id>`；只有已映射强度参数的 CLI 才显示 `/effort`，OpenCode 与 MiMo Code 会映射到 `--variant`，Command Code 传 `--effort`。项目 skill 和自定义命令按当前 CLI 发现，发送前由后端再次核对；命令已删除、项目或 CLI 不匹配时会明确拒绝，不会偷偷当普通聊天发送。跨 CLI 交接轮不能同时执行 `/` 命令
 - 明确选择本地 `/` 命令后，个别 CLI 为展开该命令会只在这一轮放宽 safe/customization 禁用项；既有只读/写入策略和 sandbox 参数仍保留，Roster 也不会添加自动批准或跳过信任检查的参数
 - 中间显示自然语言对话，也会恢复经过校验的历史截图和项目内图片/视频链接；点击本地文本文件链接会直接在会话内打开只读预览，无需切换开发模式。预览内相对链接按当前文件目录解析；带行号链接显示源码并定位、高亮目标行。长对话使用独立的有界历史正文，不再受跨 CLI 交接摘要的短窗口限制。右侧可看分支、改动、最近提交、处理步骤、项目动态和自动项目记忆状态，也可打开文件夹、刷新现场。底部可用＋菜单添加图片或管理常用指令，有保存内容后才显示快捷选择
 - 需要完整终端、文件编辑、分屏与协作时，点左下角**开发模式**。往返切换会保留对话，并暂停隐藏的伴生视图
@@ -92,9 +92,9 @@ macOS 下 Codex 后台会沿用已启用的系统 HTTPS 代理，显式 Roster/�
 
 **启动 AI CLI**
 - 项目卡片底部「打开 CLI」列出本机已装工具，一点即开
-- 该工具已在这个项目跑着就切过去；否则续接最近一次磁盘会话。没有历史才新开。标签上显示工具色标（claude 橙 / grok 金 / codex 蓝 / opencode 绿 / agy 青 / qwen 粉 / mimo 橙）
+- 该工具已在这个项目跑着就切过去；否则续接最近一次磁盘会话。没有历史才新开。标签上显示工具色标（claude 橙 / grok 金 / codex 蓝 / opencode 绿 / agy 青 / qwen 粉 / mimo 橙 / cmd 紫）
 - 面板左上「＋」开一个空白终端（不跑任何 CLI）
-- 前提：对应 CLI（`claude` / `grok` / `codex` / `opencode` / `agy` / `qwen` / `mimo`）需已安装并在 PATH 中（终端走登录 shell，能找到）
+- 前提：对应 CLI（`claude` / `grok` / `codex` / `opencode` / `agy` / `qwen` / `mimo` / `cmd`；Windows 上是 `cmdc`）需已安装并在 PATH 中（终端走登录 shell，能找到）
 
 **文件树 + 预览**（左侧）
 - 树根为当前标签所在项目目录，切换标签自动跟随；点文件夹懒加载展开

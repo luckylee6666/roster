@@ -18,6 +18,9 @@ test('六家其他 CLI 接入常驻结构化协议并共享退出清理', async 
   const state = await read('src-tauri/src/codex_chat.rs');
   assert.match(router, /resident::supports\(spec.id\)[\s\S]*?resident::start/);
   for (const id of ['claude', 'grok', 'agy', 'qwen', 'opencode', 'mimo']) assert.ok(resident.includes(`"${id}"`));
+  // Command Code 没有 ACP / app-server，走的是"每轮一个 -p 进程 + NDJSON"，
+  // 不能进常驻池：直接盯住那张白名单本身。
+  assert.doesNotMatch(resident, /matches!\(id,[^)]*cmd/);
   assert.match(resident, /sync_channel\(8\)/);
   assert.match(resident, /"--input-format", "stream-json"/);
   assert.match(resident, /"session\/prompt"/);

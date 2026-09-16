@@ -43,6 +43,9 @@ enum HeadlessProtocol {
     AnthropicMessages,
     OpenCodeJson,
     QwenStream,
+    /// Command Code（`command-code`）：`-p --output-format json` 的 NDJSON
+    /// 事件流 + 末尾一行 result。既不是 Anthropic 形状，也不是 ACP。
+    CommandCodeJson,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,7 +56,7 @@ struct ProviderSpec {
     protocol: HeadlessProtocol,
 }
 
-const HEADLESS_PROVIDERS: [ProviderSpec; 6] = [
+const HEADLESS_PROVIDERS: [ProviderSpec; 7] = [
     ProviderSpec {
         id: "claude",
         label: "Claude",
@@ -90,7 +93,34 @@ const HEADLESS_PROVIDERS: [ProviderSpec; 6] = [
         binary: "mimo",
         protocol: HeadlessProtocol::OpenCodeJson,
     },
+    // 登记名用 CLI 自己的命令名 `cmd`（帮助里写的就是 `Usage: cmd <command>`），
+    // 终端标签、命令行与"哪家 CLI"的识别都跟着它。Windows 上 `cmd` 被系统 shell
+    // 占用，官方短名是 `cmdc`，所以可执行文件名按平台取。
+    ProviderSpec {
+        id: "cmd",
+        label: "cmd",
+        binary: commandcode_binary(),
+        protocol: HeadlessProtocol::CommandCodeJson,
+    },
 ];
+
+/// Windows 上是 `cmdc`（`cmd` 被系统 shell 占用），macOS/Linux 就是 `cmd`。
+#[cfg(windows)]
+const fn commandcode_binary() -> &'static str {
+    "cmdc"
+}
+
+#[cfg(not(windows))]
+const fn commandcode_binary() -> &'static str {
+    "cmd"
+}
+
+/// 登记 id 对应的真实可执行文件名。id 与命令名可能不同（见 `commandcode_binary`），
+/// 凡是要落到 PATH 上找文件的地方都得走这里，别拿 id 直接当命令名——Windows 上
+/// 那会解析到系统的 `cmd.exe`。
+pub(crate) fn provider_binary(id: &str) -> Option<&'static str> {
+    provider_spec(id).map(|spec| spec.binary)
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +183,7 @@ fn provider_label(id: &str) -> &'static str {
         "agy" => "agy",
         "qwen" => "Qwen",
         "mimo" => "MiMo Code",
+        "cmd" => "cmd",
         _ => "CLI",
     }
 }
@@ -589,7 +620,93 @@ fn parse_line(protocol: HeadlessProtocol, value: &Value) -> ParsedLine {
         HeadlessProtocol::AnthropicMessages => parse_anthropic_line(value),
         HeadlessProtocol::OpenCodeJson => parse_opencode_line(value),
         HeadlessProtocol::QwenStream => parse_qwen_line(value),
+        HeadlessProtocol::CommandCodeJson => parse_commandcode_line(value),
     }
+}
+
+/// Command Code（`command-code`）的无头协议：每个事件一行
+/// `{"type":"event","event":{…}}`，跑完再补一行 `{"type":"result",…}`。
+///
+/// 只放行公开的助手文本与粗粒度工具状态：thinking_delta / model_trace /
+/// model_request_* / 工具入参都不出后端边界。工具事件有个坑——print 模式下
+/// `tool_hook_blocked` 才是这家的常态（写工具被它自己的 print-permission-gate
+/// 拦下），它属于"这一步没成功"，映射成 failed。
+fn parse_commandcode_line(value: &Value) -> ParsedLine {
+    // 只有外层 `type == "event"` 才按事件解析：末尾那行 `result` 也可能带一个对象
+    // 字段，别把它当成事件、把正文丢掉。
+    let event = value
+        .get("event")
+        .filter(|item| item.is_object())
+        .filter(|_| value.get("type").and_then(Value::as_str) == Some("event"));
+    let (kind, payload) = match event {
+        Some(event) => (
+            event.get("type").and_then(Value::as_str).unwrap_or(""),
+            event,
+        ),
+        None => (
+            value.get("type").and_then(Value::as_str).unwrap_or(""),
+            value,
+        ),
+    };
+    let mut parsed = ParsedLine {
+        session_id: first_string(payload, &["/sessionId", "/session_id"]).map(str::to_string),
+        ..ParsedLine::default()
+    };
+    match kind {
+        "text_delta" => {
+            parsed.assistant_delta = first_string(payload, &["/delta"]).map(str::to_string);
+        }
+        // 增量之后的整条消息（以及 run_end 里的最终文本）只当兜底，
+        // 免得同一个答案显示两遍。
+        "message_update" | "message_end" => {
+            let text = extract_text_content(payload.get("content").unwrap_or(&Value::Null));
+            if !text.is_empty() {
+                parsed.fallback_answer = Some(text);
+            }
+        }
+        "run_end" => {
+            parsed.fallback_answer =
+                first_string(payload, &["/result/finalText"]).map(str::to_string);
+        }
+        "run_error" => {
+            parsed.error = first_string(payload, &["/error/message", "/message", "/error"])
+                .map(|text| bounded_utf8(text, 2_000))
+                .or_else(|| Some("cmd 处理失败".to_string()));
+        }
+        "todo_write" | "tool_queued" | "tool_running" | "tool_completed" | "tool_hook_blocked" => {
+            let id = first_string(payload, &["/toolCallId", "/id"]).unwrap_or("tool");
+            // 裸的 `todo_write` 事件没有 toolName，用事件类型当名字，计划才认得出。
+            let name = first_string(payload, &["/toolName", "/name"]).unwrap_or(kind);
+            // 计划可能在 `input.todos` 里，也可能直接挂在事件上。
+            let plan_input = payload.get("input").unwrap_or(payload);
+            if let Some(items) = plan_items_from_todo_tool(name, plan_input) {
+                parsed.plan = Some(items);
+                return parsed;
+            }
+            let status = match kind {
+                "tool_completed" => "completed",
+                "tool_hook_blocked" => "failed",
+                _ => "inProgress",
+            };
+            parsed.activities.push(tool_activity(id, name, status));
+        }
+        "result" => {
+            let final_text = first_string(payload, &["/finalText"]);
+            if payload.get("subtype").and_then(Value::as_str) == Some("success") {
+                parsed.fallback_answer = final_text.map(str::to_string);
+            } else {
+                parsed.error = first_string(
+                    payload,
+                    &["/finalText", "/error/message", "/message", "/error"],
+                )
+                .map(|text| bounded_utf8(text, 2_000))
+                .filter(|text| !text.is_empty())
+                .or_else(|| Some("cmd 处理失败".to_string()));
+            }
+        }
+        _ => {}
+    }
+    parsed
 }
 
 fn validate_model(value: &str) -> Result<String, String> {
@@ -781,7 +898,7 @@ fn push_effort_args(command: &mut Command, spec_id: &str, effort: &str) {
         return;
     }
     match spec_id {
-        "grok" | "claude" | "agy" => {
+        "grok" | "claude" | "agy" | "cmd" => {
             command.args(["--effort", effort]);
         }
         "opencode" | "mimo" => {
@@ -1043,6 +1160,21 @@ fn provider_command_with_slash(
                 command.args(["--resume", thread_id]);
             }
             push_model_args(&mut command, spec.id, model);
+        }
+        "cmd" => {
+            // `-p`/`--print` 的 NDJSON：事件流 + 末尾 result 行，一轮一个进程，
+            // 靠 `--session <id>` 续接（它的 `-p` 会话不进 `--continue` 的候选）。
+            command.args(["--output-format", "json", "--permission-mode", mode.id]);
+            // 别让它自己静默升级（实测会在跑的过程中从 1.53.1 升到 1.54.0）；
+            // 这是给自动化跑的会话，也不要 taste 引导流程。
+            command.args(["--no-auto-update", "--skip-onboarding"]);
+            if !thread_id.is_empty() {
+                command.args(["--session", thread_id]);
+            }
+            push_model_args(&mut command, spec.id, model);
+            push_effort_args(&mut command, spec.id, effort);
+            // prompt 用 `--print=<prompt>` 粘连形式：以 `-` 开头的文本不会被当成选项。
+            command.arg(format!("--print={prompt}"));
         }
         _ => unreachable!("provider registry controls command construction"),
     }
@@ -1403,6 +1535,16 @@ fn run_headless(stdout: std::process::ChildStdout, context: HeadlessContext) {
             &provider_id,
             "error",
             json!({ "message": message }),
+        );
+    } else if assistant_bytes == 0 && fallback_answer.is_empty() {
+        // 和常驻适配器同一条规矩：跑完了却没有任何可见回复，是失败，不是"完成"。
+        // 否则界面只会拿到一个空气泡 + 完成通知。
+        emit(
+            &app,
+            &run_id,
+            &provider_id,
+            "error",
+            json!({ "message": format!("{} 完成本轮但没有返回可见回复", provider_label(&provider_id)) }),
         );
     } else {
         if assistant_bytes == 0 && !fallback_answer.is_empty() {
@@ -1866,6 +2008,15 @@ mod tests {
         assert!(provider_spec("qwen").is_some());
         assert!(provider_spec("opencode").is_some());
         assert!(provider_spec("mimo").is_some());
+        // 登记名就是 CLI 自己的命令名 `cmd`；可执行文件名按平台取（Windows 是 `cmdc`）。
+        let commandcode = provider_spec("cmd").expect("Command Code 应已登记");
+        assert_eq!(commandcode.binary, commandcode_binary());
+        #[cfg(not(windows))]
+        assert_eq!(commandcode.binary, "cmd");
+        #[cfg(windows)]
+        assert_eq!(commandcode.binary, "cmdc");
+        // 全名不再是登记 id（只作为别名存在）。
+        assert!(provider_spec("command-code").is_none());
         assert!(provider_spec("../../bin/sh").is_none());
     }
 
@@ -1969,7 +2120,7 @@ mod tests {
         }
 
         // 传下去的永远是模式表里的原生取值，不是 Roster 自己编的词。
-        for id in ["claude", "qwen", "agy"] {
+        for id in ["claude", "qwen", "agy", "cmd"] {
             let spec = provider_spec(id).unwrap();
             for mode in crate::conversation_modes::modes_for(id) {
                 let command = provider_command_with_slash(
@@ -2000,7 +2151,9 @@ mod tests {
     #[ignore = "人工核对用：cargo test dump_shipped_argv -- --ignored --nocapture"]
     fn dump_shipped_argv() {
         // 把应用实际拼出的命令行打出来，和实测探针用的手写 argv 逐条对照。
-        for id in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
+        for id in [
+            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd",
+        ] {
             let Some(spec) = provider_spec(id) else {
                 println!("{id:10} （codex 走 app-server，不经这里）");
                 continue;
@@ -2160,6 +2313,8 @@ mod tests {
             ("qwen", "stream-json", "plan"),
             ("opencode", "json", "plan"),
             ("mimo", "json", "plan"),
+            // Command Code 的无头模式自己就把写工具拦了，它这里只有 plan 一档。
+            ("cmd", "json", "plan"),
         ];
         for (id, format, permission) in cases {
             let spec = provider_spec(id).unwrap();
@@ -2179,8 +2334,9 @@ mod tests {
                 .collect::<Vec<_>>();
             assert!(args.iter().any(|arg| arg == format), "{id} 缺结构化输出");
             assert!(args.iter().any(|arg| arg == permission), "{id} 缺只读模式");
-            // agy 的 prompt 附在 --print 上（它拒绝 `-- <prompt>`），其余按独立参数传。
-            let prompt_passed = if id == "agy" {
+            // agy 与 Command Code 的 prompt 粘连在 --print 上（前者拒绝 `-- <prompt>`，
+            // 后者这样写才不会被 yargs 当成选项），其余按独立参数传。
+            let prompt_passed = if id == "agy" || id == "cmd" {
                 args.iter().any(|arg| arg == "--print=你好 ; $()")
             } else {
                 args.iter().any(|arg| arg == "你好 ; $()")
@@ -2322,7 +2478,7 @@ mod tests {
 
     #[test]
     fn positional_prompts_are_protected_by_option_terminators() {
-        for id in ["claude", "agy", "opencode", "mimo"] {
+        for id in ["claude", "agy", "opencode", "mimo", "cmd"] {
             let command = provider_command(
                 provider_spec(id).unwrap(),
                 PathBuf::from("/bin/echo"),
@@ -2339,15 +2495,16 @@ mod tests {
                 .collect::<Vec<_>>();
             // 要守的性质是"用户文本永远不会被当成选项解析"。多数 CLI 用 `--`
             // 终结符达成；agy 达不成——它明确拒绝 `-- <prompt>` 这种写法，改用
-            // `--print=<prompt>` 把文本附在选项上，同样不可能被解析成独立选项。
-            if id == "agy" {
+            // `--print=<prompt>` 把文本附在选项上，同样不可能被解析成独立选项；
+            // Command Code 的 `-p` 后面跟的是同一个位置参数，也用粘连形式。
+            if id == "agy" || id == "cmd" {
                 assert!(
                     args.iter().any(|arg| arg == "--print=--help 只是用户文本"),
-                    "agy 必须把 prompt 附在 --print 上"
+                    "{id} 必须把 prompt 附在 --print 上"
                 );
                 assert!(
                     !args.iter().any(|arg| arg == "--help 只是用户文本"),
-                    "agy 不能让用户文本成为独立参数"
+                    "{id} 不能让用户文本成为独立参数"
                 );
             } else {
                 assert!(
@@ -2623,6 +2780,199 @@ mod tests {
         assert_eq!(provider_label("opencode"), "OpenCode");
         assert_eq!(provider_label("mimo"), "MiMo Code");
         assert_eq!(provider_label("qwen"), "Qwen");
+        assert_eq!(provider_label("cmd"), "cmd");
+    }
+
+    #[test]
+    fn commandcode_runs_print_json_in_its_read_only_mode() {
+        let spec = provider_spec("cmd").unwrap();
+        assert_eq!(spec.binary, commandcode_binary());
+        assert_eq!(spec.protocol, HeadlessProtocol::CommandCodeJson);
+
+        let fresh = provider_command(
+            spec,
+            PathBuf::from("/bin/echo"),
+            Path::new("/tmp/proj"),
+            "看看这个项目",
+            "",
+            false,
+            "",
+            "",
+        );
+        let args = fresh
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--output-format", "json"]));
+        // 这家只有一个档：无头下写入被它自己的 print-permission-gate 拦下，
+        // 所以永远只传 plan，绝不落到要人点批准的 default。
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--permission-mode", "plan"]));
+        assert!(args.iter().any(|arg| arg == "--no-auto-update"));
+        assert!(args.iter().any(|arg| arg == "--skip-onboarding"));
+        assert!(!args.iter().any(|arg| arg == "--session"));
+        // prompt 粘连在 --print= 后面：以 `-` 开头的文本不会被当成选项。
+        assert!(args.iter().any(|arg| arg == "--print=看看这个项目"));
+        let dashed = provider_command(
+            spec,
+            PathBuf::from("/bin/echo"),
+            Path::new("/tmp/proj"),
+            "- 先看 README",
+            "",
+            false,
+            "",
+            "",
+        );
+        assert!(dashed
+            .get_args()
+            .any(|arg| arg.to_string_lossy() == "--print=- 先看 README"));
+
+        // 续接：`-p` 的会话不进 `--continue` 的候选，必须带精确 ID。
+        let resumed = provider_command(
+            spec,
+            PathBuf::from("/bin/echo"),
+            Path::new("/tmp/proj"),
+            "接着聊",
+            "b0f7bf92-a27b-4236-a282-dad7d7892099",
+            false,
+            "deepseek/deepseek-v4.1-flash",
+            "high",
+        );
+        let resumed_args = resumed
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(resumed_args
+            .windows(2)
+            .any(|pair| { pair == ["--session", "b0f7bf92-a27b-4236-a282-dad7d7892099"] }));
+        assert!(resumed_args
+            .windows(2)
+            .any(|pair| pair == ["--model", "deepseek/deepseek-v4.1-flash"]));
+        assert!(resumed_args
+            .windows(2)
+            .any(|pair| pair == ["--effort", "high"]));
+    }
+
+    #[test]
+    fn commandcode_parser_forwards_only_public_text_and_coarse_tool_state() {
+        let started = parse_commandcode_line(&json!({
+            "type": "event",
+            "event": { "type": "run_start", "sessionId": "sess-1" }
+        }));
+        assert_eq!(started.session_id.as_deref(), Some("sess-1"));
+
+        let text = parse_commandcode_line(&json!({
+            "type": "event",
+            "event": { "type": "text_delta", "delta": "公开回答" }
+        }));
+        assert_eq!(text.assistant_delta.as_deref(), Some("公开回答"));
+
+        // 推理增量与模型轨迹一律不出后端边界。
+        for kind in ["thinking_delta", "model_trace"] {
+            let private = parse_commandcode_line(&json!({
+                "type": "event",
+                "event": { "type": kind, "delta": "内心戏", "traceId": "trace" }
+            }));
+            assert!(private.assistant_delta.is_none() && private.fallback_answer.is_none());
+            assert!(private.activities.is_empty());
+        }
+
+        // print 模式下写工具被 CLI 自己的门拦下：这一步算失败，且不带入参。
+        let blocked = parse_commandcode_line(&json!({
+            "type": "event",
+            "event": {
+                "type": "tool_hook_blocked",
+                "toolCallId": "call-1",
+                "toolName": "write_file",
+                "input": { "file_path": "/secret", "content": "private" }
+            }
+        }));
+        let activity = blocked.activities.first().unwrap();
+        assert_eq!(
+            activity.get("status").and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            activity.get("title").and_then(Value::as_str),
+            Some("更新项目文件")
+        );
+        assert!(activity.get("input").is_none());
+
+        // todo_write 是计划，不该被当成"更新项目文件"。
+        let plan = parse_commandcode_line(&json!({
+            "type": "event",
+            "event": {
+                "type": "tool_queued",
+                "toolCallId": "call-2",
+                "toolName": "todo_write",
+                "input": { "todos": [{ "content": "先读代码", "status": "in_progress" }] }
+            }
+        }));
+        assert!(plan.activities.is_empty());
+        assert_eq!(
+            plan.plan
+                .as_ref()
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("status"))
+                .and_then(Value::as_str),
+            Some("inProgress")
+        );
+
+        // 末尾的 result 行：成功时是兜底正文（已收到增量时不会重复显示），
+        // 失败时是错误。
+        let done = parse_commandcode_line(&json!({
+            "type": "result", "subtype": "success", "finalText": "OK"
+        }));
+        assert_eq!(done.fallback_answer.as_deref(), Some("OK"));
+        assert!(done.error.is_none());
+        let capped = parse_commandcode_line(&json!({
+            "type": "result",
+            "subtype": "error_max_turns",
+            "finalText": "Reached maximum conversation turns (100)."
+        }));
+        assert!(capped
+            .error
+            .as_deref()
+            .is_some_and(|text| text.contains("maximum conversation turns")));
+
+        // result 行即使带对象字段 `event` 也按 result 解析（别被当成事件丢掉正文）。
+        let result_with_event = parse_commandcode_line(&json!({
+            "type": "result",
+            "subtype": "success",
+            "finalText": "正文",
+            "event": { "type": "text_delta" }
+        }));
+        assert_eq!(result_with_event.fallback_answer.as_deref(), Some("正文"));
+
+        // 失败原因可能不在 finalText 上，别只认一个字段。
+        let failed = parse_commandcode_line(&json!({
+            "type": "result",
+            "subtype": "error",
+            "error": { "message": "insufficient credits" }
+        }));
+        assert_eq!(failed.error.as_deref(), Some("insufficient credits"));
+
+        // 裸的 todo_write 事件（没有 toolName、todos 直接挂事件上）也要出计划。
+        let bare_plan = parse_commandcode_line(&json!({
+            "type": "event",
+            "event": {
+                "type": "todo_write",
+                "todos": [{ "content": "写测试", "status": "completed" }]
+            }
+        }));
+        assert!(bare_plan.activities.is_empty());
+        assert_eq!(
+            bare_plan
+                .plan
+                .as_ref()
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("status"))
+                .and_then(Value::as_str),
+            Some("completed")
+        );
     }
 
     #[test]

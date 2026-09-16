@@ -2084,6 +2084,374 @@ pub fn fetch_opencode_usage(force_refresh: bool) -> OpencodeUsage {
     }
 }
 
+// ============================================================================
+// Command Code 订阅与额度：官方 https://api.commandcode.ai 的两个 billing 接口。
+// `/alpha/billing/credits` 给 5 小时 / 每周两个限流窗口（used / cap，美元计价）
+// 与本期额度余额，`/alpha/billing/subscriptions` 给计划与计费周期。认证用 CLI
+// 自己写在 ~/.commandcode/auth.json 的 apiKey（或 COMMAND_CODE_API_KEY），走
+// `Authorization: Bearer`。Roster 只在查询时读 key、直接发给官方，不落盘、不打印；
+// API 地址被指到别处（COMMANDCODE_API_URL）时直接跳过，不向第三方探测或发 key。
+// ============================================================================
+
+const COMMANDCODE_API_BASE: &str = "https://api.commandcode.ai";
+const COMMANDCODE_CREDITS_URL: &str = "https://api.commandcode.ai/alpha/billing/credits";
+const COMMANDCODE_SUBSCRIPTIONS_URL: &str =
+    "https://api.commandcode.ai/alpha/billing/subscriptions";
+const COMMANDCODE_FAIL_KEY: &str = "commandcode";
+const COMMANDCODE_CACHE_NAME: &str = "commandcode-usage.json";
+
+/// 和 Codex/Grok/OpenCode 一样单飞：并发刷新只跑一次。
+static COMMANDCODE_GATE: Mutex<()> = Mutex::new(());
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandCodeUsage {
+    pub ok: bool,
+    pub error: Option<String>,
+    /// 计划名（GOAT / Pro / Max…）；认不出 planId 时给原始值。
+    pub plan: Option<String>,
+    pub stale: bool,
+    #[serde(default)]
+    pub age_secs: u64,
+    /// 本期额度（美元）。总额来自计划表，认不出计划时只报剩余。
+    pub credits_used: Option<f64>,
+    pub credits_total: Option<f64>,
+    pub credits_remaining: Option<f64>,
+    /// 计费周期结束（ISO）。
+    pub period_end: Option<String>,
+    /// 接口明说当前不限流（`windowLimits.limited == false`）。
+    #[serde(default)]
+    pub unlimited: bool,
+    pub windows: Vec<LimitWindow>,
+}
+
+/// 计划表取自 CLI 自己的 getPlanInfo（dist/cli.mjs 的 plan 表）。前缀必须长的
+/// 在前：`individual-goat` 会被 `individual-go` 吃掉，`individual-pro-v1` 同理。
+/// 认不出来就不编一个——只显示原始 planId，也不算总额。
+fn commandcode_plan(plan_id: &str) -> Option<(&'static str, f64)> {
+    let id = plan_id.trim().to_ascii_lowercase().replace('_', "-");
+    [
+        ("individual-goat", "GOAT", 70.0),
+        ("individual-pro-v1", "Pro", 80.0),
+        ("individual-provider", "Provider", 15.0),
+        ("individual-ultra", "Ultra", 300.0),
+        ("individual-max", "Max", 150.0),
+        ("individual-pro", "Pro", 30.0),
+        ("individual-go", "Go", 10.0),
+        ("teams-pro", "Teams Pro", 40.0),
+    ]
+    .into_iter()
+    .find(|(prefix, _, _)| id.starts_with(prefix))
+    .map(|(_, label, credits)| (label, credits))
+}
+
+/// 用户把 CLI 的 API 地址指到别处时，官方额度接口不再代表那家；跳过查询，
+/// 也不把 key 发往第三方。只有官方地址（含尾斜杠，或没设）放行——host 不区分
+/// 大小写。CLI 其实只在 `COMMANDCODE_SANDBOX=true` 时才真正采用这个覆盖值，
+/// 这里看到非官方地址就跳过：宁可少显示，也不拿官方数据冒充当下的额度。
+fn commandcode_api_url_is_official(custom: &str) -> bool {
+    let custom = custom.trim().trim_end_matches('/');
+    custom.is_empty() || custom.eq_ignore_ascii_case(COMMANDCODE_API_BASE)
+}
+
+fn commandcode_usage_gate() -> Result<(), String> {
+    let custom = std::env::var("COMMANDCODE_API_URL").unwrap_or_default();
+    if commandcode_api_url_is_official(&custom) {
+        return Ok(());
+    }
+    Err("cmd 配置了自定义 API 地址，用量查询跳过".to_string())
+}
+
+/// key 会插进 curl 的 `-K` 配置：带引号/反斜杠/控制字符会破坏格式，甚至注入
+/// 额外的 curl 配置行。两条来源（环境变量、auth.json）都必须过这一道。
+fn sanitize_commandcode_key(key: &str) -> Result<String, String> {
+    let key = key.trim();
+    if key.is_empty()
+        || key
+            .chars()
+            .any(|ch| ch.is_control() || ch == '"' || ch == '\\')
+    {
+        return Err("cmd 凭据格式异常，请重新登录".to_string());
+    }
+    Ok(key.to_string())
+}
+
+fn read_commandcode_key_at(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|_| "未找到 cmd 登录凭据（先运行 cmd 登录）".to_string())?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|_| "cmd 凭据文件无法解析".to_string())?;
+    let key = value
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "未找到 cmd 登录凭据（先运行 cmd 登录）".to_string())?;
+    sanitize_commandcode_key(key)
+}
+
+/// 重置时间：接口现在给 Unix 毫秒，万一哪天改成 ISO 字符串也别丢。
+fn commandcode_reset_at(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::Number(number)) => number.as_f64().map(unix_seconds_to_iso).unwrap_or_default(),
+        Some(Value::String(text)) => chrono::DateTime::parse_from_rfc3339(text.trim())
+            .map(|time| {
+                time.with_timezone(&chrono::Utc)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// key 走 curl 的 stdin 配置（-K -），不进 argv（避免 ps 泄露）。
+fn fetch_commandcode_json_raw(url: &str, key: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let bin = curl_bin();
+    let mut command = std::process::Command::new(bin);
+    command
+        .args([
+            "-sS",
+            "--max-time",
+            "15",
+            // 响应只有几百字节；上限防的是服务器/网关刷一大坨回来。
+            "--max-filesize",
+            "262144",
+            "-w",
+            "\n%{http_code}",
+            "-K",
+            "-",
+            url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // 和 CLI 子进程用同一套代理设置，避免"终端能联网、用量查询不能"。
+    crate::proxy_settings::apply_to_std_command(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("启动 curl 失败（{bin}）：{e}"))?;
+    let written = (|| -> Result<(), String> {
+        let mut stdin = child.stdin.take().ok_or("无法写入 curl stdin")?;
+        let cfg = format!(
+            "header = \"Authorization: Bearer {key}\"\nheader = \"user-agent: Roster/{}\"\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        stdin
+            .write_all(cfg.as_bytes())
+            .map_err(|e| format!("写 curl 配置失败：{e}"))
+    })();
+    if let Err(error) = written {
+        // 配置写不进去就别留一个没人收的 curl 进程。
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("等待 curl 失败：{e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        return Err(format!(
+            "curl 失败（exit {:?}）：{}",
+            out.status.code(),
+            stderr.trim()
+        ));
+    }
+    let (body, code) = match stdout.rsplit_once('\n') {
+        Some((b, c)) => (b.to_string(), c.trim().to_string()),
+        None => (stdout.clone(), String::new()),
+    };
+    if code != "200" {
+        // 401/403 的响应体可能带账号信息，只给通用文案；其余保留一小段便于排查。
+        if code.starts_with("401") || code.starts_with("403") {
+            return Err(format!("HTTP {code}：cmd 登录状态无效，请重新登录"));
+        }
+        let snippet: String = body.trim().chars().take(200).collect();
+        return Err(format!("HTTP {code}：{snippet}"));
+    }
+    Ok(body)
+}
+
+fn parse_commandcode_usage(
+    credits_json: &str,
+    subscriptions_json: Option<&str>,
+) -> Result<CommandCodeUsage, String> {
+    let value: Value = serde_json::from_str(credits_json).map_err(|e| e.to_string())?;
+    let credits = value.get("credits").filter(|entry| entry.is_object());
+    let mut windows = Vec::new();
+    if let Some(limits) = value.get("windowLimits") {
+        for (key, label) in [("fiveHour", "5 小时窗口"), ("weekly", "每周窗口")] {
+            let Some(entry) = limits.get(key).filter(|entry| entry.is_object()) else {
+                continue;
+            };
+            let (Some(used), Some(cap)) = (
+                json_number(entry.get("used")),
+                json_number(entry.get("cap")),
+            ) else {
+                continue;
+            };
+            // 不限流或额度未定（cap 缺失/为 0/不是数）时不给窗口，
+            // 别把 0% 当成"额度充足"。
+            if !cap.is_finite() || cap <= 0.0 {
+                continue;
+            }
+            windows.push(LimitWindow {
+                label: label.to_string(),
+                utilization: (used / cap * 100.0).clamp(0.0, 100.0),
+                resets_at: commandcode_reset_at(entry.get("resetAt")),
+            });
+        }
+    }
+    // 剩余额度是"还能用多少"，负值没有意义（超额时接口也不该给负的）：
+    // 钳到 0，界面上不出现 `剩余 $-3.00`。
+    let remaining = credits
+        .and_then(|entry| json_number(entry.get("monthlyCredits")))
+        .map(|value| value.max(0.0));
+    let subscription = subscriptions_json.and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let plan_id = subscription
+        .as_ref()
+        .and_then(|value| value.pointer("/data/planId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let period_end = subscription
+        .as_ref()
+        .and_then(|value| value.pointer("/data/currentPeriodEnd"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // `windowLimits.limited == false` 是接口在说"当前不限流"，不是"查询失败"。
+    let unlimited = value
+        .pointer("/windowLimits/limited")
+        .and_then(Value::as_bool)
+        == Some(false);
+    let plan_info = plan_id.and_then(commandcode_plan);
+    let plan = match (plan_info, plan_id) {
+        (Some((label, _)), _) => Some(label.to_string()),
+        (None, Some(raw)) => Some(raw.to_string()),
+        (None, None) => None,
+    };
+    let credits_total = plan_info.map(|(_, total)| total);
+    // monthlyCredits 是本期**剩余**额度（实测 GOAT 计划 70，本期用掉 1.12 后报 68.88），
+    // 所以已用 = 计划总额 - 剩余。剩余高于计划总额（赠额/购额，或接口口径变了）时
+    // 这个差推不出可信的"已用"——宁可不显示这一行，也不报一个假账（更不报负数）。
+    let credits_used = match (credits_total, remaining) {
+        (Some(total), Some(remaining)) if remaining <= total => Some(total - remaining),
+        _ => None,
+    };
+    if windows.is_empty() && remaining.is_none() && !unlimited {
+        return Err("cmd 用量接口没有返回可显示的窗口或额度".to_string());
+    }
+    Ok(CommandCodeUsage {
+        ok: true,
+        error: None,
+        plan,
+        stale: false,
+        age_secs: 0,
+        credits_used,
+        credits_total,
+        credits_remaining: remaining,
+        period_end,
+        unlimited,
+        windows,
+    })
+}
+
+fn commandcode_cache_path() -> PathBuf {
+    cache_file(COMMANDCODE_CACHE_NAME)
+}
+
+fn read_commandcode_cache_with_age() -> Option<(CommandCodeUsage, u64)> {
+    let text = std::fs::read_to_string(commandcode_cache_path()).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let ts = value.get("ts").and_then(Value::as_u64)?;
+    let data: CommandCodeUsage = serde_json::from_value(value.get("data")?.clone()).ok()?;
+    Some((data, now_ms().saturating_sub(ts)))
+}
+
+fn commandcode_error_or_cached(error: String) -> CommandCodeUsage {
+    if let Some((mut cached, age)) = read_commandcode_cache_with_age() {
+        cached.stale = true;
+        cached.age_secs = age / 1000;
+        cached.error = Some(error);
+        return cached;
+    }
+    CommandCodeUsage {
+        ok: false,
+        error: Some(error),
+        ..Default::default()
+    }
+}
+
+/// 和 CLI 一样：环境变量优先，其次才是 auth.json。两条路径都要过同一个校验——
+/// key 会被拼进 curl 配置，畸形值不能因为来源不同就放行。
+fn commandcode_auth_key() -> Result<String, String> {
+    if let Ok(value) = std::env::var("COMMAND_CODE_API_KEY") {
+        if !value.trim().is_empty() {
+            return sanitize_commandcode_key(&value);
+        }
+    }
+    let path = dirs::home_dir()
+        .map(|home| home.join(".commandcode").join("auth.json"))
+        .ok_or_else(|| "找不到用户目录".to_string())?;
+    read_commandcode_key_at(&path)
+}
+
+pub fn fetch_commandcode_usage(force_refresh: bool) -> CommandCodeUsage {
+    let _guard = COMMANDCODE_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Err(error) = commandcode_usage_gate() {
+        return CommandCodeUsage {
+            ok: false,
+            error: Some(error),
+            ..Default::default()
+        };
+    }
+    if let Some((mut cached, age)) = read_commandcode_cache_with_age() {
+        if may_use_fresh_cache(force_refresh, age, cached.ok) {
+            cached.stale = false;
+            cached.age_secs = age / 1000;
+            return cached;
+        }
+    }
+    if let Some(error) = recent_failure(COMMANDCODE_FAIL_KEY) {
+        return commandcode_error_or_cached(error);
+    }
+    let result = commandcode_auth_key().and_then(|key| {
+        let credits = fetch_commandcode_json_raw(COMMANDCODE_CREDITS_URL, &key)?;
+        // 计划与计费周期是加分项：拿不到就只显示窗口与剩余额度，不影响主数据。
+        let subscriptions = fetch_commandcode_json_raw(COMMANDCODE_SUBSCRIPTIONS_URL, &key).ok();
+        parse_commandcode_usage(&credits, subscriptions.as_deref())
+    });
+    match result {
+        Ok(mut usage) => {
+            usage.stale = false;
+            usage.age_secs = 0;
+            let summary = usage
+                .windows
+                .iter()
+                .map(|window| format!("{} {}%", window.label, window.utilization.round() as i64))
+                .chain(
+                    usage
+                        .credits_used
+                        .zip(usage.credits_total)
+                        .map(|(used, total)| format!("本期 ${used:.2}/${total:.0}")),
+                )
+                .collect::<Vec<_>>()
+                .join(" · ");
+            crate::log_info!("commandcode 用量刷新：{summary}");
+            cache_write(&commandcode_cache_path(), &usage);
+            usage
+        }
+        Err(error) => {
+            crate::log_warn!("commandcode 用量刷新失败：{error}");
+            record_failure(COMMANDCODE_FAIL_KEY, &error);
+            commandcode_error_or_cached(error)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2429,6 +2797,45 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "人工核对用：需要本机已登录 Command Code 且有有效订阅"]
+    fn probe_local_commandcode_usage_without_exposing_the_key() {
+        let usage = fetch_commandcode_usage(true);
+        assert!(usage.ok, "Command Code 用量探针失败：{:?}", usage.error);
+        assert!(usage.windows.iter().all(|window| {
+            window.utilization.is_finite()
+                && (0.0..=100.0).contains(&window.utilization)
+                && !window.label.is_empty()
+        }));
+        // 只打印档位、百分比与额度，不带 key、不带账号信息。
+        let windows = usage
+            .windows
+            .iter()
+            .map(|window| format!("{} {}%", window.label, window.utilization.round()))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let credits = usage
+            .credits_used
+            .zip(usage.credits_total)
+            .map(|(used, total)| format!("本期 ${used:.2}/${total:.0}"))
+            .or_else(|| {
+                usage
+                    .credits_remaining
+                    .map(|left| format!("剩余 ${left:.2}"))
+            })
+            .unwrap_or_else(|| "无额度字段".to_string());
+        eprintln!(
+            "commandcode usage probe: {} · {} · plan={:?}",
+            if windows.is_empty() {
+                "无限流窗口"
+            } else {
+                &windows
+            },
+            credits,
+            usage.plan
+        );
+    }
+
+    #[test]
     fn parses_pushed_rate_limits_with_only_a_weekly_window() {
         // 本机实测 `account/rateLimits/updated` 推来的真实形状：secondary 为
         // null，只有一个 10080 分钟的窗口，resetsAt 是 Unix 秒。
@@ -2621,6 +3028,164 @@ mod tests {
         assert_eq!(usage.windows[0].resets_at, "2026-09-11T06:00:27.241Z");
         assert_eq!(usage.windows[1].label, "7 天窗口");
         assert_eq!(usage.windows[2].label, "30 天窗口");
+    }
+
+    #[test]
+    fn commandcode_usage_parses_windows_credits_and_plan() {
+        // 抓自官方 GET /alpha/billing/credits 与 /alpha/billing/subscriptions 的真实形状
+        // （账号标识已删）。
+        let credits = r#"{"credits":{"belowThreshold":false,"creditThreshold":0,"monthlyCredits":68.877756668,"purchasedCredits":0,"freeCredits":0},"windowLimits":{"limited":true,"exceeded":null,"fiveHour":{"used":1.122243332,"cap":14,"exceeded":false,"resetAt":1789565610374},"weekly":{"used":1.122243332,"cap":35,"exceeded":false,"resetAt":1790152410374}}}"#;
+        let subscriptions = r#"{"success":true,"data":{"status":"active","currentPeriodStart":"2026-09-16T08:32:02.000Z","currentPeriodEnd":"2026-10-16T08:32:02.000Z","planId":"individual-goat"}}"#;
+        let usage = parse_commandcode_usage(credits, Some(subscriptions)).expect("应解析成功");
+        assert!(usage.ok && !usage.stale);
+        assert_eq!(usage.plan.as_deref(), Some("GOAT"));
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].label, "5 小时窗口");
+        assert!((usage.windows[0].utilization - 8.016).abs() < 0.01);
+        assert_eq!(usage.windows[0].resets_at, "2026-09-16T13:33:30Z");
+        assert_eq!(usage.windows[1].label, "每周窗口");
+        assert!((usage.windows[1].utilization - 3.206).abs() < 0.01);
+        assert_eq!(usage.credits_total, Some(70.0));
+        assert!((usage.credits_remaining.unwrap() - 68.877756668).abs() < 1e-9);
+        assert!((usage.credits_used.unwrap() - 1.122243332).abs() < 1e-6);
+        assert_eq!(
+            usage.period_end.as_deref(),
+            Some("2026-10-16T08:32:02.000Z")
+        );
+    }
+
+    #[test]
+    fn commandcode_usage_survives_odd_credit_shapes() {
+        // 剩余高于计划总额（赠额/购额，或接口口径变了）：推不出可信的"已用"，
+        // 只报剩余，不显示 $0.00 / 负数那一行。
+        let over = r#"{"credits":{"monthlyCredits":95},"windowLimits":{"limited":true,"fiveHour":{"used":1,"cap":14,"resetAt":1789565610374}}}"#;
+        let subscriptions = r#"{"data":{"planId":"individual-goat","currentPeriodEnd":"2026-10-16T08:32:02.000Z"}}"#;
+        let usage = parse_commandcode_usage(over, Some(subscriptions)).expect("应解析成功");
+        assert_eq!(usage.credits_total, Some(70.0));
+        assert_eq!(usage.credits_remaining, Some(95.0));
+        assert!(usage.credits_used.is_none(), "剩余高于总额时不编已用");
+
+        // 负的剩余钳到 0，界面上不出现 `剩余 $-3.00`。
+        let negative = r#"{"credits":{"monthlyCredits":-3},"windowLimits":{"limited":true,"fiveHour":{"used":14,"cap":14,"resetAt":1789565610374}}}"#;
+        let usage = parse_commandcode_usage(negative, Some(subscriptions)).expect("应解析成功");
+        assert_eq!(usage.credits_remaining, Some(0.0));
+        assert_eq!(usage.credits_used, Some(70.0));
+
+        // ISO 字符串的重置时间也收（接口现在给毫秒）。
+        let iso = r#"{"credits":{"monthlyCredits":69},"windowLimits":{"limited":true,"weekly":{"used":1,"cap":35,"resetAt":"2026-09-23T11:33:30.000Z"}}}"#;
+        let usage = parse_commandcode_usage(iso, None).expect("应解析成功");
+        assert_eq!(usage.windows[0].resets_at, "2026-09-23T11:33:30Z");
+
+        // 上限非法（0/负数/NaN）时不给窗口，也不因此报错。
+        let bogus_cap = r#"{"credits":{"monthlyCredits":69},"windowLimits":{"limited":true,"fiveHour":{"used":3,"cap":-1}}}"#;
+        let usage = parse_commandcode_usage(bogus_cap, None).expect("有额度即可解析");
+        assert!(usage.windows.is_empty());
+    }
+
+    #[test]
+    fn commandcode_usage_reports_unlimited_instead_of_failing() {
+        // `limited=false` 是"当前不限流"，不该被当成查询失败。
+        let unlimited = r#"{"windowLimits":{"limited":false,"fiveHour":null,"weekly":null}}"#;
+        let usage = parse_commandcode_usage(unlimited, None).expect("不限流也应解析成功");
+        assert!(usage.unlimited);
+        assert!(usage.windows.is_empty());
+        assert!(usage.credits_remaining.is_none());
+
+        // 既没有窗口、也没有额度，且接口没说"不限流"：这才是真的没数据。
+        assert!(parse_commandcode_usage(r#"{"windowLimits":{"limited":true}}"#, None).is_err());
+    }
+
+    #[test]
+    fn commandcode_keys_are_validated_on_both_sources() {
+        // 环境变量与 auth.json 走同一个校验：畸形 key 不能因为来源不同就放进 curl 配置。
+        assert_eq!(
+            sanitize_commandcode_key("  cc-test-key  ").unwrap(),
+            "cc-test-key"
+        );
+        assert!(sanitize_commandcode_key("").is_err());
+        assert!(sanitize_commandcode_key("   ").is_err());
+        assert!(sanitize_commandcode_key("cc-a\"b").is_err());
+        assert!(sanitize_commandcode_key("cc-a\\b").is_err());
+        assert!(sanitize_commandcode_key("cc-a\nurl = \"https://evil.example\"").is_err());
+    }
+
+    #[test]
+    fn commandcode_usage_keeps_credits_when_no_limits_apply() {
+        // 不限流的计划不给窗口：只有额度也能显示，不因为没有窗口就报错。
+        let credits = r#"{"credits":{"monthlyCredits":29.5},"windowLimits":{"limited":false,"fiveHour":null,"weekly":null}}"#;
+        let usage = parse_commandcode_usage(credits, None).expect("应解析成功");
+        assert!(usage.windows.is_empty());
+        assert_eq!(usage.credits_remaining, Some(29.5));
+        // 认不出计划就不编总额，也不显示"已用"。
+        assert!(usage.plan.is_none());
+        assert!(usage.credits_total.is_none());
+        assert!(usage.credits_used.is_none());
+
+        // 计划认得出来但接口没给余额：只显示窗口。
+        let only_windows =
+            r#"{"windowLimits":{"fiveHour":{"used":7,"cap":14,"resetAt":1789565610374}}}"#;
+        let usage = parse_commandcode_usage(only_windows, None).expect("有窗口即可解析");
+        assert_eq!(usage.windows.len(), 1);
+        assert!((usage.windows[0].utilization - 50.0).abs() < 1e-9);
+        assert!(usage.credits_remaining.is_none());
+
+        assert!(parse_commandcode_usage("{}", None).is_err());
+        assert!(parse_commandcode_usage(r#"{"credits":{}}"#, None).is_err());
+        // cap 缺失或为 0 不能当成"额度充足"的 0%。
+        assert!(parse_commandcode_usage(
+            r#"{"windowLimits":{"fiveHour":{"used":3,"cap":0}}}"#,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn commandcode_plan_prefixes_prefer_the_longer_match() {
+        assert_eq!(commandcode_plan("individual-goat"), Some(("GOAT", 70.0)));
+        assert_eq!(commandcode_plan("individual-go"), Some(("Go", 10.0)));
+        assert_eq!(commandcode_plan("individual-pro-v1"), Some(("Pro", 80.0)));
+        assert_eq!(commandcode_plan("individual-pro"), Some(("Pro", 30.0)));
+        assert_eq!(commandcode_plan("TEAMS_PRO"), Some(("Teams Pro", 40.0)));
+        assert!(commandcode_plan("future-plan-9000").is_none());
+    }
+
+    #[test]
+    fn commandcode_key_is_read_from_auth_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(
+            &path,
+            r#"{"apiKey":"cc-test-key","userId":"u","userName":"n"}"#,
+        )
+        .unwrap();
+        assert_eq!(read_commandcode_key_at(&path).unwrap(), "cc-test-key");
+
+        std::fs::write(&path, r#"{"userName":"n"}"#).unwrap();
+        assert!(read_commandcode_key_at(&path).is_err());
+        assert!(read_commandcode_key_at(&dir.path().join("missing.json")).is_err());
+
+        // 会破坏 curl -K 配置的 key 直接拒绝，并给出可操作的错误。
+        std::fs::write(&path, r#"{"apiKey":"cc-a\"b"}"#).unwrap();
+        let error = read_commandcode_key_at(&path).expect_err("带引号的 key 应被拒绝");
+        assert!(error.contains("凭据格式异常"));
+    }
+
+    #[test]
+    fn commandcode_custom_api_url_skips_the_official_usage_api() {
+        assert!(commandcode_api_url_is_official(""));
+        assert!(commandcode_api_url_is_official("  "));
+        assert!(commandcode_api_url_is_official(
+            "https://api.commandcode.ai"
+        ));
+        assert!(commandcode_api_url_is_official(
+            "https://api.commandcode.ai/"
+        ));
+        assert!(!commandcode_api_url_is_official(
+            "https://staging-api.commandcode.ai"
+        ));
+        assert!(!commandcode_api_url_is_official(
+            "https://my-gateway.example.com"
+        ));
     }
 
     #[test]

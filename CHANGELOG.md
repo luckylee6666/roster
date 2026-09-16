@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.6.0
+
+### English
+
+**Added**
+- Command Code joins the registered CLI list under its own command name **`cmd`** (the menu label, tab badge, history group and terminal command all read `cmd`; `cmdc` is used on Windows, where `cmd` is the system shell): project-card launch button, tab badge, card history (list / preview / delete), cross-CLI handoff as both source and target, and session restore (`cmd --session <id>` for one specific session). Sessions live in `~/.commandcode/projects/<slug>/<id>.jsonl` with `.meta.json` / `.checkpoints.jsonl` sidecars; because the directory slug is the CLI's own non-reversible encoding, project ownership is re-verified from each transcript's header `cwd`, and only files whose name matches the header id are listed. The old spellings `command-code` / `commandcode` / `cmdc` are aliases of `cmd`.
+- Restoring a Command Code tab no longer appends `--continue` (that flag only resumes interactive conversations, so a `-p` session from the conversation workspace made it exit into a dead shell): the restore path looks up the newest on-disk session for that project and resumes it by exact id, or starts a fresh session when there is none.
+- The conversation workspace runs Command Code as its eighth assistant. It has no ACP or app-server, so it is the first adapter that spawns one `cmd --print=<prompt> --output-format json` process per turn and parses the NDJSON event stream (`run_start` → `text_delta` / `message_update` → tool events → `run_end` + `result`), resuming with `--session <id>`. `/model` lists its model catalog and `/effort` the levels it reports for the current model.
+- Command Code conversations are read-only by design: that CLI's own print-mode gate blocks `write_file` / `shell_command` unless the built-in `--yolo` bypass is passed, and Roster never adds bypass flags, so the mode picker offers only its `plan` mode. Use Developer mode when you want it to edit files.
+- The usage panel gains a Command Code tab: it reads the key from that CLI's own `~/.commandcode/auth.json` (or `COMMAND_CODE_API_KEY`) and calls the official `/alpha/billing/credits` and `/alpha/billing/subscriptions`, showing the 5-hour and weekly windows, the plan, and the current period's credit balance. A custom `COMMANDCODE_API_URL` is skipped, the key is never stored or logged, and a failed refresh falls back to a clearly labelled cached snapshot.
+
+### 中文
+
+**新增**
+- 新增 Command Code 登记，**id、显示名与命令名统一用它自己的 `cmd`**（菜单、标签徽标、历史分组和终端命令都显示 `cmd`；Windows 上 `cmd` 是系统 shell，改用 `cmdc`）：项目卡片启动按钮、标签色标、卡片历史（列表/预览/删除）、跨 CLI 交接的来源与目标，以及会话恢复（指定会话用 `cmd --session <id>`）。历史位于 `~/.commandcode/projects/<slug>/<id>.jsonl`，旁挂 `.meta.json` / `.checkpoints.jsonl`；目录名是该 CLI 自己不可还原的编码，项目归属一律读文件首行的 header `cwd` 复核，且只列出文件名与 header id 一致的文件。旧写法 `command-code` / `commandcode` / `cmdc` 都作为 `cmd` 的别名。
+- 恢复 Command Code 标签不再补 `--continue`（该参数只认交互会话，对话工作台跑出来的 `-p` 会话会让它直接退出、标签变成死 shell）：改为先查本项目最新的磁盘会话、用精确 ID 续，没有会话才开新会话。
+- 对话工作台新增第八家助手 Command Code。它没有 ACP / app-server，是首个"每轮跑一个 `cmd --print=<prompt> --output-format json` 进程 + 解析 NDJSON 事件流"的适配器（`run_start` → `text_delta` / `message_update` → 工具事件 → `run_end` + `result`），续接用 `--session <id>`；`/model` 列出它的模型目录，`/effort` 列出它按当前模型自报的档位。
+- Command Code 的对话按设计只读：该 CLI 自己的 print 模式会拦下 `write_file` / `shell_command`，除非传内置的 `--yolo` 绕过，而 Roster 从不添加这类参数，所以档位选择器只提供它自己的 `plan` 档。需要它改文件请用开发模式。
+- 用量面板新增 Command Code 档：读取该 CLI 自己 `~/.commandcode/auth.json` 里的 key（或 `COMMAND_CODE_API_KEY`），调用官方 `/alpha/billing/credits` 与 `/alpha/billing/subscriptions`，显示 5 小时 / 每周窗口、计划档位与本期额度余额。自定义 `COMMANDCODE_API_URL` 直接跳过；key 不落盘、不打印，查询失败会回退到明确标记的缓存快照。
+
 ## v1.5.1
 
 ### English

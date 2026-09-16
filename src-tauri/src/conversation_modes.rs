@@ -155,6 +155,23 @@ const AGY_MODES: &[ConversationMode] = &[
     mode("accept-edits", "自动接受修改", "文件改动直接生效", true),
 ];
 
+// Command Code 自己的模式环是 default → auto-accept → plan（Shift+Tab / `/mode`），
+// `--permission-mode` 的合法取值是 default, standard, plan, auto-accept, dont-ask。
+//
+// 这里只登记 plan 一档，因为它的 print（无头）模式根本写不动：CLI 自己挂了一个
+// `print-permission-gate` 钩子，write_file / shell_command 这些会改动的工具一律被拦，
+// 提示 "Use --yolo (or --dangerously-skip-permissions) to enable file writes and shell
+// commands in print mode"。实测 `--permission-mode auto-accept`、`--tools-all`、
+// `--tools-enable write_file` 都放不开，唯一出口是 --yolo——而 Roster 不替各家加
+// 这类绕过参数，也不登记无头下跑不通的档。所以这家的对话只有只读：能读项目、
+// 能调只读工具、能回答，但不落盘、不开 shell。
+const COMMANDCODE_MODES: &[ConversationMode] = &[mode(
+    "plan",
+    "只读计划",
+    "读项目、给方案；这家的无头模式不让改文件",
+    false,
+)];
+
 // OpenCode 与 MiMo 的 plan / build 都是真实存在的 primary agent（`<cli> agent list`
 // 可列出），且 plan 的只读是**权限层**的硬禁令而非提示词：源码里
 // `edit: { "*": "deny" }`，描述就叫 "Plan mode. Disallows all edit tools."。
@@ -188,6 +205,7 @@ pub fn modes_for(provider: &str) -> &'static [ConversationMode] {
         "qwen" => QWEN_MODES,
         "agy" => AGY_MODES,
         "opencode" | "mimo" => AGENT_MODES,
+        "cmd" => COMMANDCODE_MODES,
         _ => &[],
     }
 }
@@ -221,7 +239,9 @@ mod tests {
 
     #[test]
     fn every_provider_starts_read_only_and_rejects_unknown_modes() {
-        for provider in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
+        for provider in [
+            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd",
+        ] {
             let modes = modes_for(provider);
             assert!(!modes.is_empty(), "{provider} 应该有模式表");
             assert!(!modes[0].writes, "{provider} 的第一档必须是只读");
@@ -249,7 +269,9 @@ mod tests {
         // 才进得去）不收。放宽这张表之前，先确认那一档真在该产品的档位选择里。
         const ALWAYS_APPROVE: &[(&str, &str)] = &[("grok", "bypassPermissions"), ("qwen", "yolo")];
 
-        for provider in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
+        for provider in [
+            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd",
+        ] {
             for entry in modes_for(provider) {
                 let allowed = ALWAYS_APPROVE.contains(&(provider, entry.id));
                 assert!(
@@ -323,10 +345,29 @@ mod tests {
     }
 
     #[test]
+    fn commandcode_only_lists_the_read_only_mode_that_runs_headless() {
+        // 它的模式环里确实有 auto-accept，但 print（无头）模式下 CLI 自己挂的
+        // print-permission-gate 会把 write_file / shell_command 全拦下，唯一出口是
+        // --yolo。登记 auto-accept 等于谎报"能改文件"，所以只留 plan 一档。
+        let ids = modes_for("cmd")
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["plan"]);
+        assert!(resolve("cmd", "auto-accept").is_err());
+        assert!(resolve("cmd", "default").is_err());
+        assert!(resolve("cmd", "standard").is_err());
+        assert!(resolve("cmd", "dont-ask").is_err(), "不在它的模式环里");
+        assert!(resolve("cmd", "yolo").is_err());
+        let only = default_mode("cmd");
+        assert!(!only.writes && !only.unsandboxed);
+    }
+
+    #[test]
     fn only_codex_has_an_unsandboxed_mode_and_it_is_never_the_default() {
         // 无沙箱档只登记各家自己就提供的那一个。改这条之前先想清楚：
         // 这一档下 CLI 能读写项目以外的文件，也能联网。
-        for provider in ["claude", "grok", "qwen", "agy", "opencode", "mimo"] {
+        for provider in ["claude", "grok", "qwen", "agy", "opencode", "mimo", "cmd"] {
             assert!(
                 modes_for(provider).iter().all(|entry| !entry.unsandboxed),
                 "{provider} 目前不该有无沙箱档"
@@ -339,7 +380,9 @@ mod tests {
             .collect();
         assert_eq!(codex, vec!["full-access"], "Codex 只有这一个无沙箱档");
 
-        for provider in ["claude", "grok", "codex", "qwen", "agy", "opencode", "mimo"] {
+        for provider in [
+            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd",
+        ] {
             assert!(
                 !default_mode(provider).unsandboxed,
                 "{provider} 的默认档绝不能是无沙箱的"

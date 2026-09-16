@@ -1,4 +1,5 @@
 import { CLI_TOOL_IDS } from './cli-tools.js';
+import { normalizeCliToolName } from './session-restore-utils.js';
 
 export const APP_VIEW_STORAGE_KEY = 'roster-app-view-v1';
 export const APP_VIEWS = Object.freeze(['conversation', 'developer']);
@@ -15,7 +16,9 @@ export function normalizeAppView(value) {
 export function normalizeConversationProvider(value) {
   const provider = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(provider)) return 'codex';
-  return CLI_TOOL_IDS.includes(provider) ? provider : 'codex';
+  // 旧写法/别名（例如曾用全名登记的 command-code）也认，别让本地偏好一夜之间重置。
+  const name = normalizeCliToolName(provider);
+  return CLI_TOOL_IDS.includes(name) ? name : 'codex';
 }
 
 function defaultPreference() {

@@ -1,4 +1,4 @@
-import { cliToolName } from './session-restore-utils.js';
+import { cliToolName, normalizeCliToolName } from './session-restore-utils.js';
 
 /** 新 CLI 加一条即可接入卡片按钮、启动菜单、会话条和续接门控。色标另加 `.term-tab-tool.tool-<id>`。 */
 export const CLI_TOOLS = Object.freeze([
@@ -9,12 +9,16 @@ export const CLI_TOOLS = Object.freeze([
   Object.freeze({ id: 'agy', label: 'agy', keywords: Object.freeze(['antigravity']) }),
   Object.freeze({ id: 'qwen', label: 'Qwen', keywords: Object.freeze(['alibaba', 'qianwen', 'tongyi']) }),
   Object.freeze({ id: 'mimo', label: 'MiMo Code', keywords: Object.freeze(['mimocode', 'xiaomi']) }),
+  // 命令名与显示名都用 `cmd`（CLI 自己的帮助写的是 `Usage: cmd <command>`）：
+  // 用户明确要求菜单里跟命令行一致，别拿产品名 "Command Code" 显示回去。
+  Object.freeze({ id: 'cmd', label: 'cmd', keywords: Object.freeze(['command-code', 'commandcode', 'cmdc']) }),
 ]);
 
 export const CLI_TOOL_IDS = Object.freeze(CLI_TOOLS.map(tool => tool.id));
 
+/** 同一家的其它命令名（历史布局、用户手敲）都归到登记 id；别名表在 session-restore-utils。 */
 export function isKnownCliTool(commandOrName) {
-  return CLI_TOOL_IDS.includes(cliToolName(commandOrName));
+  return CLI_TOOL_IDS.includes(normalizeCliToolName(commandOrName));
 }
 
 export function normalizeInstalledCliIds(raw, allowed = CLI_TOOL_IDS) {
@@ -22,7 +26,7 @@ export function normalizeInstalledCliIds(raw, allowed = CLI_TOOL_IDS) {
   const seen = new Set();
   const ids = [];
   for (const value of Array.isArray(raw) ? raw : []) {
-    const id = cliToolName(value);
+    const id = normalizeCliToolName(value);
     if (!allow.has(id) || seen.has(id)) continue;
     seen.add(id);
     ids.push(id);

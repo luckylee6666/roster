@@ -3,9 +3,12 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+  cliCommandName,
   cliToolName,
   extractResumedSessionId,
   isGenericContinueCommand,
+  normalizeCliToolName,
+  prefersExactResume,
   restoreSessionLayout,
   restoredCliCommand,
   launchCliCommand,
@@ -157,10 +160,26 @@ test('只持久化后端创建成功、可在下次恢复的终端标签', () =>
 
 test('主流程调用可测试的恢复编排', async () => {
   const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.match(main, /await restoreSessionLayout\(layout, options => createSession/);
+  assert.match(main, /await restoreSessionLayout\(layout, async options => \{/);
+  assert.match(main, /await resumeCommandForRestoredTab\(options\.cwd, options\.autoCmd\)/);
   assert.match(main, /projectTabName\(options\.cwd, options\.name\)/);
   assert.match(main, /Codex 标签会按项目目录续接最近一次对话/);
   assert.match(main, /Grok 标签会用 --continue 接上次对话/);
+});
+
+test('恢复标签先查磁盘历史再拼续接命令，拿不到就开新会话', async () => {
+  const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const body = main.slice(
+    main.indexOf('async function resumeCommandForRestoredTab('),
+    main.indexOf('// ===== Prompt/Snippet 库'),
+  );
+  assert.ok(body.length > 0, '恢复续接命令的编排必须在 main.js 里可测');
+  // 精确续接原样保留
+  assert.match(body, /if \(extractResumedSessionId\(trimmed\)\) return trimmed/);
+  // 没有历史时不能补 --continue，而是开新会话
+  assert.match(body, /return last\?\.id \? launchCliCommand\(tool, last\.id\) : cliCommandName\(tool\)/);
+  assert.match(body, /await loadProjectSessionHistory\(cwd\)/);
+  assert.match(body, /latestHistorySession\(groups, tool\)/);
 });
 
 test('Qwen 续接：--resume 指定会话，--continue 视为通用续接', () => {
@@ -186,4 +205,39 @@ test('MiMo Code 续接：--session 指定会话，--continue 续最近会话', (
   assert.equal(restoredCliCommand('mimo'), 'mimo --continue');
   assert.equal(restoredCliCommand('mimo --session s-1'), 'mimo --session s-1');
   assert.equal(restoredCliCommand('mimo --session=s-1'), 'mimo --session=s-1');
+});
+
+test('Command Code 续接：命令名是 cmd，恢复标签不盲目补 --continue', () => {
+  assert.equal(resumeCliCommand('cmd', 's-1'), 'cmd --session s-1');
+  assert.equal(launchCliCommand('cmd', ''), 'cmd');
+  assert.equal(extractResumedSessionId('cmd --session s-1'), 's-1');
+  assert.equal(extractResumedSessionId('cmd -r s-2'), 's-2');
+  assert.equal(extractResumedSessionId('cmd --resume s-3'), 's-3');
+  assert.equal(extractResumedSessionId('cmd --session'), '');
+  assert.equal(isGenericContinueCommand('cmd --continue'), true);
+  assert.equal(isGenericContinueCommand('cmd -c'), true);
+  assert.equal(isGenericContinueCommand('cmd --session s-1'), false);
+  // `--continue` 只认交互会话，扑空会让 CLI 直接退出；恢复路径改用精确 ID 续，
+  // 所以这里原样返回（见 session-restore-utils 里 prefersExactResume 的说明）。
+  assert.equal(restoredCliCommand('cmd'), 'cmd');
+  assert.equal(restoredCliCommand('cmd --continue'), 'cmd --continue');
+  assert.equal(restoredCliCommand('cmd --session s-1'), 'cmd --session s-1');
+  assert.equal(restoredCliCommand('cmd --session=s-1'), 'cmd --session=s-1');
+  assert.equal(restoredCliCommand('cmd --resume s-1'), 'cmd --resume s-1');
+  assert.equal(restoredCliCommand('cmd -c'), 'cmd -c');
+  assert.equal(prefersExactResume('cmd'), true);
+  assert.equal(prefersExactResume('claude'), false);
+});
+
+test('Command Code 的命令名与别名：Windows 用 cmdc，旧写法归到 cmd', () => {
+  assert.equal(cliCommandName('cmd'), 'cmd');
+  assert.equal(cliCommandName('cmd', true), 'cmdc');
+  // 旧登记名（曾用全名登记过）与 Windows 短名都归到同一个 id。
+  assert.equal(normalizeCliToolName('command-code --continue'), 'cmd');
+  assert.equal(normalizeCliToolName('cmdc'), 'cmd');
+  assert.equal(normalizeCliToolName('commandcode'), 'cmd');
+  // 别名也要能被各条命令识别（历史布局里可能存着旧名）。
+  assert.equal(extractResumedSessionId('command-code --session s-9'), 's-9');
+  assert.equal(isGenericContinueCommand('cmdc --continue'), true);
+  assert.equal(cliCommandName('claude', true), 'claude');
 });

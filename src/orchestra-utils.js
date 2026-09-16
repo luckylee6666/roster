@@ -1,4 +1,4 @@
-import { cliToolName } from './session-restore-utils.js';
+import { normalizeCliToolName } from './session-restore-utils.js';
 import { CLI_TOOLS, CLI_TOOL_IDS } from './cli-tools.js';
 
 export const ORCHESTRA_KIT = Object.freeze([...CLI_TOOL_IDS]);
@@ -19,7 +19,7 @@ const ALLOWED_FILES = new Set([
 ]);
 
 export function normalizeOrchestraTool(tool) {
-  const name = cliToolName(tool);
+  const name = normalizeCliToolName(tool);
   return ORCHESTRA_KIT.includes(name) ? name : '';
 }
 
@@ -112,7 +112,7 @@ function headingForTool(tool) {
 }
 
 export function orchestraToolLabel(tool) {
-  const raw = cliToolName(tool);
+  const raw = normalizeCliToolName(tool);
   return CLI_TOOL_LABELS.get(raw) || raw;
 }
 
