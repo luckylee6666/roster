@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.7.0
+
+### English
+
+**Added**
+- Command Code (`cmd`) gains an opt-in full-access mode, added at the user's request. In the conversation workspace the mode picker now offers「完全访问」next to the default read-only mode; that turn runs `cmd --yolo` instead of `--permission-mode plan`. In Developer mode, right-clicking the `cmd` badge on a project card opens a small menu that can start the terminal with `--yolo` as well. The default entry in both places is always the plain command (no bypass flags), the option is never the default, it is styled as dangerous, and tabs started with a bypass keep their badge red with an explanatory title.
+
+### 中文
+
+**新增**
+- Command Code（`cmd`）新增用户点名要求的「完全访问」档。对话工作台的档位选择器在默认的只读档旁边多出「完全访问」：选中后那一轮跑 `cmd --yolo` 而不是 `--permission-mode plan`。开发模式下**右键项目卡片上的 `cmd` 色标**会弹出小菜单，可以直接用 `--yolo` 启动终端。两处的默认项永远是不带绕过参数的裸命令，这一档也绝不是默认档，界面按危险档配色，以绕过参数启动的标签徽标保持红色并带说明 title。
+
 ## v1.6.1
 
 ### English

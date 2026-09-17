@@ -176,8 +176,9 @@ test('恢复标签先查磁盘历史再拼续接命令，拿不到就开新会�
   assert.ok(body.length > 0, '恢复续接命令的编排必须在 main.js 里可测');
   // 精确续接原样保留
   assert.match(body, /if \(extractResumedSessionId\(trimmed\)\) return trimmed/);
-  // 没有历史时不能补 --continue，而是开新会话
-  assert.match(body, /return last\?\.id \? launchCliCommand\(tool, last\.id\) : cliCommandName\(tool\)/);
+  // 没有历史时不能补 --continue，而是开新会话；启动变体（--yolo）要一起带过去
+  assert.match(body, /return `\$\{last\?\.id \? launchCliCommand\(tool, last\.id\) : cliCommandName\(tool\)\}\$\{suffix\}`/);
+  assert.match(body, /const variant = cliLaunchVariants\(tool\)\.find\(item => trimmed\.includes\(item\.args\)\)/);
   assert.match(body, /await loadProjectSessionHistory\(cwd\)/);
   assert.match(body, /latestHistorySession\(groups, tool\)/);
 });

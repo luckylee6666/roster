@@ -639,13 +639,75 @@ function cardCliButtonsHtml(project) {
   const last = normalizeCliToolName(getProjectActivity(project?.id)?.cli);
   return installedCliTools(installedCliIds).map(tool => {
     const recent = tool.id === last;
-    return `<button type="button" class="card-cli-btn${recent ? ' is-recent' : ''}" data-cmd="${escAttr(tool.id)}" title="打开 ${escAttr(tool.label)}，续上一次会话">`
+    const variants = cliLaunchVariants(tool.id);
+    const hint = variants.length
+      ? `；右键可选${variants.map(item => item.label).join('、')}`
+      : '';
+    return `<button type="button" class="card-cli-btn${recent ? ' is-recent' : ''}" data-cmd="${escAttr(tool.id)}"${variants.length ? ' data-variants="1"' : ''} title="打开 ${escAttr(tool.label)}，续上一次会话${escAttr(hint)}">`
       + `<span class="term-tab-tool tool-${esc(tool.id)}">${esc(tool.id)}</span>`
       + `</button>`;
   }).join('');
 }
 
+/** 这家 CLI 除默认之外的启动档（登记表的 launchVariants）；没有就空数组。 */
+function cliLaunchVariants(toolId) {
+  const tool = CLI_TOOLS.find(item => item.id === normalizeCliToolName(toolId));
+  return Array.isArray(tool?.launchVariants) ? tool.launchVariants : [];
+}
+
+let cliLaunchMenuEl = null;
+
+function closeCliLaunchMenu() {
+  if (!cliLaunchMenuEl) return;
+  cliLaunchMenuEl.remove();
+  cliLaunchMenuEl = null;
+  document.removeEventListener('mousedown', onCliLaunchMenuOutside, true);
+  document.removeEventListener('keydown', onCliLaunchMenuKey, true);
+  window.removeEventListener('blur', closeCliLaunchMenu);
+}
+
+function onCliLaunchMenuOutside(event) {
+  if (cliLaunchMenuEl && !cliLaunchMenuEl.contains(event.target)) closeCliLaunchMenu();
+}
+
+function onCliLaunchMenuKey(event) {
+  if (event.key !== 'Escape') return;
+  event.stopPropagation();
+  closeCliLaunchMenu();
+}
+
+/** 卡片色标右键：选这一档的启动方式。默认那项永远不带绕过参数。 */
+function openCliLaunchMenu(project, toolId, x, y) {
+  closeCliLaunchMenu();
+  const tool = CLI_TOOLS.find(item => item.id === normalizeCliToolName(toolId)) || { id: toolId, label: toolId };
+  const variants = cliLaunchVariants(tool.id);
+  if (!variants.length) return;
+  const items = [{ label: `以默认方式打开 ${tool.label}`, args: '', danger: false }].concat(variants);
+  const menu = document.createElement('div');
+  menu.className = 'cli-launch-menu';
+  menu.innerHTML = items
+    .map(item => `<button type="button" class="cli-launch-item${item.danger ? ' is-danger' : ''}" data-args="${escAttr(item.args)}">${esc(item.label)}</button>`)
+    .join('');
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+  menu.querySelectorAll('.cli-launch-item').forEach(btn => {
+    btn.onclick = () => {
+      const args = btn.dataset.args;
+      closeCliLaunchMenu();
+      void openTerminal(project, args ? `${tool.id} ${args}` : tool.id);
+    };
+  });
+  cliLaunchMenuEl = menu;
+  document.addEventListener('mousedown', onCliLaunchMenuOutside, true);
+  document.addEventListener('keydown', onCliLaunchMenuKey, true);
+  window.addEventListener('blur', closeCliLaunchMenu);
+}
+
 function paintCardCliRows() {
+  // 卡片重绘时收掉可能还开着的启动档菜单，免得菜单指向已被替换的按钮。
+  closeCliLaunchMenu();
   document.querySelectorAll('.card-cli-row[data-cli-id]').forEach(row => {
     const project = projects.find(item => item.id === row.dataset.cliId);
     if (!project) return;
@@ -654,6 +716,12 @@ function paintCardCliRows() {
       btn.onclick = event => {
         event.stopPropagation();
         void openTerminal(project, btn.dataset.cmd);
+      };
+      btn.oncontextmenu = event => {
+        if (!cliLaunchVariants(btn.dataset.cmd).length) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openCliLaunchMenu(project, btn.dataset.cmd, event.clientX, event.clientY);
       };
     });
   });
@@ -2657,8 +2725,11 @@ async function openTerminal(p, cmd) {
       } catch (_) {
         history = { groups: [] };
       }
+      // 启动变体（如 cmd 的 --yolo）只可能来自卡片右键菜单，追加在续接参数后面；
+      // 左键的默认路径永远不带绕过参数。
+      const variant = cliLaunchVariants(tool).find(item => String(cmd).includes(item.args));
       const launch = launchCommandForProjectTool(tool, history.groups);
-      const autoCmd = launch.autoCmd || cliCommandName(tool);
+      const autoCmd = `${launch.autoCmd || cliCommandName(tool)}${variant ? ` ${variant.args}` : ''}`;
       recordProjectActivity(p.id, autoCmd);
       await createSession({
         cwd: p.localPath,
@@ -4030,6 +4101,9 @@ async function resumeCommandForRestoredTab(cwd, toolCommand) {
   if (!tool || !prefersExactResume(tool)) return restoredCliCommand(trimmed);
   // 布局里已经是精确续接（--session/--resume）就原样用；`--continue` 不可信，重算。
   if (extractResumedSessionId(trimmed)) return trimmed;
+  // 启动变体（如 cmd 的 --yolo）是用户当时选的档，重算续接命令时必须留住。
+  const variant = cliLaunchVariants(tool).find(item => trimmed.includes(item.args));
+  const suffix = variant ? ` ${variant.args}` : '';
   let groups = [];
   try {
     const history = await loadProjectSessionHistory(cwd);
@@ -4038,7 +4112,7 @@ async function resumeCommandForRestoredTab(cwd, toolCommand) {
     groups = [];
   }
   const last = latestHistorySession(groups, tool);
-  return last?.id ? launchCliCommand(tool, last.id) : cliCommandName(tool);
+  return `${last?.id ? launchCliCommand(tool, last.id) : cliCommandName(tool)}${suffix}`;
 }
 
 // ===== Prompt/Snippet 库：常用指令一键注入当前终端 =====
@@ -6410,6 +6484,8 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   bodyEl.className = 'term-body';
   bodyEl.dataset.id = id;
   const toolName = (autoCmd || '').trim().split(/\s+/)[0] || '';
+  // 以绕过权限启动的标签要在界面上看得出来：徽标转 danger 配色并带 title。
+  const fullAccess = /(^|\s)--yolo(\s|$)|--dangerously-skip-permissions/.test(autoCmd || '');
   const paneHeadEl = document.createElement('div');
   paneHeadEl.className = 'term-pane-head';
   paneHeadEl.innerHTML =
@@ -6430,7 +6506,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
   tabEl.dataset.id = id;
   // 徽标只显示工具名（命令首词），不显示参数——否则恢复命令会整条塞进徽标
   const toolBadge = toolName
-    ? `<span class="term-tab-tool tool-${escAttr(toolName)}">${esc(toolName)}</span>`
+    ? `<span class="term-tab-tool tool-${escAttr(toolName)}${fullAccess ? ' is-full-access' : ''}"${fullAccess ? ' title="以完全访问启动（--yolo）：不再逐条确认"' : ''}>${esc(toolName)}</span>`
     : '';
   tabEl.innerHTML =
     `<span class="term-tab-dot"></span>` +

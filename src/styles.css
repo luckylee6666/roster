@@ -1049,6 +1049,52 @@ body {
   background: var(--blue-bg);
 }
 
+/* 卡片色标右键：选这一档的启动方式（默认 / 完全访问）。 */
+.cli-launch-menu {
+  position: fixed;
+  z-index: 1600;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cli-launch-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cli-launch-item:hover {
+  background: var(--bg-1);
+}
+
+.cli-launch-item.is-danger {
+  color: #cf1322;
+}
+
+.cli-launch-item.is-danger:hover {
+  background: #fff1f0;
+}
+
+/* 以 --yolo 启动的终端标签：徽标转 danger，别让人忘了它在绕权限。 */
+.term-tab-tool.is-full-access {
+  color: #cf1322;
+  background: #fff1f0;
+}
+
 /* ===== 项目 Git 状态徽标 ===== */
 .card-git { display: inline-flex; }
 .card-git:empty { display: none; }

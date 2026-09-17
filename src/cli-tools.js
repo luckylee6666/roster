@@ -11,7 +11,16 @@ export const CLI_TOOLS = Object.freeze([
   Object.freeze({ id: 'mimo', label: 'MiMo Code', keywords: Object.freeze(['mimocode', 'xiaomi']) }),
   // 命令名与显示名都用 `cmd`（CLI 自己的帮助写的是 `Usage: cmd <command>`）：
   // 用户明确要求菜单里跟命令行一致，别拿产品名 "Command Code" 显示回去。
-  Object.freeze({ id: 'cmd', label: 'cmd', keywords: Object.freeze(['command-code', 'commandcode', 'cmdc']) }),
+  // `launchVariants`：卡片上右键这个色标可以选"用哪一档启动"。默认永远是不带
+  // 任何绕过参数的裸命令；`--yolo` 是用户点名要的完全访问档，只能手动选。
+  Object.freeze({
+    id: 'cmd',
+    label: 'cmd',
+    keywords: Object.freeze(['command-code', 'commandcode', 'cmdc']),
+    launchVariants: Object.freeze([
+      Object.freeze({ label: '完全访问（--yolo）', args: '--yolo', danger: true }),
+    ]),
+  }),
 ]);
 
 export const CLI_TOOL_IDS = Object.freeze(CLI_TOOLS.map(tool => tool.id));

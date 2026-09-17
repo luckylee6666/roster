@@ -17,6 +17,9 @@
 //!      Shift+Tab 环里；
 //!    - Claude 的 `bypassPermissions` 不收——它不在 Claude 的 Shift+Tab 环里，
 //!      要靠 `--dangerously-skip-permissions` 才能进去。
+//!    - Command Code 的 bypass（`--yolo`）按同一条判据本来也不该收（它只出现在
+//!      启动参数上），是**用户本人点名要求**才收的例外，理由与规格写在
+//!      `COMMANDCODE_MODES` 的注释里；Qwen 的 `yolo` 同理。
 //!
 //!    这类档永远不能是默认档：`default_mode` 取第一档，而每家第一档都必须只读。
 
@@ -162,15 +165,26 @@ const AGY_MODES: &[ConversationMode] = &[
 // `print-permission-gate` 钩子，write_file / shell_command 这些会改动的工具一律被拦，
 // 提示 "Use --yolo (or --dangerously-skip-permissions) to enable file writes and shell
 // commands in print mode"。实测 `--permission-mode auto-accept`、`--tools-all`、
-// `--tools-enable write_file` 都放不开，唯一出口是 --yolo——而 Roster 不替各家加
-// 这类绕过参数，也不登记无头下跑不通的档。所以这家的对话只有只读：能读项目、
-// 能调只读工具、能回答，但不落盘、不开 shell。
-const COMMANDCODE_MODES: &[ConversationMode] = &[mode(
-    "plan",
-    "只读计划",
-    "读项目、给方案；这家的无头模式不让改文件",
-    false,
-)];
+// `--tools-enable write_file` 都放不开，唯一出口是 `--yolo`。所以这家的对话默认
+// 只有只读档；写入档是用户点名要求收的例外（见下面那个 `yolo` 档的注释）。
+const COMMANDCODE_MODES: &[ConversationMode] = &[
+    mode(
+        "plan",
+        "只读计划",
+        "读项目、给方案；这家的无头模式不让改文件",
+        false,
+    ),
+    // 用户点名要求收的例外：CLI 的模式集里有 bypass（它自己显示成 "yolo (bypass
+    // permissions)"），但 shift+tab 环只在启动时带了 `--yolo` 才会走到它——按收录
+    // 判据这属于"藏在警告性启动参数后面"，跟 Claude 的 bypassPermissions 同类。
+    // 收它的唯一理由是用户本人要求（同 Codex「完全访问权限」、Grok「始终批准」）。
+    // 因此：绝不做默认档、前端 danger 配色、启动写 log_warn 留痕。
+    unsandboxed_mode(
+        "yolo",
+        "完全访问",
+        "不再逐条确认工具调用；可改文件、可跑命令，只在信任的任务上用",
+    ),
+];
 
 // OpenCode 与 MiMo 的 plan / build 都是真实存在的 primary agent（`<cli> agent list`
 // 可列出），且 plan 的只读是**权限层**的硬禁令而非提示词：源码里
@@ -266,8 +280,13 @@ mod tests {
         // 判据是"这家 CLI 自己就把它摆在用户面前"：出现在它自己的模式环里算，
         // 藏在警告性启动参数后面的不算。所以 Grok 的 Always-Approve（在它的
         // Shift+Tab 环里）收，Claude 的同名档（要 --dangerously-skip-permissions
-        // 才进得去）不收。放宽这张表之前，先确认那一档真在该产品的档位选择里。
-        const ALWAYS_APPROVE: &[(&str, &str)] = &[("grok", "bypassPermissions"), ("qwen", "yolo")];
+        // 才进得去）不收。放宽这张表之前，先确认那一档真在该产品的档位选择里，
+        // 或者用户本人点名要求（Command Code 的「完全访问」就是后者，见模式表）。
+        const ALWAYS_APPROVE: &[(&str, &str)] = &[
+            ("grok", "bypassPermissions"),
+            ("qwen", "yolo"),
+            ("cmd", "yolo"),
+        ];
 
         for provider in [
             "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd",
@@ -345,34 +364,46 @@ mod tests {
     }
 
     #[test]
-    fn commandcode_only_lists_the_read_only_mode_that_runs_headless() {
-        // 它的模式环里确实有 auto-accept，但 print（无头）模式下 CLI 自己挂的
-        // print-permission-gate 会把 write_file / shell_command 全拦下，唯一出口是
-        // --yolo。登记 auto-accept 等于谎报"能改文件"，所以只留 plan 一档。
+    fn commandcode_offers_read_only_by_default_and_a_user_requested_full_access() {
+        // 默认档必须是只读：它的模式环里确实有 auto-accept，但 print（无头）模式下
+        // CLI 自己挂的 print-permission-gate 会把 write_file / shell_command 全拦下，
+        // 写不动的档登记了就是谎报。写入只能走 `--yolo`（bypass），那是用户点名要求
+        // 收的例外，见模式表里的注释。
         let ids = modes_for("cmd")
             .iter()
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["plan"]);
-        assert!(resolve("cmd", "auto-accept").is_err());
+        assert_eq!(ids, vec!["plan", "yolo"]);
+        assert_eq!(default_mode("cmd").id, "plan");
+        assert!(resolve("cmd", "auto-accept").is_err(), "无头下跑不通，不收");
         assert!(resolve("cmd", "default").is_err());
         assert!(resolve("cmd", "standard").is_err());
         assert!(resolve("cmd", "dont-ask").is_err(), "不在它的模式环里");
-        assert!(resolve("cmd", "yolo").is_err());
+        let full = resolve("cmd", "yolo").unwrap();
+        assert!(full.writes && full.unsandboxed);
         let only = default_mode("cmd");
         assert!(!only.writes && !only.unsandboxed);
     }
 
     #[test]
-    fn only_codex_has_an_unsandboxed_mode_and_it_is_never_the_default() {
-        // 无沙箱档只登记各家自己就提供的那一个。改这条之前先想清楚：
+    fn only_user_requested_providers_have_an_unsandboxed_mode_and_it_is_never_the_default() {
+        // 无沙箱档只登记各家自己就提供的那一个，而且必须是用户点名要求收的
+        // （Codex「完全访问权限」、Command Code「完全访问」）。改这条之前先想清楚：
         // 这一档下 CLI 能读写项目以外的文件，也能联网。
-        for provider in ["claude", "grok", "qwen", "agy", "opencode", "mimo", "cmd"] {
+        for provider in ["claude", "grok", "qwen", "agy", "opencode", "mimo"] {
             assert!(
                 modes_for(provider).iter().all(|entry| !entry.unsandboxed),
                 "{provider} 目前不该有无沙箱档"
             );
         }
+        // Command Code 的「完全访问」是用户点名要求收的第二档：它的 bypass 不在
+        // shift+tab 环里，只能靠启动参数 `--yolo` 打开。仍然绝不做默认档。
+        let cmd: Vec<_> = modes_for("cmd")
+            .iter()
+            .filter(|entry| entry.unsandboxed)
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(cmd, vec!["yolo"], "cmd 只有这一个无沙箱档");
         let codex: Vec<_> = modes_for("codex")
             .iter()
             .filter(|entry| entry.unsandboxed)

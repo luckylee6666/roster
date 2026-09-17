@@ -1,20 +1,19 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.6.1 / 本版更新
+## What's new in v1.7.0 / 本版更新
 
 **English**
 
-- **Project shared memory now carries its own convention to the assistant.** Every injected reference block states which store is authoritative (`.memory/`, a link to the Claude project memory), that "update memory" means editing the topic files there, that ordinary conclusions go to `inbox/`, and that the assistant must not fall back to its own CLI's memory (Grok's `memory`, Command Code's `/memory`, Codex's `~/.codex/memories/`). Until now that convention only reached models that happened to read `CLAUDE.md` / `AGENTS.md` themselves, which is why a Command Code session could try to update its own memory instead of the project's.
-- The pointer block written into `CLAUDE.md` / `AGENTS.md` is refreshed with the same rule the next time a project's memory is mounted (existing blocks are replaced, not skipped), and the index template used for new projects carries it too — so new and older projects behave the same.
-- The shared-memory panel wording now says plainly that the assistant writes those files rather than its own CLI memory.
+- **Command Code (`cmd`) can now be started with full access, as an explicit opt-in.** In the conversation workspace the mode picker offers「完全访问」next to the default read-only mode; that turn runs `cmd --yolo` instead of `--permission-mode plan`, so it can edit files and run commands without asking. In Developer mode, **right-click the `cmd` badge on a project card** to pick a launch mode — the default entry or `--yolo`.
+- The bypass is never automatic: the default entry in both places is the plain command, the mode is never the default, it is styled as dangerous, and a terminal started with a bypass keeps a red badge with an explanatory tooltip. Restoring the tab layout keeps the `--yolo` choice instead of silently dropping it.
+- Background: Command Code's headless mode blocks file writes and shell commands unless its built-in `--yolo` bypass is passed, and that bypass is not part of the CLI's own Shift+Tab mode ring. Roster normally refuses to add bypass flags on its own; this mode exists because the user asked for it, and is registered with the same rules as Codex's「完全访问权限」and Grok's「始终批准」.
 
 **中文**
 
-- **项目共享记忆现在把约定直接交给助手**：每次注入的参考资料都会说明正本是 `.memory/`（指向 Claude 项目记忆的链接）、「更新记忆」指改那里的专题文件、平时的结论写 `inbox/`，并明确不允许改用助手自己 CLI 的记忆（Grok 的 `memory`、Command Code 的 `/memory`、Codex 的 `~/.codex/memories/`）。此前这条约定只能靠模型自己去读 `CLAUDE.md` / `AGENTS.md`，所以才会有 Command Code 会话想着去更新它自己的记忆。
-- 写进 `CLAUDE.md` / `AGENTS.md` 的指针块会在该项目下次挂载记忆时被替换成同一套规则（原有块是替换而非跳过），新建项目的索引模板也带这条——新老项目行为一致。
-- 面板文案同步说清：助手写的是那些文件，而不是它自己 CLI 的记忆。
-
+- **Command Code（`cmd`）现在可以显式选择「完全访问」启动。** 对话工作台的档位选择器在默认的只读档旁边多出「完全访问」，选中后那一轮跑 `cmd --yolo` 而不是 `--permission-mode plan`，可以改文件、跑命令而不再逐条确认；开发模式下**右键项目卡片上的 `cmd` 色标**即可选择启动档（默认项或 `--yolo`）。
+- 绕过权限永远不会自动发生：两处的默认项都是不带绕过参数的裸命令，这一档也绝不是默认档，界面按危险档配色；以绕过参数启动的终端标签保持红色徽标并带说明 title。恢复标签布局时 `--yolo` 会被保留，不会悄悄丢掉。
+- 背景：Command Code 的无头模式自己会拦下文件写入与 shell 命令，除非传它内置的 `--yolo`，而这个旗标并不在它自己的 Shift+Tab 模式环里。Roster 平时不会自己补绕过参数，这一档是按用户要求加的，登记规格与 Codex 的「完全访问权限」、Grok 的「始终批准」一致。
 
 ## Upgrade / 升级
 

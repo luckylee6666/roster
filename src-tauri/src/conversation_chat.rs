@@ -1164,7 +1164,15 @@ fn provider_command_with_slash(
         "cmd" => {
             // `-p`/`--print` 的 NDJSON：事件流 + 末尾 result 行，一轮一个进程，
             // 靠 `--session <id>` 续接（它的 `-p` 会话不进 `--continue` 的候选）。
-            command.args(["--output-format", "json", "--permission-mode", mode.id]);
+            command.args(["--output-format", "json"]);
+            // 只读档走它自己的 `--permission-mode plan`；「完全访问」档对应 CLI 的
+            // bypass，而 bypass 只能靠 `--yolo` 打开（`--permission-mode` 的合法取值
+            // 里没有它）。这档是用户点名要求收的，启动留痕由上面的 log_warn 负责。
+            if mode.id == "yolo" {
+                command.arg("--yolo");
+            } else {
+                command.args(["--permission-mode", mode.id]);
+            }
             // 别让它自己静默升级（实测会在跑的过程中从 1.53.1 升到 1.54.0）；
             // 这是给自动化跑的会话，也不要 taste 引导流程。
             command.args(["--no-auto-update", "--skip-onboarding"]);
@@ -2120,6 +2128,8 @@ mod tests {
         }
 
         // 传下去的永远是模式表里的原生取值，不是 Roster 自己编的词。
+        // 多数 CLIs 用「值」表达档位（`--permission-mode plan`），少数用旗标本身
+        // 表达（Command Code 的 bypass 只能写成 `--yolo`），两种都算原生形式。
         for id in ["claude", "qwen", "agy", "cmd"] {
             let spec = provider_spec(id).unwrap();
             for mode in crate::conversation_modes::modes_for(id) {
@@ -2139,7 +2149,8 @@ mod tests {
                     .map(|arg| arg.to_string_lossy().into_owned())
                     .collect::<Vec<_>>();
                 assert!(
-                    args.iter().any(|arg| arg == mode.id),
+                    args.iter()
+                        .any(|arg| arg == mode.id || *arg == format!("--{}", mode.id)),
                     "{id} 的 {} 模式没有原样传下去",
                     mode.id
                 );
@@ -2806,8 +2817,7 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--output-format", "json"]));
-        // 这家只有一个档：无头下写入被它自己的 print-permission-gate 拦下，
-        // 所以永远只传 plan，绝不落到要人点批准的 default。
+        // 默认（只读）档走它自己的 --permission-mode plan，绝不落到要人点批准的 default。
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--permission-mode", "plan"]));
@@ -2829,6 +2839,26 @@ mod tests {
         assert!(dashed
             .get_args()
             .any(|arg| arg.to_string_lossy() == "--print=- 先看 README"));
+
+        // 「完全访问」档（用户点名收的例外）：切到 CLI 的 bypass，用 `--yolo`，
+        // 不能再传 --permission-mode（它的合法取值里没有 bypass）。
+        let full = provider_command(
+            spec,
+            PathBuf::from("/bin/echo"),
+            Path::new("/tmp/proj"),
+            "改一下这个文件",
+            "",
+            true,
+            "",
+            "",
+        );
+        let full_args = full
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(full_args.iter().any(|arg| arg == "--yolo"));
+        assert!(!full_args.iter().any(|arg| arg == "--permission-mode"));
+        assert!(full_args.iter().any(|arg| arg == "--print=改一下这个文件"));
 
         // 续接：`-p` 的会话不进 `--continue` 的候选，必须带精确 ID。
         let resumed = provider_command(
