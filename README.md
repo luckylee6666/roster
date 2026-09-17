@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.6.0** — Command Code (`cmd`) joins as the eighth CLI: Developer-mode launch, on-disk session history, cross-CLI handoff, a read-only conversation adapter, and a usage-panel tab. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.6.1** — project shared memory now tells the assistant its convention (authoritative `.memory/` store, where "update memory" goes, and that CLI-native memories are off-limits), so assistants stop updating their own memory instead. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 

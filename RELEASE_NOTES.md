@@ -1,23 +1,19 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.6.0 / 本版更新
+## What's new in v1.6.1 / 本版更新
 
 **English**
 
-- **Command Code (`cmd`) joins as the eighth CLI** — the project card can launch it in Developer mode, its on-disk sessions (list / preview / delete) join the history rail and cross-CLI handoff, and the conversation workspace runs it as another assistant. The command name, menu label and tab badge all read `cmd` (`cmdc` on Windows, where `cmd` is the system shell); the earlier `command-code` spelling remains an alias.
-- Command Code conversations are **read-only**: that CLI's own print mode blocks file writes and shell commands unless its `--yolo` bypass is passed, and Roster never adds bypass flags, so the mode picker offers only its `plan` mode — use Developer mode when you want it to edit files. Each turn is one `cmd --print=… --output-format json` process (the fourth protocol, NDJSON) and is resumed with `--session <id>`; `/model` and `/effort` are wired to its own catalog.
-- The usage panel gains a **cmd tab**: it reads the key from that CLI's own `~/.commandcode/auth.json`, calls the official billing endpoints and shows the 5-hour / weekly windows, the plan and the period's credit balance. A custom `COMMANDCODE_API_URL` is skipped, the key is never stored or logged, and a failed refresh falls back to a clearly labelled cached snapshot.
-- Restoring a Command Code terminal no longer appends `--continue` (that flag only resumes interactive conversations, so a headless session made the CLI exit into a dead shell): the newest on-disk session for the project is resumed by exact id, or a fresh session is started when there is none.
-- Its session history re-verifies project ownership from each transcript's header `cwd` and only lists files whose name matches the header id, so a stray file can no longer make a delete reach outside the session.
+- **Project shared memory now carries its own convention to the assistant.** Every injected reference block states which store is authoritative (`.memory/`, a link to the Claude project memory), that "update memory" means editing the topic files there, that ordinary conclusions go to `inbox/`, and that the assistant must not fall back to its own CLI's memory (Grok's `memory`, Command Code's `/memory`, Codex's `~/.codex/memories/`). Until now that convention only reached models that happened to read `CLAUDE.md` / `AGENTS.md` themselves, which is why a Command Code session could try to update its own memory instead of the project's.
+- The pointer block written into `CLAUDE.md` / `AGENTS.md` is refreshed with the same rule the next time a project's memory is mounted (existing blocks are replaced, not skipped), and the index template used for new projects carries it too — so new and older projects behave the same.
+- The shared-memory panel wording now says plainly that the assistant writes those files rather than its own CLI memory.
 
 **中文**
 
-- **新增第八家 CLI Command Code（`cmd`）** — 项目卡片可在开发模式直接启动，磁盘会话（列表/预览/删除）并入历史侧栏与跨 CLI 交接，对话工作台也多了一家助手。命令名、菜单显示名与标签徽标统一是 `cmd`（Windows 上用 `cmdc`，`cmd` 是系统 shell）；旧的 `command-code` 写法保留为别名。
-- 它的对话是**只读**的：该 CLI 自己的 print 模式会拦下文件写入与 shell 命令，除非传内置 `--yolo` 绕过，而 Roster 从不添加这类参数，所以档位选择器只有 `plan` 一档——需要它改文件请用开发模式。每轮跑一个 `cmd --print=… --output-format json` 进程（第四种协议 NDJSON），续接用 `--session <id>`；`/model` 与 `/effort` 接它自己的目录。
-- 用量面板新增 **cmd 档**：读它自己 `~/.commandcode/auth.json` 里的 key，调官方接口显示 5 小时 / 每周窗口、计划档位与本期额度余额。自定义 `COMMANDCODE_API_URL` 直接跳过；key 不落盘、不打印，查询失败会回退到明确标记的缓存快照。
-- 恢复 Command Code 终端不再补 `--continue`（该参数只认交互会话，无头会话会让 CLI 直接退出、标签变成死 shell）：改为按磁盘上最新会话的精确 ID 续接，没有会话才新开。
-- 它的会话历史一律用文件首行 header 的 `cwd` 复核项目归属，且只列出文件名与 header id 一致的文件——不让一个名字异常的会话把删除操作带出会话目录。
+- **项目共享记忆现在把约定直接交给助手**：每次注入的参考资料都会说明正本是 `.memory/`（指向 Claude 项目记忆的链接）、「更新记忆」指改那里的专题文件、平时的结论写 `inbox/`，并明确不允许改用助手自己 CLI 的记忆（Grok 的 `memory`、Command Code 的 `/memory`、Codex 的 `~/.codex/memories/`）。此前这条约定只能靠模型自己去读 `CLAUDE.md` / `AGENTS.md`，所以才会有 Command Code 会话想着去更新它自己的记忆。
+- 写进 `CLAUDE.md` / `AGENTS.md` 的指针块会在该项目下次挂载记忆时被替换成同一套规则（原有块是替换而非跳过），新建项目的索引模板也带这条——新老项目行为一致。
+- 面板文案同步说清：助手写的是那些文件，而不是它自己 CLI 的记忆。
 
 
 ## Upgrade / 升级

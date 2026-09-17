@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.6.1
+
+### English
+
+**Fixed**
+- Project shared memory now states its own convention in the injected reference block: which store is authoritative (`.memory/`, a link to the Claude project memory), where to write when the user says "update memory" (the topic files) and where ordinary conclusions go (`inbox/`), and that the assistant must not fall back to its own CLI's memory (Grok's `memory`, Command Code's `/memory`, Codex's `~/.codex/memories/`). The pointer block written into `CLAUDE.md` / `AGENTS.md` and the seeded index template carry the same rule, and the shared-memory panel says it plainly.
+
+### 中文
+
+**修复**
+- 项目共享记忆把自己的约定写进了注入的参考资料块：正本在 `.memory/`（指向 Claude 项目记忆的链接）、用户说「更新记忆」时改专题文件、平时的结论写 `inbox/`，并明确不允许改用助手自己 CLI 的记忆（Grok 的 `memory`、Command Code 的 `/memory`、Codex 的 `~/.codex/memories/`）。应用写进 `CLAUDE.md` / `AGENTS.md` 的指针块与新建索引模板同步这条规则，面板文案也直说了。
+
 ## v1.6.0
 
 ### English

@@ -7,7 +7,7 @@ pub const WORKSPACE_MEMORY_LINK: &str = ".memory";
 pub const MEMORY_POINTER_START: &str = "<!-- vibe-memory -->";
 pub const MEMORY_POINTER_END: &str = "<!-- /vibe-memory -->";
 const MEMORY_GITIGNORE_COMMENT: &str = "# Roster — 项目记忆窗口";
-const MEMORY_POINTER_BODY: &str = "长期记忆只在 `.memory/`（指向 Claude 项目记忆，不进 Git）。\n读：先看 `.memory/MEMORY.md`。写：用户说「更新记忆」时改专题；否则写入 `.memory/inbox/`。\n不要把记忆写进本文件或仓库里的 `memory/`。";
+const MEMORY_POINTER_BODY: &str = "长期记忆只在 `.memory/`（指向 Claude 项目记忆，不进 Git）。\n读：先看 `.memory/MEMORY.md`。写：用户说「更新记忆」时改专题；否则写入 `.memory/inbox/`。\n不要把记忆写进本文件或仓库里的 `memory/`，也不要用你自己 CLI 自带的记忆功能（Grok 的 `memory`、Command Code 的 `/memory`、Codex 的 `~/.codex/memories/` 都不是本项目记忆）。";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -276,7 +276,7 @@ fn index_preview(markdown: &str) -> String {
 
 fn seed_memory_index() -> String {
     format!(
-        "# 项目记忆索引\n\n正本在本目录。工作区里的 `{WORKSPACE_MEMORY_LINK}` 只是指向这里的窗口，不要在仓库另建 `memory/`。\n\n- 读：先看本索引，再打开专题\n- 写：只有用户说「更新记忆」时改专题；否则写入 `inbox/`\n- 不要把记忆写进仓库的 `CLAUDE.md` / `AGENTS.md`\n"
+        "# 项目记忆索引\n\n正本在本目录。工作区里的 `{WORKSPACE_MEMORY_LINK}` 只是指向这里的窗口，不要在仓库另建 `memory/`。\n\n- 读：先看本索引，再打开专题\n- 写：只有用户说「更新记忆」时改专题；否则写入 `inbox/`\n- 不要把记忆写进仓库的 `CLAUDE.md` / `AGENTS.md`，也不要用你自己 CLI 自带的记忆功能\n"
     )
 }
 
