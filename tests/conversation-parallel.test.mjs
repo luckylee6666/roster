@@ -242,6 +242,7 @@ function fixture({
   appView,
   history,
   transcript,
+  confirm,
   t,
 } = {}) {
   const byId = new Map(IDS.map(id => [id, new FakeEl(id.endsWith('-select') ? 'select' : 'div')]));
@@ -374,6 +375,7 @@ function fixture({
       return () => {};
     },
     notify: (message, level) => toasts.push({ message, level }),
+    confirm,
     loadHistory: async path => (
       (typeof history === 'function' ? history(path) : history) || { groups: [] }
     ),
@@ -2111,4 +2113,129 @@ test('换助手的瞬间旧额度立刻消失，不等新请求回来', async t 
   fx.pickAssistant('codex');
   assert.equal(usage.hidden, true, '请求未回来时就该清空，而不是留着上一家的');
   assert.equal(usage.textContent, '');
+});
+
+/** 在假 DOM 里按 class 找节点：断言"哪一层挂了哪个 class"用得上。 */
+function findByClass(node, className) {
+  if (!node) return null;
+  if (node.classNames?.has(className)) return node;
+  for (const child of node.childNodes || []) {
+    const hit = findByClass(child, className);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+test('超窗会话点开先确认：确认走同家轮换，取消就不打开', async t => {
+  const over = {
+    sizeBytes: 7_500_196,
+    estTokens: 1_250_033,
+    window: 1_048_576,
+    band: 'over',
+    blocks: true,
+  };
+  const long = { sizeBytes: 4_219_398, estTokens: 703_233, window: 1_048_576, band: 'long' };
+  // 只提示不拦的一家（转录只增日志 + CLI 自己压缩）：点开不该弹确认。
+  const informational = {
+    sizeBytes: 22_532_999,
+    estTokens: 3_755_500,
+    window: 1_000_000,
+    band: 'over',
+    blocks: false,
+  };
+  const history = {
+    groups: [{
+      tool: 'cmd',
+      label: 'cmd',
+      sessions: [
+        { id: 'cmd-huge', title: 'Resume CLI Task', atMs: 300, budget: over },
+        { id: 'cmd-long', title: '比较大的会话', atMs: 200, budget: long },
+      ],
+    }, {
+      tool: 'claude',
+      label: 'Claude',
+      sessions: [{ id: 'claude-huge', title: '很长的 Claude 会话', atMs: 100, budget: informational }],
+    }],
+  };
+  const asks = [];
+  let answer = false;
+  const fx = fixture({
+    projects: [project('a', '项目 A')],
+    installed: ['cmd', 'claude'],
+    history,
+    transcript: [
+      { role: 'user', text: '之前的问题' },
+      { role: 'assistant', text: '之前的回答', tool: 'cmd' },
+    ],
+    confirm: options => { asks.push(options); return Promise.resolve(answer); },
+    t,
+  });
+  await flush();
+  fx.clickProject('a');
+  await flush();
+
+  const rows = fx.el('conversation-history-list').childNodes;
+  assert.equal(rows.length, 3);
+  const hugeChip = findByClass(rows[0], 'conversation-history-budget');
+  const longChip = findByClass(rows[1], 'conversation-history-budget');
+  assert.equal(hugeChip.textContent, '7.2MB', '超窗会话要标出体积');
+  assert.equal(hugeChip.classNames.has('is-over'), true);
+  assert.match(hugeChip.title, /估算 ≈1\.25M tokens/, '徽标说明里必须写明是估算');
+  assert.equal(longChip.textContent, '4.0MB');
+  assert.equal(longChip.classNames.has('is-long'), true);
+  assert.equal(
+    fx.el('conversation-history-state').textContent.includes('没有自动打开'),
+    true,
+    '最近那条超窗会话不该被自动打开',
+  );
+
+  // 先验"只提示不拦"的一家（claude 转录只增日志、自己会压缩）：点开直接续，不弹确认。
+  const claudeRow = rows.find(row => row.childNodes[0]?.dataset?.sessionId === 'claude-huge');
+  assert.ok(claudeRow, 'Claude 那条历史应该在列表里');
+  const claudeChip = findByClass(claudeRow, 'conversation-history-budget');
+  assert.equal(claudeChip.textContent, '21.5MB');
+  assert.equal(claudeChip.classNames.has('is-long'), true, '只提示的家不进红色档');
+  fire(claudeRow.childNodes[0], 'click');
+  await flush();
+  assert.equal(asks.length, 0, '体积超窗但不会被拦的会话不该弹确认');
+  assert.equal(
+    fx.el('conversation-messages').childNodes.length > 0,
+    true,
+    '直接续接要展示这条会话的正文',
+  );
+
+  // 取消：这条会话不打开，一个请求都不发
+  fire(rows[0].childNodes[0], 'click');
+  await flush();
+  assert.equal(asks.length, 1, '超窗会话点开前必须先问一句');
+  assert.equal(asks[0].confirmText, '新会话继续');
+  assert.match(asks[0].message, /估算 ≈1\.25M tokens/);
+  assert.match(asks[0].message, /继续很可能直接失败/);
+  assert.equal(fx.startedRuns().length, 0);
+  assert.equal(fx.el('conversation-history-state').textContent, '已取消打开这条会话');
+
+  // 确认：改成"新会话 + 交接摘要"，旧会话当来源，不续接
+  answer = true;
+  fire(rows[0].childNodes[0], 'click');
+  await flush();
+  assert.equal(asks.length, 2);
+  // 侧栏那行状态文字随后会被历史刷新清掉（普通"打开历史"同款），所以断言留下信号：
+  // 旧会话的正文仍在界面上、交接说明写明是新会话、以及下一条请求的字段。
+  assert.equal(
+    fx.el('conversation-messages').childNodes.length > 0,
+    true,
+    '轮换后仍要展示旧会话的最近对话',
+  );
+  const note = fx.el('conversation-handoff-note');
+  assert.equal(note.hidden, false, '轮换要能看见交接说明');
+  const noteText = note.childNodes.map(node => node.textContent).join(' ');
+  assert.match(noteText, /开一条新的 cmd 会话/);
+  assert.doesNotMatch(noteText, /接手/, '同家轮换不该写成"cmd 接手 cmd"');
+
+  await fx.send('接着做');
+  const runs = fx.startedRuns();
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].threadId, '', '轮换不能把旧会话当续接 ID');
+  assert.equal(runs[0].handoffProviderId, 'cmd');
+  assert.equal(runs[0].handoffSessionId, 'cmd-huge');
 });

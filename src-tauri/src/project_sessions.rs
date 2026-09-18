@@ -3286,6 +3286,44 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// 人工核对：本机真实项目的历史列表里，各家会话的体积与档位是不是按预期算出来的。
+    /// 环境变量：`ROSTER_PROBE_PROJECT`；`ROSTER_PROBE_HOME` 可选（默认真实用户目录）。
+    #[test]
+    #[ignore = "人工核对用：需要本机有该项目的真实历史会话"]
+    fn probe_real_history_budgets() {
+        let Ok(project) = std::env::var("ROSTER_PROBE_PROJECT") else {
+            println!("跳过：没有设置 ROSTER_PROBE_PROJECT");
+            return;
+        };
+        let home = std::env::var("ROSTER_PROBE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs::home_dir().expect("需要用户目录"));
+        let history = list_project_history_with_home(&project, &home);
+        let mut listed = 0;
+        for group in &history.groups {
+            for session in &group.sessions {
+                listed += 1;
+                println!(
+                    "{:<9} {:<24} {:>10} 字节  估算 {:>9} tok  窗口 {:>9}  {}",
+                    group.tool,
+                    session.id.chars().take(24).collect::<String>(),
+                    session.budget.size_bytes,
+                    session.budget.est_tokens,
+                    session.budget.window,
+                    session.budget.band
+                );
+                assert!(
+                    session.budget.size_bytes == 0
+                        || (session.budget.window > 0
+                            && session.budget.band != crate::session_budget::BAND_UNKNOWN),
+                    "{} 拿到了体积却没有档位",
+                    session.id
+                );
+            }
+        }
+        assert!(listed > 0, "本机应该有历史会话可以核对");
+    }
+
     fn temp_home() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");

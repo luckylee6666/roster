@@ -2066,7 +2066,10 @@ mod tests {
         assert!(!prompt.contains("交接给"), "同家轮换不该出现交接给");
         assert!(prompt.contains("现在继续处理用户的新要求："));
         assert!(prompt.len() <= crate::codex_chat::MAX_PROMPT_BYTES);
-        println!("probe: 轮换提示语 {} 字节，来源会话 {session}", prompt.len());
+        println!(
+            "probe: 轮换提示语 {} 字节，来源会话 {session}",
+            prompt.len()
+        );
     }
 
     #[test]

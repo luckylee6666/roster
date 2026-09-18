@@ -34,11 +34,14 @@ export function normalizeSessionBudget(raw) {
     estTokens: count(raw?.estTokens),
     window: count(raw?.window),
     band: String(raw?.band || ''),
+    blocks: raw?.blocks === true,
   };
 }
 
 /**
  * 体积徽标：只有 `long` / `over` 才显示，`ok` 与拿不到体积时返回 null（不制造噪声）。
+ * `over` 但后端没标 `blocks`（这家 CLI 自己会压缩、体积大不等于这一轮装不下）时降成琥珀色，
+ * 红色只留给"续接会直接失败"的那些。
  */
 export function sessionBudgetBadge(raw) {
   const budget = normalizeSessionBudget(raw);
@@ -49,13 +52,32 @@ export function sessionBudgetBadge(raw) {
   const window = formatSessionTokens(budget.window);
   const detail = tokens ? `估算 ≈${tokens} tokens` : '估算值不可用';
   const limit = window ? `登记的窗口 ${window} tokens` : '这家 CLI 没有登记窗口';
-  const title = budget.band === 'over'
-    ? `${size} · ${detail}，已达到${limit}——继续很可能直接失败（上下文超限），建议开新会话`
-    : `${size} · ${detail}，接近${limit}——再长下去会变慢，也可能触发压缩或直接失败`;
-  return { text: size, level: budget.band, title };
+  if (budget.blocks) {
+    return {
+      text: size,
+      level: 'over',
+      title: `${size} · ${detail}，已达到${limit}——继续很可能直接失败（上下文超限），建议开新会话`,
+    };
+  }
+  if (budget.band === 'over') {
+    return {
+      text: size,
+      level: 'long',
+      title: `${size} · ${detail}，已超过${limit}，但这家 CLI 自己会压缩上下文——续接可能变慢，不会因为体积直接失败`,
+    };
+  }
+  return {
+    text: size,
+    level: 'long',
+    title: `${size} · ${detail}，接近${limit}——再长下去会变慢，也可能触发压缩或直接失败`,
+  };
 }
 
-/** 续接前的拦截判据：只有 `over` 才需要拦。 */
-export function sessionBudgetOver(raw) {
-  return normalizeSessionBudget(raw).band === 'over';
+/**
+ * 续接前的拦截判据：只拦后端明确标记 `blocks` 的（`over` 但只提示的不拦）。同时要求 `over`
+ * 档成立——后端不会发出这种组合，这里再挡一道，免得将来字段走样时把能续的会话拦住。
+ */
+export function sessionBudgetBlocks(raw) {
+  const budget = normalizeSessionBudget(raw);
+  return budget.band === 'over' && budget.blocks;
 }

@@ -1,5 +1,5 @@
 import { normalizeProjectMemoryCwd } from './project-memory-utils.js';
-import { sessionBudgetOver } from './session-budget-utils.js';
+import { sessionBudgetBlocks } from './session-budget-utils.js';
 import { normalizeCliToolName, extractResumedSessionId, isGenericContinueCommand, launchCliCommand } from './session-restore-utils.js';
 
 export const DEFAULT_PROJECT_KIT = Object.freeze(['claude', 'codex', 'grok']);
@@ -170,16 +170,17 @@ export function latestHistorySession(groups, tool) {
 }
 
 /**
- * 自动续接要挑还能用的那条：体积越过登记窗口的会话（后端 `over` 档）续接必然换来一次
- * 上下文超限报错，所以往下顺延到最近一条不超窗的。全都超窗时返回 null，
- * 交给调用方开新会话——**不倒退回去硬续一条已知必死的**。
+ * 自动续接要挑还能用的那条：后端标了 `blocks`（体积越过窗口且这家"历史即上下文"）的会话
+ * 续接必然换来一次上下文超限报错，所以往下顺延到最近一条不至于如此。全都如此时返回 null，
+ * 交给调用方开新会话——**不倒退回去硬续一条已知必死的**。只提示不拦的那些家（claude/codex
+ * 等只增日志 + 自己压缩）不在此列，仍然正常续接。
  */
 export function latestResumableHistorySession(groups, tool) {
   const name = String(tool || '').trim();
   if (!name) return null;
   const group = (Array.isArray(groups) ? groups : []).find(item => item?.tool === name);
   const sessions = Array.isArray(group?.sessions) ? group.sessions : [];
-  return sessions.find(session => session?.id && !sessionBudgetOver(session.budget)) || null;
+  return sessions.find(session => session?.id && !sessionBudgetBlocks(session.budget)) || null;
 }
 
 export function launchCommandForProjectTool(tool, historyGroups) {

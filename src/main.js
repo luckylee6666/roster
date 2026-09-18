@@ -24,7 +24,7 @@ import {
   resumeCliCommand,
   sessionLayoutEntries,
 } from './session-restore-utils.js';
-import { sessionBudgetBadge, sessionBudgetOver } from './session-budget-utils.js';
+import { sessionBudgetBadge, sessionBudgetBlocks } from './session-budget-utils.js';
 import {
   DEFAULT_PROJECT_KIT,
   PROJECT_KIT_LAYOUT,
@@ -1163,8 +1163,9 @@ function openHistorySession(project, session) {
     msg('还不支持续接这个工具的历史会话', 'info');
     return;
   }
-  // 体积越过窗口的会话续接必然换来一次上下文超限报错：先问一句，改成新开终端。
-  if (sessionBudgetOver(session.budget)) {
+  // 体积越过窗口、且这家 CLI 的"历史就是下一轮上下文"时续接必然换来一次超限报错：
+  // 先问一句，改成新开终端。只提示不拦的那些家（转录只增日志 + 自己压缩）直接续。
+  if (sessionBudgetBlocks(session.budget)) {
     const badge = sessionBudgetBadge(session.budget);
     const label = CLI_TOOLS.find(item => item.id === normalizeCliToolName(session.tool))?.label || session.tool;
     showConfirm({

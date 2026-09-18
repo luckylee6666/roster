@@ -176,24 +176,31 @@ test('历史点击去重闸只挡窗口内的同一个 key', () => {
   assert.equal(gate.allow('a', 1002), true, 'reset 后同一条立即可再操作');
 });
 
-test('自动续接跳过体积超窗的会话，顺延到最近一条装得下的', () => {
+test('自动续接跳过体积超窗且会被拦的会话，顺延到最近一条装得下的', () => {
   const budgeted = [
     {
       tool: 'cmd',
       label: 'cmd',
       sessions: [
-        { id: 'over', atMs: 30, budget: { sizeBytes: 7_500_196, estTokens: 1_250_033, window: 1_048_576, band: 'over' } },
+        {
+          id: 'over',
+          atMs: 30,
+          budget: { sizeBytes: 7_500_196, estTokens: 1_250_033, window: 1_048_576, band: 'over', blocks: true },
+        },
         { id: 'long', atMs: 20, budget: { sizeBytes: 4_219_398, estTokens: 703_233, window: 1_048_576, band: 'long' } },
         { id: 'small', atMs: 10, budget: { sizeBytes: 1024, estTokens: 170, window: 1_048_576, band: 'ok' } },
       ],
     },
   ];
   assert.equal(latestHistorySession(budgeted, 'cmd').id, 'over', '"最新"仍然是最新');
-  assert.equal(latestResumableHistorySession(budgeted, 'cmd').id, 'long', '超窗的往下顺延一条');
+  assert.equal(latestResumableHistorySession(budgeted, 'cmd').id, 'long', '会被拦的往下顺延一条');
   assert.equal(
-    latestResumableHistorySession([{ tool: 'cmd', sessions: [{ id: 'over', budget: { band: 'over' } }] }], 'cmd'),
+    latestResumableHistorySession(
+      [{ tool: 'cmd', sessions: [{ id: 'over', budget: { band: 'over', blocks: true } }] }],
+      'cmd',
+    ),
     null,
-    '全都超窗时不开已知必死的会话',
+    '全都必死时不开已知必死的会话',
   );
   assert.equal(latestResumableHistorySession(budgeted, 'grok'), null);
   assert.equal(latestResumableHistorySession(null, 'cmd'), null);
@@ -202,5 +209,16 @@ test('自动续接跳过体积超窗的会话，顺延到最近一条装得下�
     latestResumableHistorySession([{ tool: 'cmd', sessions: [{ id: 'no-budget' }] }], 'cmd').id,
     'no-budget',
     '没有体积信息的老数据按"能续"处理，不误伤',
+  );
+  assert.equal(
+    latestResumableHistorySession([{
+      tool: 'claude',
+      sessions: [
+        { id: 'claude-over', budget: { band: 'over', blocks: false } },
+        { id: 'claude-small', budget: { band: 'ok' } },
+      ],
+    }], 'claude').id,
+    'claude-over',
+    '体积超窗但 CLI 自己会压缩的家不该被跳过',
   );
 });

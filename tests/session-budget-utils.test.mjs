@@ -6,7 +6,7 @@ import {
   formatSessionTokens,
   normalizeSessionBudget,
   sessionBudgetBadge,
-  sessionBudgetOver,
+  sessionBudgetBlocks,
 } from '../src/session-budget-utils.js';
 
 test('体积按 KB/MB/GB 三档显示，拿不到就不编数字', () => {
@@ -39,25 +39,49 @@ test('只有偏长与超窗才出徽标，正常会话保持安静', () => {
   assert.match(long.title, /估算 ≈703K tokens/);
   assert.match(long.title, /1\.05M tokens/);
 
-  const over = sessionBudgetBadge({ band: 'over', sizeBytes: 7_500_196, estTokens: 1_250_033, window: 1_048_576 });
+  const over = sessionBudgetBadge({
+    band: 'over',
+    blocks: true,
+    sizeBytes: 7_500_196,
+    estTokens: 1_250_033,
+    window: 1_048_576,
+  });
   assert.equal(over.level, 'over');
   assert.equal(over.text, '7.2MB');
   assert.match(over.title, /估算 ≈1\.25M tokens/, '徽标必须标明是估算');
   assert.match(over.title, /继续很可能直接失败/);
 });
 
-test('拦截判据只认 over：偏长只提示不拦', () => {
-  assert.equal(sessionBudgetOver({ band: 'over' }), true);
-  assert.equal(sessionBudgetOver({ band: 'long' }), false);
-  assert.equal(sessionBudgetOver({ band: 'ok' }), false);
-  assert.equal(sessionBudgetOver({}), false);
-  assert.equal(sessionBudgetOver(null), false);
+test('体积超窗但 CLI 自己会压缩的（blocks 为假）只提示，不标红也不拦', () => {
+  const claude = sessionBudgetBadge({
+    band: 'over',
+    blocks: false,
+    sizeBytes: 22_532_999,
+    estTokens: 3_755_500,
+    window: 1_000_000,
+  });
+  assert.equal(claude.level, 'long', '只提示的家不该标成红色危险');
+  assert.equal(claude.text, '21.5MB');
+  assert.match(claude.title, /自己会压缩上下文/);
+  assert.doesNotMatch(claude.title, /继续很可能直接失败/);
+});
+
+test('拦截判据只认后端标的 blocks：体积超窗不等于拦', () => {
+  assert.equal(sessionBudgetBlocks({ band: 'over', blocks: true }), true);
+  assert.equal(sessionBudgetBlocks({ band: 'over' }), false, '缺 blocks 一律不拦');
+  assert.equal(sessionBudgetBlocks({ band: 'over', blocks: false }), false);
+  assert.equal(sessionBudgetBlocks({ band: 'long', blocks: true }), false, '没超窗也不会被标拦');
+  assert.equal(sessionBudgetBlocks({}), false);
+  assert.equal(sessionBudgetBlocks(null), false);
 });
 
 test('缺字段与脏字段一律归零，不抛错也不猜', () => {
-  assert.deepEqual(normalizeSessionBudget(undefined), { sizeBytes: 0, estTokens: 0, window: 0, band: '' });
   assert.deepEqual(
-    normalizeSessionBudget({ sizeBytes: -5, estTokens: 'x', window: null, band: 7 }),
-    { sizeBytes: 0, estTokens: 0, window: 0, band: '7' },
+    normalizeSessionBudget(undefined),
+    { sizeBytes: 0, estTokens: 0, window: 0, band: '', blocks: false },
+  );
+  assert.deepEqual(
+    normalizeSessionBudget({ sizeBytes: -5, estTokens: 'x', window: null, band: 7, blocks: 'yes' }),
+    { sizeBytes: 0, estTokens: 0, window: 0, band: '7', blocks: false },
   );
 });

@@ -7,10 +7,15 @@
 //!   `max_context_window` 872 000 需要实验特性，不按它算）。
 //! - `cmd` 1 048 576 来自它对超窗请求自己回的 400 原文（`maximum context length is 1048576
 //!   tokens`，2026-09-18 实见）。
+//! - `mimo` 1 000 000 来自它自己的 `mimo models` 输出（`mimo/mimo-auto — window 1M`、
+//!   `xiaomi/mimo-v2.5 — window 1.05M`，取家族里最小的对话窗口；TTS 那几个 8K 不在其列）。
+//!   这条是 2026-09-18 真机核对时纠正的：原先按保守默认写 200k，比实际小 5 倍，会把两条
+//!   本来能跑的 MiMo 会话判成超窗。
 //! - `claude` 与 `lib.rs` 的 `DEFAULT_CONTEXT_WINDOW` 保持一致（当前默认模型是 1M 档；老的
 //!   200k 模型最多少提示，不会误拦）。
-//! - 其余（grok / agy / qwen / opencode / mimo）本机没有可读的窗口证据，取保守默认：
-//!   **宁可早提示**——真实窗口比登记值大时只是多一条提示，不会改变任何行为。
+//! - `grok` / `agy` / `qwen` / `opencode` 本机没有可读的窗口证据（`grok models` 只列名字、
+//!   `opencode models` 不给窗口、Qwen 核对时配额用尽），取保守默认：**宁可早提示**——真实
+//!   窗口比登记值大时只是多一条提示，不会改变任何行为。
 //!
 //! `bytes_per_token` 是经验换算比，用 2026-09-18 那条 cmd 会话标定（7.15MB 文件 / 1.27M token
 //! ≈ 5.6，取 6.0 略偏保守）。JSONL 结构开销与图片 base64 都会让它偏大，所以界面展示一律写
@@ -33,6 +38,17 @@ struct ProviderBudget {
     id: &'static str,
     window: u64,
     bytes_per_token: f64,
+    /// `over` 时是否该拦（`blocks`）。只有"**磁盘上的历史就是下一轮要发的上下文**"的家才拦。
+    ///
+    /// 拦：`cmd`（每轮 `--session <id>` 回放整条转录，2026-09-18 实见 1.27M token 被 400 拒，
+    /// 瘦身到 65 万后同一会话正常）、`mimo` / `opencode`（SQLite + ACP，加载要读整份 part 数据，
+    /// 2026-09-10 有 41.9MB 会话把 CLI 与压缩一起卡死的实见）。
+    ///
+    /// 不拦（只提示）：`claude` / `codex` 的转录是只增日志且 CLI 自己会压缩（2026-09-18 真机核对：
+    /// 本机 22MB 的 claude、210MB 的 codex 会话都在正常用）。`grok` / `agy` / `qwen` 同理暂不拦——
+    /// 但**这三家没有实测依据**（grok 走 ACP 的 `noReplay`、agy 与 cmd 同属双向 JSON 但未验回放行为、
+    /// qwen 核对时配额用尽），要收紧先补一次实测，别照 cmd 的样子推。
+    gate: bool,
 }
 
 const BUDGETS: [ProviderBudget; 8] = [
@@ -40,41 +56,49 @@ const BUDGETS: [ProviderBudget; 8] = [
         id: "claude",
         window: 1_000_000,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: false,
     },
     ProviderBudget {
         id: "codex",
         window: 272_000,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: false,
     },
     ProviderBudget {
         id: "cmd",
         window: 1_048_576,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: true,
     },
     ProviderBudget {
         id: "grok",
         window: 256_000,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: false,
     },
     ProviderBudget {
         id: "agy",
         window: 1_000_000,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: false,
     },
     ProviderBudget {
         id: "qwen",
         window: 256_000,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: false,
     },
     ProviderBudget {
         id: "opencode",
         window: 200_000,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: true,
     },
     ProviderBudget {
         id: "mimo",
-        window: 200_000,
+        window: 1_000_000,
         bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+        gate: true,
     },
 ];
 
@@ -87,6 +111,8 @@ pub struct SessionBudget {
     /// 登记的窗口；0 表示这家没有登记值。
     pub window: u64,
     pub band: &'static str,
+    /// `over` 且这家"历史即上下文"时为真：续接前该拦。其余情况只提示不拦。
+    pub blocks: bool,
 }
 
 impl SessionBudget {
@@ -96,6 +122,7 @@ impl SessionBudget {
             est_tokens: 0,
             window: 0,
             band: BAND_UNKNOWN,
+            blocks: false,
         }
     }
 
@@ -116,11 +143,13 @@ impl SessionBudget {
         } else {
             BAND_OK
         };
+        let blocks = band == BAND_OVER && budget.is_some_and(|item| item.gate);
         Self {
             size_bytes,
             est_tokens,
             window,
             band,
+            blocks,
         }
     }
 }
@@ -204,5 +233,26 @@ mod tests {
         // ~/.codex/models_cache.json 的 context_window；改这里必须同时改注释里的出处。
         assert_eq!(provider_budget("codex").unwrap().window, 272_000);
         assert_eq!(provider_budget("CMD").unwrap().window, 1_048_576);
+        // `mimo models` 自报 window 1M / 1.05M：不能被写回成 200k 那种保守猜测。
+        assert_eq!(provider_budget("mimo").unwrap().window, 1_000_000);
+    }
+
+    /// 只有"历史即上下文"的家才拦。2026-09-18 真机核对：本机 22MB 的 claude、210MB 的
+    /// codex 会话都在正常用，拦它们就是挡住能跑的会话；cmd / mimo / opencode 有超窗即死的实见。
+    #[test]
+    fn only_replay_providers_block_an_over_session() {
+        for provider in ["cmd", "mimo", "opencode"] {
+            let budget = SessionBudget::for_bytes(provider, 64 * 1024 * 1024);
+            assert_eq!(budget.band, BAND_OVER, "{provider} 这个体积应该是 over");
+            assert!(budget.blocks, "{provider} 超窗应当拦");
+        }
+        for provider in ["claude", "codex", "grok", "agy", "qwen"] {
+            let budget = SessionBudget::for_bytes(provider, 64 * 1024 * 1024);
+            assert_eq!(budget.band, BAND_OVER, "{provider} 这个体积应该是 over");
+            assert!(!budget.blocks, "{provider} 只提示不拦");
+        }
+        // 没到窗口、或体积未知时永远不拦。
+        assert!(!SessionBudget::for_bytes("cmd", 1024).blocks);
+        assert!(!SessionBudget::unknown().blocks);
     }
 }

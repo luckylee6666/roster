@@ -40,7 +40,7 @@ import {
   inspectPastedImage,
   latestConversationSession,
 } from './conversation-tools.js';
-import { sessionBudgetBadge, sessionBudgetOver } from './session-budget-utils.js';
+import { sessionBudgetBadge, sessionBudgetBlocks } from './session-budget-utils.js';
 
 export const CONVERSATION_PROMPT_MAX_BYTES = 64 * 1024;
 const STOPPING_WATCHDOG_MS = 10_000;
@@ -2776,9 +2776,11 @@ export function installConversationMode({
   }
 
   /**
-   * 超窗会话的续接闸门。体积与窗口都由后端登记（`sessionBudgetOver`），命中时**不给
-   * "仍然续接"**：按体积这条会话已经越过窗口，续接换来的只会是一次上下文超限报错，
-   * 所以直接把它改成"新会话 + 交接摘要"。真要硬开旧会话，开发模式仍可自己敲命令。
+   * 超窗会话的续接闸门。判据来自后端（`sessionBudgetBlocks`：体积越过窗口，且这家 CLI 的
+   * 历史就是下一轮要发的上下文）。命中时**不给"仍然续接"**：这种会话按体积已经越窗，续接
+   * 换来的只会是一次上下文超限报错，所以直接把它改成"新会话 + 交接摘要"。只提示不拦的那些
+   * 家（claude/codex 的转录是只增日志、由 CLI 自己压缩）不走这条路。真要硬开旧会话，
+   * 开发模式仍可自己敲命令。
    */
   async function confirmOversizedHistory(session) {
     if (typeof confirm !== 'function') return false;
@@ -2793,7 +2795,7 @@ export function installConversationMode({
 
   async function openHistory(session, { auto = false } = {}) {
     if (!selectedProject || isRunning()) return;
-    const rotating = sessionBudgetOver(session.budget);
+    const rotating = sessionBudgetBlocks(session.budget);
     if (rotating) {
       if (auto) {
         // 自动打开撞上超窗会话时不硬开：换不换会话应该由用户决定。
