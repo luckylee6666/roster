@@ -48,6 +48,7 @@ secrets*.json
 # AI agent instructions (local only)
 CLAUDE.md
 AGENTS.md
+docs/CLAUDE-full.md
 opencode.json
 
 # Project memory window (canonical store lives in ~/.claude/projects)
