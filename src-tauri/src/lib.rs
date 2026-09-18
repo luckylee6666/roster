@@ -29,6 +29,7 @@ mod project_files;
 mod project_memory;
 mod project_sessions;
 mod proxy_settings;
+mod session_budget;
 mod session_titles;
 mod shared_memory;
 mod usage;

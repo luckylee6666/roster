@@ -9,6 +9,7 @@ import {
   conversationRunContext,
   createConversationState,
   loadConversationTranscript,
+  rotateConversationTranscript,
   selectConversationProvider,
   startConversationTurn,
 } from './conversation-state.js';
@@ -39,6 +40,7 @@ import {
   inspectPastedImage,
   latestConversationSession,
 } from './conversation-tools.js';
+import { sessionBudgetBadge, sessionBudgetOver } from './session-budget-utils.js';
 
 export const CONVERSATION_PROMPT_MAX_BYTES = 64 * 1024;
 const STOPPING_WATCHDOG_MS = 10_000;
@@ -2409,12 +2411,18 @@ export function installConversationMode({
     if (!show) return;
     const source = conversationProvider(context.handoffProviderId);
     const target = conversationProvider(context.providerId);
+    // 同一位助手也能轮换（超窗会话的出路）：这时是"新开会话带摘要"，不是换人接手，
+    // 所以不显示"改回 X"——没有另一家可回，旧会话本来就没动。
+    const sameTool = source.id === target.id;
     note.appendChild(element(
       document,
       'span',
       'conversation-handoff-text',
-      `发送后由 ${target.label} 接手 ${source.label} 的这段对话：只带最近 24 条正文，${source.label} 的会话保持不动。`,
+      sameTool
+        ? `发送后开一条新的 ${target.label} 会话继续这段对话：只带最近 24 条正文，旧会话保持不动。`
+        : `发送后由 ${target.label} 接手 ${source.label} 的这段对话：只带最近 24 条正文，${source.label} 的会话保持不动。`,
     ));
+    if (sameTool) return;
     const back = element(document, 'button', 'conversation-handoff-undo', `改回 ${source.label}`);
     back.type = 'button';
     back.disabled = isRunning() || !providerReady(source.id);
@@ -2669,11 +2677,23 @@ export function installConversationMode({
       badge.dataset.tool = session.tool;
       const copy = element(document, 'span', 'conversation-history-copy');
       const alias = String(sessionTitles[session.key] || '').trim();
+      const meta = element(document, 'span', 'conversation-history-meta', session.tool === 'agy'
+        ? `${relativeTime(session.atMs)} · 仅含用户记录`
+        : relativeTime(session.atMs));
+      const budget = sessionBudgetBadge(session.budget);
+      if (budget) {
+        const chip = element(
+          document,
+          'span',
+          `conversation-history-budget is-${budget.level}`,
+          budget.text,
+        );
+        chip.title = budget.title;
+        meta.append(chip);
+      }
       copy.append(
         element(document, 'strong', '', alias || session.title),
-        element(document, 'span', '', session.tool === 'agy'
-          ? `${relativeTime(session.atMs)} · 仅含用户记录`
-          : relativeTime(session.atMs)),
+        meta,
       );
       button.append(badge, copy);
       button.addEventListener('click', () => void openHistory(session));
@@ -2755,8 +2775,38 @@ export function installConversationMode({
     }
   }
 
+  /**
+   * 超窗会话的续接闸门。体积与窗口都由后端登记（`sessionBudgetOver`），命中时**不给
+   * "仍然续接"**：按体积这条会话已经越过窗口，续接换来的只会是一次上下文超限报错，
+   * 所以直接把它改成"新会话 + 交接摘要"。真要硬开旧会话，开发模式仍可自己敲命令。
+   */
+  async function confirmOversizedHistory(session) {
+    if (typeof confirm !== 'function') return false;
+    const badge = sessionBudgetBadge(session.budget);
+    return Boolean(await confirm({
+      title: '这条会话已经很大',
+      message: `${badge?.title || '这条会话的体积已经超过登记窗口'}。\n\n改用新会话继续吗？新会话会带上这条旧会话的最近对话摘要，旧会话原样保留。`,
+      confirmText: '新会话继续',
+      danger: false,
+    }));
+  }
+
   async function openHistory(session, { auto = false } = {}) {
     if (!selectedProject || isRunning()) return;
+    const rotating = sessionBudgetOver(session.budget);
+    if (rotating) {
+      if (auto) {
+        // 自动打开撞上超窗会话时不硬开：换不换会话应该由用户决定。
+        if (dom.historyState) {
+          dom.historyState.textContent = '最近这条会话已经很大，没有自动打开；点它可以选择改用新会话继续';
+        }
+        return;
+      }
+      if (!await confirmOversizedHistory(session)) {
+        if (dom.historyState) dom.historyState.textContent = '已取消打开这条会话';
+        return;
+      }
+    }
     const revision = ++transcriptRevision;
     const project = selectedProject;
     if (dom.historyState) dom.historyState.textContent = '正在打开对话';
@@ -2783,17 +2833,21 @@ export function installConversationMode({
         return;
       }
       forceLatestOnNextMessageRender();
-      state = loadConversationTranscript({
+      const transcript = {
         projectId: project.id,
         providerId: session.tool,
         sourceTool: session.tool,
-        threadId: session.id,
         messages: preview?.messages,
-      });
-        persistSelection();
-      if (dom.historyState) dom.historyState.textContent = preview?.truncated
-        ? '这条对话非常长，已展示最近一段内容（最多 500 条）'
-        : '';
+      };
+      state = rotating
+        ? rotateConversationTranscript({ ...transcript, sourceSessionId: session.id })
+        : loadConversationTranscript({ ...transcript, threadId: session.id });
+      persistSelection();
+      if (dom.historyState) {
+        dom.historyState.textContent = rotating
+          ? '已切到新会话：下一条消息会带上这条旧会话的最近对话，旧会话保持不动'
+          : (preview?.truncated ? '这条对话非常长，已展示最近一段内容（最多 500 条）' : '');
+      }
       renderState();
       renderProjects();
       void refreshSlashCommands();

@@ -1,5 +1,6 @@
 use crate::conversation_media::{inline_image_attachment, ConversationAttachment};
 use crate::project_memory::encode_claude_project_dir;
+use crate::session_budget::SessionBudget;
 use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -37,6 +38,7 @@ pub struct ProjectHistorySession {
     pub title: String,
     pub preview: String,
     pub at_ms: u64,
+    pub budget: SessionBudget,
 }
 
 #[derive(Clone, Serialize)]
@@ -158,6 +160,55 @@ fn history_session(
         title: preview_title(raw),
         preview: preview_excerpt(raw, PREVIEW_LIST_LIMIT),
         at_ms,
+        budget: SessionBudget::unknown(),
+    }
+}
+
+/// 单会话文件的字节数。取不到（文件没了、没权限）就是 0，调用方按"体积未知"处理。
+fn file_bytes(path: &Path) -> u64 {
+    path.metadata().map(|meta| meta.len()).unwrap_or(0)
+}
+
+/// 一家 SQLite 会话库的单会话体积。`part.data` 存消息体，用
+/// `LENGTH(CAST(data AS BLOB))` 取 UTF-8 字节数（`LENGTH(text)` 数的是字符，中文会少算）。
+/// 查询失败（旧 schema、库损坏）就保持"体积未知"，绝不猜。
+fn sqlite_sizes_into(
+    connection: &rusqlite::Connection,
+    provider_id: &str,
+    sessions: &mut [ProjectHistorySession],
+) {
+    if sessions.is_empty() {
+        return;
+    }
+    let placeholders = std::iter::repeat_n("?", sessions.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT session_id, COALESCE(SUM(LENGTH(CAST(data AS BLOB))), 0)
+         FROM part
+         WHERE session_id IN ({placeholders})
+         GROUP BY session_id"
+    );
+    let Ok(mut statement) = connection.prepare(&sql) else {
+        return;
+    };
+    let ids = sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<Vec<_>>();
+    let Ok(rows) = statement.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    }) else {
+        return;
+    };
+    let sizes = rows
+        .flatten()
+        .map(|(id, bytes)| (id, bytes.max(0) as u64))
+        .collect::<std::collections::HashMap<_, _>>();
+    for session in sessions.iter_mut() {
+        if let Some(bytes) = sizes.get(&session.id) {
+            session.budget = SessionBudget::for_bytes(provider_id, *bytes);
+        }
     }
 }
 
@@ -319,7 +370,9 @@ fn claude_session_from_jsonl(
         .and_then(|meta| meta.modified())
         .map(millis)
         .unwrap_or(0);
-    Some(history_session(id, "claude", &raw_title, at_ms))
+    let mut session = history_session(id, "claude", &raw_title, at_ms);
+    session.budget = SessionBudget::for_bytes("claude", file_bytes(path));
+    Some(session)
 }
 
 fn find_claude_project_dir(home: &Path, cwd: &str) -> Option<PathBuf> {
@@ -574,7 +627,9 @@ fn commandcode_history_session(path: &Path, id: &str) -> ProjectHistorySession {
     let raw_title = commandcode_meta_title(path)
         .or_else(|| commandcode_first_user_text(path))
         .unwrap_or_default();
-    history_session(id.to_string(), "cmd", &raw_title, at_ms)
+    let mut session = history_session(id.to_string(), "cmd", &raw_title, at_ms);
+    session.budget = SessionBudget::for_bytes("cmd", file_bytes(path));
+    session
 }
 
 fn list_commandcode_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
@@ -768,6 +823,7 @@ fn grok_session_from_dir(path: &Path) -> Option<ProjectHistorySession> {
     if !preview_source.is_empty() {
         session.preview = preview_excerpt(preview_source, PREVIEW_LIST_LIMIT);
     }
+    session.budget = SessionBudget::for_bytes("grok", file_bytes(&path.join("chat_history.jsonl")));
     Some(session)
 }
 
@@ -923,12 +979,14 @@ fn codex_session_from_jsonl(path: &Path, cwd: &str) -> Option<ProjectHistorySess
                 .and_then(parse_rfc3339_ms)
         })
         .unwrap_or(0);
-    Some(history_session(
+    let mut session = history_session(
         id,
         "codex",
         &first_codex_user_text(&read_lossy_prefix(&mut reader, 64 * 1024)),
         at_ms,
-    ))
+    );
+    session.budget = SessionBudget::for_bytes("codex", file_bytes(path));
+    Some(session)
 }
 
 fn list_codex_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
@@ -1034,6 +1092,7 @@ fn list_opencode_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHisto
             break;
         }
     }
+    sqlite_sizes_into(&connection, "opencode", &mut sessions);
     sessions
 }
 
@@ -1115,6 +1174,7 @@ fn list_mimo_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHistorySe
             break;
         }
     }
+    sqlite_sizes_into(&connection, "mimo", &mut sessions);
     sessions
 }
 
@@ -1183,7 +1243,9 @@ fn qwen_session_from_jsonl(
         .and_then(|meta| meta.modified())
         .map(millis)
         .unwrap_or(0);
-    Some(history_session(id, "qwen", &raw_title, at_ms))
+    let mut session = history_session(id, "qwen", &raw_title, at_ms);
+    session.budget = SessionBudget::for_bytes("qwen", file_bytes(path));
+    Some(session)
 }
 
 fn find_qwen_project_dir(home: &Path, cwd: &str) -> Option<PathBuf> {
@@ -1274,8 +1336,9 @@ fn collect_qwen_preview_parts(buf: &str) -> Vec<String> {
 
 fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     let history = home.join(".gemini/antigravity-cli/history.jsonl");
-    let mut by_id: std::collections::BTreeMap<String, (String, u64)> =
-        std::collections::BTreeMap::new();
+    /// (标题, 最近时间, 本会话累计字节)
+    type AgyEntry = (String, u64, u64);
+    let mut by_id: std::collections::BTreeMap<String, AgyEntry> = std::collections::BTreeMap::new();
     if let Some(text) = read_text_bounded(&history, TRANSCRIPT_FILE_READ_LIMIT) {
         for line in text.lines() {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1304,13 +1367,15 @@ fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
                 .unwrap_or(0);
             let entry = by_id
                 .entry(id.to_string())
-                .or_insert_with(|| (String::new(), 0));
+                .or_insert_with(|| (String::new(), 0, 0));
             if entry.0.is_empty() && !title.trim().is_empty() {
                 entry.0 = preview_title(title);
             }
             if at_ms > entry.1 {
                 entry.1 = at_ms;
             }
+            // agy 把所有会话写进同一个 history.jsonl，只能按行累计本会话的体积。
+            entry.2 += line.len() as u64 + 1;
         }
     }
     if let Some(text) = read_text_bounded(
@@ -1321,13 +1386,17 @@ fn list_agy_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
             if let Some(id) = value.get(cwd).and_then(|item| item.as_str()) {
                 by_id
                     .entry(id.to_string())
-                    .or_insert_with(|| ("未命名会话".into(), 0));
+                    .or_insert_with(|| ("未命名会话".into(), 0, 0));
             }
         }
     }
     let sessions = by_id
         .into_iter()
-        .map(|(id, (title, at_ms))| history_session(id, "agy", &title, at_ms))
+        .map(|(id, (title, at_ms, bytes))| {
+            let mut session = history_session(id, "agy", &title, at_ms);
+            session.budget = SessionBudget::for_bytes("agy", bytes);
+            session
+        })
         .collect::<Vec<_>>();
     finalize_sessions(sessions)
 }

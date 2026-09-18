@@ -1222,6 +1222,45 @@ fn validate_session_for_project_with_home(
     Ok(session_id.to_string())
 }
 
+/// 交接提示语。来源和目标相同是"轮换"（同一家开新会话带上旧会话摘要），措辞必须讲清
+/// 这是新会话而不是续接；跨家才说"交接给"。
+fn handoff_header(source_provider_id: &str, target_provider_id: &str) -> String {
+    if source_provider_id == target_provider_id {
+        format!(
+            "以下是 {} 这条旧会话的最近对话。这是一个新会话（不是续接），把它当作已发生的工作背景，不要声称自己亲自完成了其中的操作。\n\n",
+            provider_label(source_provider_id)
+        )
+    } else {
+        format!(
+            "以下是从 {} 交接给 {} 的最近对话。把它当作已发生的工作背景，不要声称自己亲自完成了其中的操作。\n\n",
+            provider_label(source_provider_id),
+            provider_label(target_provider_id)
+        )
+    }
+}
+
+/// 续接 ID 与交接来源的组合校验：
+/// - 只给一半（有来源没会话、有会话没来源）是坏状态，拒。
+/// - 同一家**同时**给续接 ID 和交接来源自相矛盾，拒；但同一家只给交接来源是合法的
+///   "轮换"（见 `handoff_header`），放行。
+fn validate_handoff_targets(
+    provider_id: &str,
+    thread_id: &str,
+    handoff_provider_id: &str,
+    handoff_session_id: &str,
+) -> Result<(), String> {
+    if handoff_provider_id.is_empty() != handoff_session_id.is_empty() {
+        return Err("交接来源不完整，请重新打开历史对话".into());
+    }
+    if !handoff_provider_id.is_empty()
+        && handoff_provider_id == provider_id
+        && !thread_id.is_empty()
+    {
+        return Err("同一 CLI 已指定续接会话时不能再走交接".into());
+    }
+    Ok(())
+}
+
 fn handoff_prompt(
     project_path: &str,
     source_provider_id: &str,
@@ -1237,11 +1276,7 @@ fn handoff_prompt(
         &home,
     )
     .map_err(|error| format!("读取交接会话失败：{error}"))?;
-    let header = format!(
-        "以下是从 {} 交接给 {} 的最近对话。把它当作已发生的工作背景，不要声称自己亲自完成了其中的操作。\n\n",
-        provider_label(source_provider_id),
-        provider_label(target_provider_id)
-    );
+    let header = handoff_header(source_provider_id, target_provider_id);
     let footer = format!("\n\n现在继续处理用户的新要求：\n{user_prompt}");
     let fixed_bytes = header.len().saturating_add(footer.len());
     if fixed_bytes >= crate::codex_chat::MAX_PROMPT_BYTES {
@@ -1839,12 +1874,12 @@ pub fn start(
     }
     let thread_id =
         validate_session_for_project(&canonical_project_path, &provider_id, &thread_id)?;
-    if handoff_provider_id.is_empty() != handoff_session_id.is_empty() {
-        return Err("交接来源不完整，请重新打开历史对话".into());
-    }
-    if !handoff_provider_id.is_empty() && handoff_provider_id == provider_id {
-        return Err("同一 CLI 应直接续接会话，不需要交接".into());
-    }
+    validate_handoff_targets(
+        &provider_id,
+        &thread_id,
+        &handoff_provider_id,
+        &handoff_session_id,
+    )?;
     let slash = resolve_requested_slash(
         &provider_id,
         &canonical_project_path,
@@ -1984,6 +2019,55 @@ pub fn approve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 同一位助手的"轮换"：只给交接来源、不给续接 ID 才合法；两个一起给是自相矛盾。
+    #[test]
+    fn same_provider_rotation_is_allowed_but_not_alongside_a_resume() {
+        assert!(validate_handoff_targets("cmd", "", "cmd", "session-1").is_ok());
+        assert!(validate_handoff_targets("cmd", "", "claude", "session-1").is_ok());
+        assert!(validate_handoff_targets("cmd", "", "", "").is_ok());
+        assert!(validate_handoff_targets("cmd", "session-1", "cmd", "session-2").is_err());
+        assert!(validate_handoff_targets("cmd", "", "", "session-1").is_err());
+        assert!(validate_handoff_targets("cmd", "", "cmd", "").is_err());
+    }
+
+    /// 轮换的提示语不能写成"从 cmd 交接给 cmd"，要讲清这是新会话、旧会话没被动过。
+    #[test]
+    fn rotation_header_explains_it_is_a_new_session() {
+        let same = handoff_header("cmd", "cmd");
+        assert!(same.contains("新会话"));
+        assert!(same.contains("不是续接"));
+        assert!(!same.contains("交接给"));
+
+        let cross = handoff_header("claude", "cmd");
+        assert!(cross.contains("交接给"));
+        assert!(!cross.contains("新会话"));
+    }
+
+    /// 人工核对：拿本机真实会话走一遍"同家轮换"的组装（真实磁盘历史 → 有界交接提示语）。
+    /// 环境变量：`ROSTER_PROBE_PROJECT`（项目目录）、`ROSTER_PROBE_SESSION`（会话 ID）。
+    #[test]
+    #[ignore = "人工核对用：需要本机该项目里真有这家 CLI 的历史会话"]
+    fn probe_same_provider_rotation_prompt_with_real_history() {
+        let Ok(project) = std::env::var("ROSTER_PROBE_PROJECT") else {
+            println!("跳过：没有设置 ROSTER_PROBE_PROJECT");
+            return;
+        };
+        let Ok(session) = std::env::var("ROSTER_PROBE_SESSION") else {
+            println!("跳过：没有设置 ROSTER_PROBE_SESSION");
+            return;
+        };
+        let prompt = handoff_prompt(&project, "cmd", &session, "cmd", "继续")
+            .expect("同家轮换应当能读磁盘历史并组装提示语");
+        assert!(
+            prompt.contains("这是一个新会话（不是续接）"),
+            "轮换提示语措辞不对"
+        );
+        assert!(!prompt.contains("交接给"), "同家轮换不该出现交接给");
+        assert!(prompt.contains("现在继续处理用户的新要求："));
+        assert!(prompt.len() <= crate::codex_chat::MAX_PROMPT_BYTES);
+        println!("probe: 轮换提示语 {} 字节，来源会话 {session}", prompt.len());
+    }
 
     #[test]
     fn protocol_reader_skips_oversized_session_update_but_rejects_other_huge_lines() {

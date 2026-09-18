@@ -125,10 +125,13 @@ export const switchConversationProvider = selectConversationProvider;
 export function conversationRunContext(state) {
   const providerId = normalizedTool(state?.providerId, 'codex');
   const resumable = ownsThread(state, providerId);
+  // 交接来源不必是"另一家"：同一位助手也可以轮换——不续接旧会话，把旧会话当来源，
+  // 在新会话里带上它的最近对话继续。超窗会话只有这条路走得通，所以这里不按
+  // `sourceTool !== providerId` 排除自己；真正的续接仍然优先（resumable 时不给交接）。
   const canHandoff = Boolean(
     state?.sourceTool
     && state?.sourceSessionId
-    && state.sourceTool !== providerId,
+    && !resumable,
   );
   return {
     providerId,
@@ -356,6 +359,28 @@ function historySessionKey(source, threadId) {
   return hash.toString(36);
 }
 
+/** 把磁盘转录变成消息列表。`keySeed` 只用于生成稳定的消息 id。 */
+function transcriptMessages(source, keySeed, messages) {
+  const sessionKey = historySessionKey(source, keySeed);
+  return Array.isArray(messages)
+    ? messages
+      .filter(message => message && (message.role === 'user' || message.role === 'assistant'))
+      .map((message, index) => {
+        const attachments = normalizeConversationAttachments(message.attachments);
+        return {
+          id: `history-${sessionKey}-${index}`,
+          role: message.role,
+          text: String(message.text || ''),
+          ...(attachments.length ? { attachments } : {}),
+          ...(message.role === 'assistant'
+            ? { tool: normalizedTool(message.tool, source) }
+            : {}),
+          pending: false,
+        };
+      })
+    : [];
+}
+
 export function loadConversationTranscript({
   projectId,
   threadId,
@@ -365,24 +390,6 @@ export function loadConversationTranscript({
 }) {
   const source = normalizedTool(sourceTool, normalizedTool(providerId, 'codex'));
   const provider = normalizedTool(providerId, source);
-  const sessionKey = historySessionKey(source, threadId);
-  const normalized = Array.isArray(messages)
-    ? messages
-        .filter(message => message && (message.role === 'user' || message.role === 'assistant'))
-        .map((message, index) => {
-          const attachments = normalizeConversationAttachments(message.attachments);
-          return {
-            id: `history-${sessionKey}-${index}`,
-            role: message.role,
-            text: String(message.text || ''),
-            ...(attachments.length ? { attachments } : {}),
-            ...(message.role === 'assistant'
-              ? { tool: normalizedTool(message.tool, source) }
-              : {}),
-            pending: false,
-          };
-        })
-    : [];
   return {
     ...createConversationState({
       projectId,
@@ -392,6 +399,33 @@ export function loadConversationTranscript({
       sourceTool: source,
       sourceSessionId: typeof threadId === 'string' ? threadId : '',
     }),
-    messages: normalized,
+    messages: transcriptMessages(source, threadId, messages),
+  };
+}
+
+/**
+ * 轮换：打开一条旧会话但**不续接它**——旧会话当交接来源，下一条消息在新会话里
+ * 带着它的最近对话继续。超窗会话只有这条路走得通；同一位助手也允许轮换
+ * （判据见 `conversationRunContext`）。
+ */
+export function rotateConversationTranscript({
+  projectId,
+  sourceTool = '',
+  sourceSessionId = '',
+  providerId = sourceTool,
+  messages,
+}) {
+  const source = normalizedTool(sourceTool, normalizedTool(providerId, 'codex'));
+  const provider = normalizedTool(providerId, source);
+  return {
+    ...createConversationState({
+      projectId,
+      providerId: provider,
+      threadId: '',
+      threadTool: '',
+      sourceTool: source,
+      sourceSessionId,
+    }),
+    messages: transcriptMessages(source, sourceSessionId, messages),
   };
 }

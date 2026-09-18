@@ -24,6 +24,7 @@ import {
   resumeCliCommand,
   sessionLayoutEntries,
 } from './session-restore-utils.js';
+import { sessionBudgetBadge, sessionBudgetOver } from './session-budget-utils.js';
 import {
   DEFAULT_PROJECT_KIT,
   PROJECT_KIT_LAYOUT,
@@ -34,6 +35,7 @@ import {
   historySessionKey,
   launchCommandForProjectTool,
   latestHistorySession,
+  latestResumableHistorySession,
   runningHistoryLookup,
   runningTerminalIdForHistory,
   sameProjectCwd,
@@ -991,11 +993,13 @@ function historySessionHtml(session, runningId) {
   const when = session.atMs ? relTimeFromMs(session.atMs) : '';
   const preview = String(session.preview || '').trim();
   const showPreview = preview && preview !== session.title;
+  const budget = sessionBudgetBadge(session.budget);
   return `<div class="card-session-item${runningId ? ' is-running' : ''}" data-tool="${escAttr(session.tool)}" data-session-id="${escAttr(session.id)}"${runningId ? ` data-running-id="${escAttr(runningId)}"` : ''}>`
     + `<button class="card-session-open" type="button" title="${escAttr(session.title)}">`
     + `<span class="card-session-title-row">`
     + `<span class="card-session-title">${esc(session.title)}</span>`
     + (runningId ? '<span class="card-session-running">运行中</span>' : '')
+    + (budget ? `<span class="card-session-budget is-${escAttr(budget.level)}" title="${escAttr(budget.title)}">${esc(budget.text)}</span>` : '')
     + (when ? `<span class="card-session-time">${esc(when)}</span>` : '')
     + `</span>`
     + (showPreview ? `<span class="card-session-preview-text">${esc(preview)}</span>` : '')
@@ -1159,10 +1163,31 @@ function openHistorySession(project, session) {
     msg('还不支持续接这个工具的历史会话', 'info');
     return;
   }
+  // 体积越过窗口的会话续接必然换来一次上下文超限报错：先问一句，改成新开终端。
+  if (sessionBudgetOver(session.budget)) {
+    const badge = sessionBudgetBadge(session.budget);
+    const label = CLI_TOOLS.find(item => item.id === normalizeCliToolName(session.tool))?.label || session.tool;
+    showConfirm({
+      title: '这条会话已经很大',
+      message: `${badge?.title || '体积已经超过登记窗口'}。\n\n续接很可能直接失败，改为新开一个 ${label} 终端吗？旧会话保持不动。`,
+      confirmText: '开新会话',
+      danger: false,
+      onConfirm: () => openFreshSessionForTool(project, session.tool),
+    });
+    return;
+  }
   // 双击续接按钮会连开两个终端；同一条会话短时间内只放行一次。
   if (!historyOpenGate.allow(historyActionKey(project, session))) return;
   recordProjectActivity(project.id, autoCmd);
   void createSession({ cwd: project.localPath, name: project.name, autoCmd });
+}
+
+/** 超窗会话的替代动作：同一家 CLI 开一条新会话（不带走续接参数）。 */
+function openFreshSessionForTool(project, tool) {
+  const command = cliCommandName(tool);
+  if (!command || !project?.localPath) return;
+  recordProjectActivity(project.id, command);
+  void createSession({ cwd: project.localPath, name: project.name, autoCmd: command });
 }
 
 function closeSessionPreview() {
@@ -4111,7 +4136,15 @@ async function resumeCommandForRestoredTab(cwd, toolCommand) {
   } catch (_) {
     groups = [];
   }
-  const last = latestHistorySession(groups, tool);
+  // 自动续接要跳过体积超窗的会话：续一条已知必死的会话只会开出一个死标签，
+  // 所以顺延到最近一条还装得下的；一条都没有时开新会话（跳过时写日志留痕）。
+  const last = latestResumableHistorySession(groups, tool);
+  if (!last) {
+    const skipped = latestHistorySession(groups, tool);
+    if (skipped?.id) {
+      appLog('warn', `恢复 ${tool} 标签时跳过了体积超窗的会话 ${skipped.id}，改为新会话`);
+    }
+  }
   return `${last?.id ? launchCliCommand(tool, last.id) : cliCommandName(tool)}${suffix}`;
 }
 

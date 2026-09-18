@@ -818,6 +818,25 @@ body {
   color: var(--text-3);
   font-size: var(--fs-micro);
 }
+/* 会话体积徽标：只有偏长（orange）与超窗（red）两种，正常不渲染。 */
+.card-session-budget {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
+.card-session-budget.is-long {
+  color: #d46b08;
+  background: var(--orange-bg);
+  border-color: var(--orange-border);
+}
+.card-session-budget.is-over {
+  color: #cf1322;
+  background: var(--red-bg);
+  border-color: var(--red-border);
+}
 .card-session-running {
   flex: 0 0 auto;
   padding: 0 6px;
@@ -6275,6 +6294,35 @@ html[data-app-view="developer"] #conversation-surface {
   display: flex;
   min-width: 0;
   flex-direction: column;
+}
+
+.conversation-history-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 会话体积徽标：只有偏长（warn）与超窗（danger）两种，正常不渲染。 */
+.conversation-history-budget {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  white-space: nowrap;
+}
+.conversation-history-budget.is-long {
+  color: var(--chat-warn-ink);
+  background: var(--chat-warn-bg);
+  border-color: var(--chat-warn-line);
+}
+.conversation-history-budget.is-over {
+  color: var(--chat-danger-ink);
+  background: var(--chat-danger-bg);
+  border-color: var(--chat-danger-line);
 }
 
 .conversation-history-tool {

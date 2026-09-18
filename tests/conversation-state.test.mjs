@@ -8,6 +8,7 @@ import {
   createConversationState,
   loadConversationTranscript,
   MAX_CONVERSATION_ACTIVITIES,
+  rotateConversationTranscript,
   selectConversationProvider,
   startConversationTurn,
 } from '../src/conversation-state.js';
@@ -275,6 +276,45 @@ test('新 CLI 建立线程后接管后续会话，并清除旧交接来源', () 
 
 test('旧 Codex 事件导出保留为通用实现别名', () => {
   assert.equal(applyCodexChatEvent, applyConversationChatEvent);
+});
+
+test('同一位助手也能轮换：不续接旧会话，改在新会话里带交接摘要', () => {
+  const rotated = rotateConversationTranscript({
+    projectId: 'p1',
+    providerId: 'cmd',
+    sourceTool: 'cmd',
+    sourceSessionId: 'cmd-session-1',
+    messages: [
+      { role: 'user', text: '把 cmd 接进来' },
+      { role: 'assistant', text: '已经接完并发了版' },
+    ],
+  });
+  assert.equal(rotated.threadId, '');
+  assert.equal(rotated.threadTool, '');
+  assert.equal(rotated.sourceTool, 'cmd');
+  assert.equal(rotated.sourceSessionId, 'cmd-session-1');
+  assert.equal(rotated.messages.length, 2);
+  assert.deepEqual(conversationRunContext(rotated), {
+    providerId: 'cmd',
+    threadId: '',
+    handoffProviderId: 'cmd',
+    handoffSessionId: 'cmd-session-1',
+  });
+
+  // 续接优先：真正持有线程时不给交接，哪怕来源是同一条会话。
+  const resumed = loadConversationTranscript({
+    projectId: 'p1',
+    providerId: 'cmd',
+    sourceTool: 'cmd',
+    threadId: 'cmd-session-1',
+    messages: [],
+  });
+  assert.deepEqual(conversationRunContext(resumed), {
+    providerId: 'cmd',
+    threadId: 'cmd-session-1',
+    handoffProviderId: '',
+    handoffSessionId: '',
+  });
 });
 
 test('空白新对话不算已打开会话，有消息、线程或交接来源才需要新对话入口', () => {

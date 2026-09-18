@@ -1,4 +1,5 @@
 import { normalizeProjectMemoryCwd } from './project-memory-utils.js';
+import { sessionBudgetOver } from './session-budget-utils.js';
 import { normalizeCliToolName, extractResumedSessionId, isGenericContinueCommand, launchCliCommand } from './session-restore-utils.js';
 
 export const DEFAULT_PROJECT_KIT = Object.freeze(['claude', 'codex', 'grok']);
@@ -168,8 +169,21 @@ export function latestHistorySession(groups, tool) {
   return session?.id ? session : null;
 }
 
+/**
+ * 自动续接要挑还能用的那条：体积越过登记窗口的会话（后端 `over` 档）续接必然换来一次
+ * 上下文超限报错，所以往下顺延到最近一条不超窗的。全都超窗时返回 null，
+ * 交给调用方开新会话——**不倒退回去硬续一条已知必死的**。
+ */
+export function latestResumableHistorySession(groups, tool) {
+  const name = String(tool || '').trim();
+  if (!name) return null;
+  const group = (Array.isArray(groups) ? groups : []).find(item => item?.tool === name);
+  const sessions = Array.isArray(group?.sessions) ? group.sessions : [];
+  return sessions.find(session => session?.id && !sessionBudgetOver(session.budget)) || null;
+}
+
 export function launchCommandForProjectTool(tool, historyGroups) {
-  const last = latestHistorySession(historyGroups, tool);
+  const last = latestResumableHistorySession(historyGroups, tool);
   return {
     last,
     autoCmd: launchCliCommand(tool, last?.id),

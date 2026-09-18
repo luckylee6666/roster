@@ -131,6 +131,7 @@ export function flattenConversationHistory(historyOrGroups, { limit = 12 } = {})
         title: String(session?.title || '').trim() || '未命名会话',
         atMs: Number.isFinite(stamp) && stamp >= 0 ? stamp : 0,
         preview: String(session?.preview || ''),
+        budget: session?.budget || null,
         runnable: provider.runnable,
         unavailableReason: provider.unavailableReason,
         sourceOrder,
