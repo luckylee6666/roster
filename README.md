@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.7.0** — Command Code gains an explicit opt-in full-access mode (`cmd --yolo`): pick the「完全访问」mode for one turn in the workspace, or right-click the `cmd` badge on a project card to launch that terminal with it. The default entry in both places stays the plain command, and tabs started with a bypass keep a red badge. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.8.0** — Roster now watches session size: history rows show how big a session has grown, and a session that has grown past its CLI's context window is no longer resumed blindly — Roster offers a new session of the same CLI carrying a bounded handoff summary instead. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 

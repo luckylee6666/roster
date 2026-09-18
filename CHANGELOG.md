@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.8.0
+
+### English
+
+**Added**
+- **Session size budget.** Every history row now carries the session's on-disk size together with an estimated token count and a three-band state (`ok` / `long` / `over`), computed by the backend only. Each CLI's context window is registered with its source — `codex` 272k from `~/.codex/models_cache.json`, `cmd` 1048576 from its own context-overflow error, `mimo` 1M from `mimo models`, the rest conservative — and every size is labelled as an estimate. SQLite-backed CLIs are measured with `SUM(LENGTH(CAST(data AS BLOB)))`; agy's shared `history.jsonl` is counted per session.
+- **Oversized sessions are no longer resumed blindly.** Roster asks first and offers the way out: continue in a **new session of the same CLI carrying a bounded handoff summary** — the same 24-message / 18KB brief used for cross-CLI handoff — leaving the old session untouched. Auto-opening the newest history skips such a session with a hint instead of opening a doomed one, and Developer mode's tab restore and「Open CLI」move on to the newest session that is not gated (the skip is logged).
+
+**Notes**
+- The gate applies only where the on-disk history *is* the next request: `cmd` (whole transcript replayed per turn; a 1.27M-token request was rejected in the field), `mimo` / `opencode` (session load reads every stored part; a 41.9MB session once hung the CLI and its compaction). `claude` / `codex` / `grok` / `agy` / `qwen` keep the size badge but are never blocked — their transcripts are append-only logs and the CLI compacts on its own (this machine has a 22MB Claude and a 210MB Codex session in daily use).
+- Running the budget against real history before release corrected two calibration errors: MiMo's window had been registered 5× too small, and gating had to be separated from the badge so long-lived Claude/Codex sessions are not blocked.
+
+### 中文
+
+**新增**
+- **会话体积预算**：历史行现在带会话体积、估算 token 与三档状态（`ok` / `long` / `over`），**只由后端计算**。各家的上下文窗口逐家登记并写明出处——`codex` 272k 取自 `~/.codex/models_cache.json`、`cmd` 1048576 取自它自己回的上下文超限报错、`mimo` 1M 取自 `mimo models`，其余取保守默认；一切体积都标明「估算」。SQLite 家族用 `SUM(LENGTH(CAST(data AS BLOB)))` 量，agy 那个共用 `history.jsonl` 按会话行累计。
+- **超窗会话不再闷头续接**：Roster 先问一句，并给出出路——**同一位助手开新会话 + 有界交接摘要**（沿用跨 CLI 交接那套 24 条 / 18KB），旧会话原样保留。自动打开最近历史时跳过并提示，不再打开一条注定失败的；开发模式恢复标签与「打开 CLI」顺延到没被拦的那条（跳过会写日志留痕）。
+
+**说明**
+- 只有"磁盘上的历史就是下一轮请求"的家才拦：`cmd`（每轮回放整条转录，实测 1.27M token 的请求被拒）、`mimo` / `opencode`（加载会话要读整份 part 数据，曾有一次 41.9MB 会话把 CLI 与压缩一起卡死）。`claude` / `codex` / `grok` / `agy` / `qwen` 保留体积徽标但**永不拦**——它们的转录是只增日志、由 CLI 自己压缩（本机就有 22MB 的 Claude、210MB 的 Codex 会话在天天使用）。
+- 发版前拿真实历史核对，纠正了两处判据：MiMo 窗口原先登记小了 5 倍；"拦"必须与"只是提示"分开，否则会挡住能跑的会话。
+
 ## v1.7.0
 
 ### English
