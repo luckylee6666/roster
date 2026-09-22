@@ -5,6 +5,35 @@ import { readFileSync } from 'node:fs';
 import { CLI_TOOLS } from '../src/cli-tools.js';
 import { launchCliCommand, restoredCliCommand } from '../src/session-restore-utils.js';
 
+test('文档右键委托能处理重绘后的新按钮，普通 CLI 保留系统右键', () => {
+  const listeners = new Map(), opened = [];
+  const project = { id: 'p' };
+  const source = main.slice(main.indexOf("document.addEventListener('contextmenu'"), main.indexOf('async function refreshInstalledClis('));
+  new Function('document', 'projects', 'cliLaunchVariants', 'openCliLaunchMenu', source)(
+    { addEventListener: (name, fn) => listeners.set(name, fn) }, [project],
+    id => CLI_TOOLS.find(tool => tool.id === id)?.launchVariants || [],
+    (...args) => opened.push(args),
+  );
+  function eventFor(tool, projectId = 'p') {
+    const row = { dataset: { cliId: projectId } };
+    const button = { dataset: { cmd: tool }, closest: () => row };
+    let prevented = false;
+    return { target: { closest: () => button }, clientX: 10, clientY: 20,
+      preventDefault: () => { prevented = true; }, prevented: () => prevented };
+  }
+  for (let redraw = 0; redraw < 2; redraw++) {
+    const event = eventFor('cmd'); // entirely new row/button, no per-button listener
+    listeners.get('contextmenu')(event);
+    assert.equal(event.prevented(), true);
+  }
+  for (const event of [eventFor('claude'), eventFor('cmd', 'missing')]) {
+    listeners.get('contextmenu')(event);
+    assert.equal(event.prevented(), false);
+  }
+  assert.equal(listeners.size, 1);
+  assert.deepEqual(opened, [[project, 'cmd', 10, 20], [project, 'cmd', 10, 20]]);
+});
+
 const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 
@@ -35,7 +64,15 @@ test('完全访问档只挂在 cmd 上，且默认启动命令不带任何绕过
 test('卡片右键菜单、变体透传与 danger 标记都接上了', () => {
   assert.match(main, /function openCliLaunchMenu\(/);
   assert.ok(main.includes('data-variants="1"'), '有色标的按钮要带变体标记');
-  assert.ok(main.includes('btn.oncontextmenu = event => {'), '右键要能开菜单');
+  // 右键用 document 级委托挂（卡片重绘不会冲掉）；挂在按钮上就会随 render() 一起丢。
+  // 2026-09-19 实见：v1.7.0 起右键时有时无，就是因为只有 paintCardCliRows() 那条
+  // 路径挂过处理器，render() 重建卡片后就没了。
+  assert.match(
+    main,
+    /addEventListener\('contextmenu',[\s\S]{0,600}?card-cli-btn/,
+    '卡片色标右键要委托挂，别挂在按钮上',
+  );
+  assert.doesNotMatch(main, /btn\.oncontextmenu/, '按钮上不能再挂右键处理器（重绘会丢）');
   assert.ok(
     main.includes('const variant = cliLaunchVariants(tool).find(item => String(cmd).includes(item.args));'),
     '启动命令要透传选中的变体',

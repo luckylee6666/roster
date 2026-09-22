@@ -160,7 +160,7 @@ test('只持久化后端创建成功、可在下次恢复的终端标签', () =>
 
 test('主流程调用可测试的恢复编排', async () => {
   const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.match(main, /await restoreSessionLayout\(layout, async options => \{/);
+  assert.match(main, /await restoreSessionLayout\(layout, async \(options, item\) => \{/);
   assert.match(main, /await resumeCommandForRestoredTab\(options\.cwd, options\.autoCmd\)/);
   assert.match(main, /projectTabName\(options\.cwd, options\.name\)/);
   assert.match(main, /Codex 标签会按项目目录续接最近一次对话/);

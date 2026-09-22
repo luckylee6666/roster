@@ -3,6 +3,14 @@ import test from 'node:test';
 
 import { createTerminalInputBuffer } from '../src/terminal-input-buffer.js';
 
+test('启动命令失败不能被随后成功的缓存输入掩盖', async () => {
+  const buffer = createTerminalInputBuffer({ send: async data => {
+    if (data === 'codex\r') throw new Error('写入失败');
+  } });
+  buffer.write('queued');
+  assert.equal(await buffer.markReady('codex\r'), false);
+});
+
 test('PTY 就绪前的输入会在启动命令后按顺序发送', async () => {
   const sent = [];
   const buffer = createTerminalInputBuffer({

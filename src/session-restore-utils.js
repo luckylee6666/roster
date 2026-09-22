@@ -248,27 +248,56 @@ export function restoredCliCommand(command) {
   return trimmed;
 }
 
-export function sessionLayoutEntries(sessions) {
+export function normalizeSessionLayout(layout) {
+  return (Array.isArray(layout) ? layout : []).filter(item => item && typeof item === 'object'
+    && typeof item.cwd === 'string' && typeof item.name === 'string'
+    && typeof item.autoCmd === 'string');
+}
+
+export function sessionLayoutEntries(sessions, pending = [], restoreOrder = pending) {
   const layout = [];
+  const restored = new Map();
   sessions.forEach(session => {
     if (!session?.restorable) return;
-    layout.push({
+    // Until the restore transaction acknowledges success, retain its original
+    // entry exactly once, even if createSession persists during startup.
+    if (pending.includes(session.restoreEntry)) return;
+    const entry = {
       cwd: session.cwd || '',
       name: session.name || '',
       autoCmd: session.tool || '',
-    });
+    };
+    if (restoreOrder.includes(session.restoreEntry)) restored.set(session.restoreEntry, entry);
+    else layout.push(entry);
   });
-  return layout;
+  return [
+    ...restoreOrder.flatMap(entry => pending.includes(entry) ? [entry] : restored.has(entry) ? [restored.get(entry)] : []),
+    ...layout,
+  ];
 }
 
-export async function restoreSessionLayout(layout, createSession) {
-  for (const item of layout) {
+export async function restoreSessionLayout(layout, createSession, onProgress = () => {}) {
+  const result = { succeeded: 0, failed: 0, cancelled: 0 };
+  for (const [index, item] of layout.entries()) {
     if (!item || typeof item !== 'object') continue;
-    const autoCmd = restoredCliCommand(typeof item.autoCmd === 'string' ? item.autoCmd : '');
+    onProgress({ phase: 'start', item, index });
     try {
-      await createSession({ cwd: item.cwd, name: item.name, autoCmd });
-    } catch (_) {
-      // 单个标签失败不能阻断其余标签恢复；createSession 会在对应终端显示错误。
+      const autoCmd = restoredCliCommand(typeof item.autoCmd === 'string' ? item.autoCmd : '');
+      const outcome = await createSession({ cwd: item.cwd, name: item.name, autoCmd }, item);
+      if (outcome === 'cancelled') {
+        result.cancelled++;
+        onProgress({ phase: 'cancelled', item, index });
+        continue;
+      }
+      if (outcome === false) {
+        throw new Error('终端未就绪');
+      }
+      result.succeeded++;
+      onProgress({ phase: 'success', item, index });
+    } catch (error) {
+      result.failed++;
+      onProgress({ phase: 'failure', item, index, error });
     }
   }
+  return result;
 }

@@ -1528,6 +1528,8 @@ body {
 }
 
 .confirm-msg p {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: var(--fs-body);
   color: var(--text-1);
   line-height: 1.6;

@@ -16,6 +16,7 @@ export function createTerminalInputBuffer({
   let buffered = '';
   let sendChain = Promise.resolve();
   let lastSendFailed = false;
+  let sendFailures = 0;
 
   function enqueue(data) {
     if (!data || failed) return sendChain;
@@ -27,6 +28,7 @@ export function createTerminalInputBuffer({
       })
       .catch(error => {
         lastSendFailed = true;
+        sendFailures++;
         onError(error);
       });
     return sendChain;
@@ -61,13 +63,15 @@ export function createTerminalInputBuffer({
   }
 
   async function markReady(prefix = '') {
-    if (failed) return;
+    if (failed) return false;
+    const failuresBefore = sendFailures;
     ready = true;
     const queued = buffered;
     buffered = '';
     enqueue(prefix);
     enqueue(queued);
     await sendChain;
+    return !failed && sendFailures === failuresBefore;
   }
 
   function markFailed() {

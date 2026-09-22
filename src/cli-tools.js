@@ -25,6 +25,11 @@ export const CLI_TOOLS = Object.freeze([
 
 export const CLI_TOOL_IDS = Object.freeze(CLI_TOOLS.map(tool => tool.id));
 
+/** UI labels must never fall back to a launch command (which may contain secrets). */
+export function cliDisplayLabel(command) {
+  return CLI_TOOLS.find(tool => tool.id === normalizeCliToolName(command))?.label || '';
+}
+
 /** 同一家的其它命令名（历史布局、用户手敲）都归到登记 id；别名表在 session-restore-utils。 */
 export function isKnownCliTool(commandOrName) {
   return CLI_TOOL_IDS.includes(normalizeCliToolName(commandOrName));

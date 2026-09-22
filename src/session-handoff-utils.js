@@ -151,6 +151,9 @@ export function handoffLaunchPrompt(relativePath, sourceTool, targetTool, tools 
   const path = cleanInline(relativePath);
   const sourceLabel = toolLabel(sourceTool, tools);
   const targetLabel = toolLabel(targetTool, tools);
+  if (sourceTool === targetTool) {
+    return `这是 ${targetLabel} 旧会话的继续工作，当前是新会话。请先读取项目内 ${path}，再核对项目约束和实际工作区，继续未完成任务；不要恢复、修改或删除旧会话记录。`;
+  }
   return `这是从 ${sourceLabel} 交给 ${targetLabel} 的继续工作。请先读取项目内 ${path}，再检查当前 Git 工作区和项目约束，核对已有实现后继续未完成任务。`
     .replace(/[\r\n]+/g, ' ')
     .trim();

@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased
+
+### English
+
+**Fixed**
+- Developer mode can rotate an oversized session into a new session of the same CLI with a bounded handoff summary, without resuming, truncating or deleting the original transcript.
+- Terminal close confirmation uses the registered assistant name, never its full launch command; long text wraps inside the dialog.
+- Restore imports the actual resume-command helpers and preserves unprocessed/failed tabs in their original order until startup succeeds. Each attempt logs its result, slow starts show a notice, and explicitly closed tabs are not resurrected. Startup-write failure is no longer hidden by a later successful buffered write.
+- Project-card CLI context menus use document-level delegation, so the cmd full-access menu survives card redraws.
+
+### 中文
+
+**修复**
+- 开发模式的超大会话也可带有界摘要轮换到同一家 CLI 的新会话，不续接、截断或删除原始转录。
+- 关闭终端确认只显示登记的助手名称，不再显示整条启动命令；长文本在弹窗内换行。
+- 补齐恢复续接命令的函数导入，未处理/失败标签按原顺序保留到启动成功。每条恢复记录结果、等待过久有提示，主动关闭的标签不会复活；启动命令写入失败不再被后续成功输入掩盖。
+- 项目卡片 CLI 右键改用文档级事件委托，cmd 完全访问菜单在卡片重绘后仍可用。
+
 ## v1.8.0
 
 ### English

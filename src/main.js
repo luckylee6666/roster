@@ -14,13 +14,16 @@ import { installThemePointer } from './terminal-theme-pointer.js';
 import { installTerminalCharacterTheme } from './terminal-theme-character.js';
 import { normalizeProjectMachine, projectMachineTag } from './project-form-utils.js';
 import { seedThemePresets } from './terminal-theme-presets.js';
-import { CLI_TOOLS, CLI_TOOL_IDS, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
+import { CLI_TOOLS, CLI_TOOL_IDS, cliDisplayLabel, installedCliTools, normalizeInstalledCliIds } from './cli-tools.js';
 import {
   cliCommandName,
   extractResumedSessionId,
   normalizeCliToolName,
   prefersExactResume,
+  normalizeSessionLayout,
   restoreSessionLayout,
+  restoredCliCommand,
+  launchCliCommand,
   resumeCliCommand,
   sessionLayoutEntries,
 } from './session-restore-utils.js';
@@ -719,15 +722,23 @@ function paintCardCliRows() {
         event.stopPropagation();
         void openTerminal(project, btn.dataset.cmd);
       };
-      btn.oncontextmenu = event => {
-        if (!cliLaunchVariants(btn.dataset.cmd).length) return;
-        event.preventDefault();
-        event.stopPropagation();
-        openCliLaunchMenu(project, btn.dataset.cmd, event.clientX, event.clientY);
-      };
     });
   });
 }
+
+// 卡片色标的右键**必须走委托**：`render()` 会重建整列卡片、`paintCardCliRows()` 会重画每一行，
+// 处理器挂在按钮上就会被后一次重绘冲掉——v1.7.0 起"右键时有时无"就是这么来的（左键由
+// render() 也接了一次，所以只有右键会坏）。挂在 document 上一次，谁重绘都不影响。
+document.addEventListener('contextmenu', event => {
+  const btn = event.target?.closest?.('.card-cli-btn');
+  if (!btn) return;
+  const row = btn.closest('.card-cli-row[data-cli-id]');
+  const project = projects.find(item => item.id === row?.dataset.cliId);
+  // 没有启动档的家不吞右键，保持系统默认行为。
+  if (!project || !cliLaunchVariants(btn.dataset.cmd).length) return;
+  event.preventDefault();
+  openCliLaunchMenu(project, btn.dataset.cmd, event.clientX, event.clientY);
+});
 
 async function refreshInstalledClis({ force = false, syncUsageLoad = true } = {}) {
   if (!force && installedCliIds && Date.now() - installedCliAt < INSTALLED_CLI_TTL_MS) {
@@ -1170,10 +1181,10 @@ function openHistorySession(project, session) {
     const label = CLI_TOOLS.find(item => item.id === normalizeCliToolName(session.tool))?.label || session.tool;
     showConfirm({
       title: '这条会话已经很大',
-      message: `${badge?.title || '体积已经超过登记窗口'}。\n\n续接很可能直接失败，改为新开一个 ${label} 终端吗？旧会话保持不动。`,
-      confirmText: '开新会话',
+      message: `${badge?.title || '体积已经超过登记窗口'}。\n\n续接很可能直接失败，改为新开一个 ${label} 终端并带上最近对话摘要吗？旧会话保持不动。`,
+      confirmText: '带摘要新开',
       danger: false,
-      onConfirm: () => openFreshSessionForTool(project, session.tool),
+      onConfirm: () => openFreshSessionForTool(project, session),
     });
     return;
   }
@@ -1183,12 +1194,45 @@ function openHistorySession(project, session) {
   void createSession({ cwd: project.localPath, name: project.name, autoCmd });
 }
 
-/** 超窗会话的替代动作：同一家 CLI 开一条新会话（不带走续接参数）。 */
-function openFreshSessionForTool(project, tool) {
-  const command = cliCommandName(tool);
-  if (!command || !project?.localPath) return;
-  recordProjectActivity(project.id, command);
-  void createSession({ cwd: project.localPath, name: project.name, autoCmd: command });
+/** 超窗轮换只读原转录，在同家新终端注入有界交接，不续接/截断原会话。 */
+async function openFreshSessionForTool(project, source) {
+  const tool = normalizeCliToolName(source?.tool);
+  if (!CLI_TOOL_IDS.includes(tool) || !source?.id || !project?.localPath) return;
+  if (!historyOpenGate.allow(historyActionKey(project, source))) return;
+  const openingToken = beginProjectToolOpening();
+  if (!openingToken) { msg('正在打开另一组终端，请稍后再试', 'info'); return; }
+  const terminalState = captureTerminalPaneState();
+  let createdId = '';
+  try {
+    const [preview, context] = await Promise.all([
+      invoke('preview_session_handoff', { path: project.localPath, sourceTool: tool, id: source.id }),
+      invoke('project_context', { path: project.localPath }),
+    ]);
+    const content = buildSessionHandoffMarkdown({ project, sourceTool: tool, targetTool: tool, preview, context });
+    const validation = validateSessionHandoffContent(content);
+    if (!validation.valid) throw new Error(validation.error);
+    const handoff = await invoke('write_session_handoff', { path: project.localPath, content });
+    // Only a bare registered executable: never reuse source resume/yolo flags.
+    createdId = await createProjectToolSession(project, cliCommandName(tool));
+    const created = sessions.get(createdId);
+    if (!created?.restorable || created.status !== 'running'
+      || normalizeCliToolName(created.tool) !== tool || !sameProjectCwd(created.cwd, project.localPath)) {
+      throw new Error('新终端启动失败');
+    }
+    if (!await injectToSession(createdId, handoffLaunchPrompt(handoff.relativePath, tool, tool))) {
+      throw new Error('交接提示写入失败');
+    }
+    activateSession(createdId);
+    msg('已带最近对话摘要开启新会话，旧会话保持不动', 'success');
+  } catch (error) {
+    if (createdId) {
+      try { await rollbackCreatedSessions([createdId], terminalState); }
+      catch (_) { appLog('warn', '会话轮换失败后新终端清理失败'); }
+    }
+    msg(`新会话轮换失败：${error?.message || error}`, 'error');
+  } finally {
+    releaseProjectToolOpening(openingToken);
+  }
 }
 
 function closeSessionPreview() {
@@ -4075,16 +4119,21 @@ function clearAttention(id) {
 // ===== 会话恢复：记住上次的终端标签布局，重开应用一键还原 =====
 // PTY 进程随应用退出无法真正续命，恢复的是"布局"——同目录、同 CLI 重新拉起；
 // Claude/OpenCode/Grok 用 --continue，Codex 用 resume --last 接回该项目目录最近的对话。
+let pendingSessionLayout = [];
+try { pendingSessionLayout = normalizeSessionLayout(JSON.parse(localStorage.getItem('term-session-layout') || '[]')); } catch (_) {}
+const sessionRestoreOrder = pendingSessionLayout.slice();
+let restoringSessions = false;
+function forgetPendingSessionRestore(session) {
+  pendingSessionLayout = pendingSessionLayout.filter(entry => entry !== session.restoreEntry);
+}
 function persistSessionLayout() {
-  const layout = sessionLayoutEntries(sessions);
-  try { localStorage.setItem('term-session-layout', JSON.stringify(layout)); } catch (_) {}
+  const layout = sessionLayoutEntries(sessions, pendingSessionLayout, sessionRestoreOrder);
+  try { localStorage.setItem('term-session-layout', JSON.stringify(layout)); }
+  catch (_) { appLog('warn', '终端布局保存失败，磁盘记录未更新'); }
 }
 function maybeRestoreSessions() {
-  let layout;
-  try { layout = JSON.parse(localStorage.getItem('term-session-layout') || '[]'); } catch (_) { layout = []; }
-  if (!Array.isArray(layout) || !layout.length) return;
-  // 问一次就把记录清掉：恢复会重新落盘最新布局，取消则不再纠缠
-  localStorage.removeItem('term-session-layout');
+  const layout = pendingSessionLayout.slice();
+  if (!layout.length) return;
   const cmds = layout.filter(it => it && typeof it.autoCmd === 'string' && it.autoCmd)
     .map(it => normalizeCliToolName(it.autoCmd));
   const hasClaude = cmds.includes('claude');
@@ -4098,21 +4147,47 @@ function maybeRestoreSessions() {
   if (hasGrok) resumeNotes.push('Grok 标签会用 --continue 接上次对话。');
   showConfirm({
     title: '恢复终端会话',
-    message: `上次有 ${layout.length} 个终端会话，要恢复吗？\n同目录重新拉起对应 CLI。${resumeNotes.length ? '\n' + resumeNotes.join('\n') : ''}`,
+    message: `上次有 ${layout.length} 个终端会话，要恢复吗？\n同目录重新拉起对应 CLI。暂不恢复或恢复失败的标签会保留到下次。${resumeNotes.length ? '\n' + resumeNotes.join('\n') : ''}`,
     confirmText: '恢复',
     danger: false,
     onConfirm: () => restoreSessions(layout),
   });
 }
 async function restoreSessions(layout) {
-  await restoreSessionLayout(layout, async options => {
-    const autoCmd = await resumeCommandForRestoredTab(options.cwd, options.autoCmd);
-    return createSession({
-      ...options,
-      name: projectTabName(options.cwd, options.name),
-      autoCmd,
+  if (restoringSessions) return;
+  restoringSessions = true;
+  let slowTimer;
+  try {
+    const result = await restoreSessionLayout(layout, async (options, item) => {
+      const autoCmd = await resumeCommandForRestoredTab(options.cwd, options.autoCmd);
+      const id = await createSession({
+        ...options,
+        name: projectTabName(options.cwd, options.name),
+        autoCmd,
+        restoreEntry: item,
+      });
+      if (!pendingSessionLayout.includes(item)) return 'cancelled';
+      return sessions.get(id)?.restorable === true;
+    }, ({ phase, item, index, error }) => {
+      clearTimeout(slowTimer);
+      const label = `${index + 1}/${layout.length} ${cliDisplayLabel(item.autoCmd) || '终端'}`;
+      if (phase === 'start') {
+        appLog('info', `恢复终端：开始 ${label}`);
+        slowTimer = setTimeout(() => {
+          appLog('warn', `恢复终端：${label} 等待超过 15 秒，未完成布局仍保留`);
+          msg(`终端恢复仍在进行（${label}），未完成的标签已保留`, 'info');
+        }, 15000);
+      } else {
+        appLog(phase === 'failure' ? 'warn' : 'info', `恢复终端：${phase === 'success' ? '成功' : phase === 'cancelled' ? '已取消' : '失败'} ${label}${error ? `（${String(error?.message || error).slice(0, 200)}）` : ''}`);
+        if (phase === 'success') pendingSessionLayout = pendingSessionLayout.filter(entry => entry !== item);
+        persistSessionLayout();
+      }
     });
-  });
+    msg(`终端恢复完成：成功 ${result.succeeded} 个，失败 ${result.failed} 个${result.failed ? '（已保留，下次可重试）' : ''}${result.cancelled ? `，已取消 ${result.cancelled} 个` : ''}`, result.failed ? 'info' : 'success');
+  } finally {
+    clearTimeout(slowTimer);
+    restoringSessions = false;
+  }
 }
 
 /**
@@ -6435,8 +6510,9 @@ function confirmCloseSession(id) {
     return;
   }
   const running = s.status !== 'exited';
-  const aiHint = s.tool
-    ? `\n如果刚跟 ${s.tool} 聊过，建议先让它「更新记忆」（写入 .memory）再关。平时结论可丢进 .memory/inbox。`
+  const toolLabel = cliDisplayLabel(s.tool);
+  const aiHint = toolLabel
+    ? `\n如需保留项目进度，可先让 ${toolLabel}「更新记忆」再关闭。`
     : '';
   showConfirm({
     title: '关闭终端',
@@ -6467,6 +6543,7 @@ function finalizeSessionClose(id) {
   session.tabEl.remove();
   session.bodyEl.remove();
   sessions.delete(id);
+  forgetPendingSessionRestore(session);
 
   const nextState = closeTerminalPaneSession({
     assignments: terminalPaneAssignments,
@@ -6509,7 +6586,7 @@ async function closeSession(id) {
   return closed;
 }
 
-async function createSession({ cwd = '', name = '', autoCmd = '' }) {
+async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry = null }) {
   await bindTermEvents();
   const id = `term-${Date.now()}-${++termSeq}`;
   const label = name || `终端 ${termSeq}`;
@@ -6597,7 +6674,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     tabPaneEl: tabEl.querySelector('.term-tab-pane'),
     terminalHostEl,
     lastResizeKey: '', lastResizeSentAt: 0, pendingResize: null, resizeTimer: null,
-    startedAt: Date.now(), restorable: false,
+    startedAt: Date.now(), restorable: false, restoreEntry,
   };
   sessions.set(id, session);
   attachSessionWebgl(session);
@@ -6618,9 +6695,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
     // tool 只传工具名（命令首词，如 claude），不传整条命令——手机端用作标签/图标
     const tool = (autoCmd || '').trim().split(/\s+/)[0] || '';
     await invoke('terminal_create', { id, cwd, cols: term.cols || 80, rows: term.rows || 24, name: label, tool });
-    session.restorable = true;
     characterTheme.setState('idle');
-    persistSessionLayout();
     fitSession(id);
     const memoryProject = projects.find(p => String(p.localPath || '').replace(/[\\/]+$/, '') === String(cwd || '').replace(/[\\/]+$/, ''));
     if (memoryProject) {
@@ -6644,11 +6719,19 @@ async function createSession({ cwd = '', name = '', autoCmd = '' }) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
     const startup = (proxyHook ? `${proxyHook}\r` : '') + (autoCmd ? `${autoCmd}\r` : '');
-    await inputBuffer.markReady(startup);
+    if (sessions.get(id) !== session || session.status === 'exited') throw new Error('终端在启动期间已关闭');
+    if (!await inputBuffer.markReady(startup)) throw new Error('启动命令发送失败');
+    session.restorable = session.status !== 'exited' && sessions.get(id) === session;
+    persistSessionLayout();
   } catch (e) {
+    appLog('warn', `终端启动失败（${id}）：${String(e?.message || e).slice(0, 200)}`);
     inputBuffer.markFailed();
     session.status = 'failed';
     session.restorable = false;
+    // A failed startup can still own a PTY; never leave it running behind the
+    // failed tab while retaining the original layout for a later retry.
+    void invoke('terminal_close', { id }).catch(() => {});
+    if (sessions.get(id) !== session) return id; // user already closed/disposed it
     tabEl.classList.add('failed');
     updateTerminalPaneStatus(session);
     characterTheme.handleTerminalEvent('failure');
