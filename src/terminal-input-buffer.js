@@ -17,18 +17,21 @@ export function createTerminalInputBuffer({
   let sendChain = Promise.resolve();
   let lastSendFailed = false;
   let sendFailures = 0;
+  let starting = null;
 
-  function enqueue(data) {
+  function enqueue(data, fatal = false) {
     if (!data || failed) return sendChain;
     sendChain = sendChain
       .catch(() => {})
       .then(() => {
+        if (failed) return;
         lastSendFailed = false;
         return send(data);
       })
       .catch(error => {
         lastSendFailed = true;
         sendFailures++;
+        if (fatal) markFailed();
         onError(error);
       });
     return sendChain;
@@ -64,14 +67,23 @@ export function createTerminalInputBuffer({
 
   async function markReady(prefix = '') {
     if (failed) return false;
-    const failuresBefore = sendFailures;
-    ready = true;
-    const queued = buffered;
-    buffered = '';
-    enqueue(prefix);
-    enqueue(queued);
-    await sendChain;
-    return !failed && sendFailures === failuresBefore;
+    if (starting) return starting;
+    if (ready) return flush();
+    starting = (async () => {
+      const failuresBefore = sendFailures;
+      // Keep new keystrokes in the bounded buffer until the launch write has
+      // succeeded. A failed prefix must never release user text into a shell.
+      await enqueue(prefix, true);
+      if (failed) return false;
+      const queued = buffered;
+      buffered = '';
+      const drained = enqueue(queued, true);
+      ready = true;
+      await drained;
+      return !failed && sendFailures === failuresBefore;
+    })();
+    try { return await starting; }
+    finally { starting = null; }
   }
 
   function markFailed() {

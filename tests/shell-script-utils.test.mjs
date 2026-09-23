@@ -38,7 +38,7 @@ test('文件树菜单仅为 sh 文件显示填入命令动作并先确认 Bash �
 
   assert.match(html, /id="ctx-run-script"[^>]*data-action="run-script"[^>]*style="display:none;"/);
   assert.match(main, /ctx-run-script'\)\.style\.display\s*=\s*isShellScriptEntry\(entry\)/);
-  assert.match(main, /data:\s*createShellScriptCommand\(entry\.path, IS_WINDOWS\)/);
+  assert.match(main, /queueTerminalInput\(sessionId, createShellScriptCommand\(entry\.path, IS_WINDOWS\)\)/);
   assert.match(main, /invoke\('has_bash'\)/);
   assert.match(rust, /async fn has_bash\(\) -> bool/);
   assert.match(rust, /generate_handler!\[[\s\S]*?has_bash,/);

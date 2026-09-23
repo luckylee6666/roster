@@ -4,11 +4,59 @@ import test from 'node:test';
 import { createTerminalInputBuffer } from '../src/terminal-input-buffer.js';
 
 test('启动命令失败不能被随后成功的缓存输入掩盖', async () => {
+  const sent = [];
   const buffer = createTerminalInputBuffer({ send: async data => {
     if (data === 'codex\r') throw new Error('写入失败');
+    sent.push(data);
   } });
   buffer.write('queued');
   assert.equal(await buffer.markReady('codex\r'), false);
+  assert.deepEqual(sent, [], '启动失败后不得把缓存输入发给 shell');
+  assert.equal(buffer.write('late'), false);
+  assert.equal(await buffer.markReady('retry\r'), false, '失败实例不能复活/重放启动命令');
+});
+
+test('启动写入在途期间的新输入一起留在有界缓存，失败后全部丢弃', async () => {
+  const sent = [];
+  let rejectStartup;
+  const buffer = createTerminalInputBuffer({ send: data => {
+    sent.push(data);
+    if (data === 'launch\r') return new Promise((_, reject) => { rejectStartup = reject; });
+  } });
+  buffer.write('before');
+  const ready = buffer.markReady('launch\r');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(buffer.write('during'), true);
+  rejectStartup(new Error('启动失败'));
+  assert.equal(await ready, false);
+  assert.deepEqual(sent, ['launch\r']);
+});
+
+test('取消启动时尚未执行的发送任务不得发出', async () => {
+  const sent = [];
+  const buffer = createTerminalInputBuffer({ send: async data => sent.push(data) });
+  buffer.write('queued');
+  const ready = buffer.markReady('launch\r');
+  buffer.markFailed();
+  assert.equal(await ready, false);
+  assert.deepEqual(sent, []);
+});
+
+test('并发就绪调用只启动一次，成功后按顺序发送启动期间输入', async () => {
+  const sent = [];
+  let releaseStartup;
+  const buffer = createTerminalInputBuffer({ send: data => {
+    sent.push(data);
+    if (data === 'launch\r') return new Promise(resolve => { releaseStartup = resolve; });
+  } });
+  buffer.write('before');
+  const first = buffer.markReady('launch\r');
+  const second = buffer.markReady('duplicate\r');
+  await new Promise(resolve => setImmediate(resolve));
+  buffer.write('during');
+  releaseStartup();
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.deepEqual(sent, ['launch\r', 'beforeduring']);
 });
 
 test('PTY 就绪前的输入会在启动命令后按顺序发送', async () => {

@@ -416,7 +416,7 @@ async function bindNativeEscListener() {
       overlayOpen: false,
       terminalFocused: isXtermHelperTextarea(document.activeElement),
     })) return;
-    invoke('terminal_write', { id: activeSession, data: '\x1b' }).catch(() => {});
+    queueTerminalInput(activeSession, '\x1b');
   });
 }
 
@@ -1213,17 +1213,16 @@ async function openFreshSessionForTool(project, source) {
     if (!validation.valid) throw new Error(validation.error);
     const handoff = await invoke('write_session_handoff', { path: project.localPath, content });
     // Only a bare registered executable: never reuse source resume/yolo flags.
-    createdId = await createProjectToolSession(project, cliCommandName(tool));
+    createdId = await createProjectToolSession(project, cliCommandName(tool), {
+      initialPrompt: handoffLaunchPrompt(handoff.relativePath, tool, tool),
+    });
     const created = sessions.get(createdId);
     if (!created?.restorable || created.status !== 'running'
       || normalizeCliToolName(created.tool) !== tool || !sameProjectCwd(created.cwd, project.localPath)) {
       throw new Error('新终端启动失败');
     }
-    if (!await injectToSession(createdId, handoffLaunchPrompt(handoff.relativePath, tool, tool))) {
-      throw new Error('交接提示写入失败');
-    }
     activateSession(createdId);
-    msg('已带最近对话摘要开启新会话，旧会话保持不动', 'success');
+    msg('已请求携带摘要启动，请在终端确认助手状态；旧会话保持不动', 'info');
   } catch (error) {
     if (createdId) {
       try { await rollbackCreatedSessions([createdId], terminalState); }
@@ -1405,9 +1404,9 @@ async function launchProjectTools(project, selectedTools, { forceNew = false, cr
   return readyIds;
 }
 
-async function createProjectToolSession(project, autoCmd) {
+async function createProjectToolSession(project, autoCmd, { initialPrompt = '' } = {}) {
   recordProjectActivity(project.id, autoCmd);
-  return createSession({ cwd: project.localPath, name: project.name, autoCmd });
+  return createSession({ cwd: project.localPath, name: project.name, autoCmd, initialPrompt });
 }
 
 async function openProjectTools(project, tools, { forceNew = false } = {}) {
@@ -2013,8 +2012,14 @@ async function injectToSession(id, text, send = true) {
     if (!session.inputBuffer.write(data)) return false;
     return session.inputBuffer.flush();
   }
-  await invoke('terminal_write', { id, data });
-  return true;
+  return false;
+}
+
+// All desktop input sources share the startup barrier, not just xterm.onData.
+function queueTerminalInput(id, data) {
+  const session = sessions.get(id);
+  if (!session || session.status === 'failed' || session.status === 'exited') return false;
+  return session.inputBuffer?.write(data) === true;
 }
 
 function orchestraSessionId(tool) {
@@ -4358,8 +4363,7 @@ async function injectSnippet(content, send = false) {
   openDock();
   // send=true：注入后追加回车（\r）直接发送；先去掉结尾换行，避免多发空行
   const data = send ? content.replace(/[\r\n]+$/, '') + '\r' : content;
-  try { await invoke('terminal_write', { id, data }); }
-  catch (e) { msg('注入失败: ' + (e.message || e), 'error'); return; }
+  if (!queueTerminalInput(id, data)) { msg('注入失败：终端不可用或输入缓存已满', 'error'); return; }
   sessions.get(id)?.term.focus();
 }
 
@@ -4751,6 +4755,7 @@ async function bindTermEvents() {
   await listen('terminal-exit', e => {
     const s = sessions.get(e.payload);
     if (s) {
+      s.inputBuffer?.markFailed();
       s.status = 'exited';
       const historyCwd = invalidateTerminalProjectSessionHistory(s);
       s.tabEl.classList.add('exited');
@@ -4804,7 +4809,7 @@ async function bindTermEvents() {
     if (!paths.length) return;
     activateSession(targetSessionId, false, () => {
       const data = paths.map(shellQuotePath).join(' ') + ' ';
-      invoke('terminal_write', { id: targetSessionId, data }).catch(() => {});
+      queueTerminalInput(targetSessionId, data);
       sessions.get(targetSessionId)?.term.focus();
     });
   });
@@ -5191,7 +5196,7 @@ async function renderTree(cwd) {
 
 function insertPathToTerminal(path, sessionId = activeSession) {
   if (!sessionId || !sessions.has(sessionId)) return;
-  invoke('terminal_write', { id: sessionId, data: shellQuotePath(path) + ' ' }).catch(() => {});
+  queueTerminalInput(sessionId, shellQuotePath(path) + ' ');
   sessions.get(sessionId)?.term.focus();
 }
 
@@ -5208,13 +5213,8 @@ async function insertShellScriptCommand(entry) {
   const sessionId = activeSession;
   const previewSeqAtStart = previewLoadSeq;
   if (!await ensureBashAvailable() || !sessions.has(sessionId)) return;
-  try {
-    await invoke('terminal_write', {
-      id: sessionId,
-      data: createShellScriptCommand(entry.path, IS_WINDOWS),
-    });
-  } catch (e) {
-    msg('填入命令失败: ' + (e.message || e), 'error');
+  if (!queueTerminalInput(sessionId, createShellScriptCommand(entry.path, IS_WINDOWS))) {
+    msg('填入命令失败：终端不可用或输入缓存已满', 'error');
     return;
   }
   if (shouldCloseShellScriptPreview({
@@ -6542,6 +6542,7 @@ function finalizeSessionClose(id) {
   try { session.term.dispose(); } catch (_) {}
   session.tabEl.remove();
   session.bodyEl.remove();
+  session.inputBuffer?.markFailed();
   sessions.delete(id);
   forgetPendingSessionRestore(session);
 
@@ -6586,7 +6587,7 @@ async function closeSession(id) {
   return closed;
 }
 
-async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry = null }) {
+async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry = null, initialPrompt = '' }) {
   await bindTermEvents();
   const id = `term-${Date.now()}-${++termSeq}`;
   const label = name || `终端 ${termSeq}`;
@@ -6693,8 +6694,12 @@ async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry =
 
   try {
     // tool 只传工具名（命令首词，如 claude），不传整条命令——手机端用作标签/图标
-    const tool = (autoCmd || '').trim().split(/\s+/)[0] || '';
-    await invoke('terminal_create', { id, cwd, cols: term.cols || 80, rows: term.rows || 24, name: label, tool });
+    const tool = normalizeCliToolName(autoCmd);
+    await invoke('terminal_create', {
+      id, cwd, cols: term.cols || 80, rows: term.rows || 24, name: label, tool,
+      // Native argv owned by the backend, not a command to type into a shell.
+      ...(initialPrompt ? { initialPrompt } : {}),
+    });
     characterTheme.setState('idle');
     fitSession(id);
     const memoryProject = projects.find(p => String(p.localPath || '').replace(/[\\/]+$/, '') === String(cwd || '').replace(/[\\/]+$/, ''));
@@ -6711,14 +6716,16 @@ async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry =
       }
     }
     let proxyHook = '';
-    try {
-      const hook = await invoke('get_proxy_shell_hook');
-      proxyHook = String(hook?.command || '').trim();
-    } catch (_) {}
-    if (autoCmd || proxyHook) {
+    if (!initialPrompt) {
+      try {
+        const hook = await invoke('get_proxy_shell_hook');
+        proxyHook = String(hook?.command || '').trim();
+      } catch (_) {}
+    }
+    if (!initialPrompt && (autoCmd || proxyHook)) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
-    const startup = (proxyHook ? `${proxyHook}\r` : '') + (autoCmd ? `${autoCmd}\r` : '');
+    const startup = initialPrompt ? '' : (proxyHook ? `${proxyHook}\r` : '') + (autoCmd ? `${autoCmd}\r` : '');
     if (sessions.get(id) !== session || session.status === 'exited') throw new Error('终端在启动期间已关闭');
     if (!await inputBuffer.markReady(startup)) throw new Error('启动命令发送失败');
     session.restorable = session.status !== 'exited' && sessions.get(id) === session;

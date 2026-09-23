@@ -32,6 +32,7 @@ mod proxy_settings;
 mod session_budget;
 mod session_titles;
 mod shared_memory;
+mod terminal_launch;
 mod usage;
 
 /// 手机端远程服务监听端口（局域网）。
@@ -3046,6 +3047,7 @@ fn terminal_create(
     rows: u16,
     name: Option<String>,
     tool: Option<String>,
+    initial_prompt: Option<String>,
 ) -> Result<(), String> {
     // 不允许无效项目路径静默回退到应用默认目录，否则 `codex resume --last`
     // 可能按错误 cwd 接入另一个项目的最近会话。
@@ -3066,15 +3068,21 @@ fn terminal_create(
         .map_err(|e| e.to_string())?;
 
     // 选 shell：Unix 用用户默认 shell 的登录交互模式（加载 PATH/别名）；Windows 用 PowerShell
-    #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let mut c = CommandBuilder::new(&shell);
-        c.arg("-l");
-        c
+    let mut cmd = if let Some(prompt) = initial_prompt.as_deref() {
+        terminal_launch::initial_cli_command(tool.as_deref().unwrap_or(""), prompt, &cwd)?
+    } else {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let mut command = CommandBuilder::new(&shell);
+            command.arg("-l");
+            command
+        }
+        #[cfg(target_os = "windows")]
+        {
+            CommandBuilder::new("powershell.exe")
+        }
     };
-    #[cfg(target_os = "windows")]
-    let mut cmd = CommandBuilder::new("powershell.exe");
 
     if !cwd.is_empty() {
         cmd.cwd(&cwd);

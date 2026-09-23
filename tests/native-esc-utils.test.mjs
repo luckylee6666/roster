@@ -74,5 +74,5 @@ test('主流程监听 native-esc 并按判定结果写入 ESC', async () => {
   assert.match(native, /emit\("native-esc"/);
   assert.match(main, /listen\('native-esc'/);
   assert.match(main, /shouldWriteNativeEscapeToPty/);
-  assert.match(main, /data: '\\x1b'/);
+  assert.match(main, /queueTerminalInput\(activeSession, '\\x1b'\)/);
 });

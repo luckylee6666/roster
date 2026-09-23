@@ -7,6 +7,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Fixed**
+- Abort a terminal's entire startup input batch when its launch write fails, including keystrokes arriving during startup; failed/cancelled queues cannot replay input into a shell.
+- Developer-mode size rotation now launches a registered CLI directly from the backend with native initial-message arguments, without a shell or timed PTY typing. The UI reports only a launch request, not unverified assistant readiness. Initial messages are never saved into the tab's resume command; Windows script wrappers are rejected for this path instead of falling back to a shell.
 - Developer mode can rotate an oversized session into a new session of the same CLI with a bounded handoff summary, without resuming, truncating or deleting the original transcript.
 - Terminal close confirmation uses the registered assistant name, never its full launch command; long text wraps inside the dialog.
 - Restore imports the actual resume-command helpers and preserves unprocessed/failed tabs in their original order until startup succeeds. Each attempt logs its result, slow starts show a notice, and explicitly closed tabs are not resurrected. Startup-write failure is no longer hidden by a later successful buffered write.
@@ -15,6 +17,8 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **修复**
+- 终端启动写入失败时立即终止整个启动输入批次，包括启动期间新键入的内容；失败/取消的队列不再把缓存文字发给 shell。
+- 开发模式超窗轮换由后端直接启动登记 CLI，以原生初始消息参数携带交接，不经过 shell 或延时盲打 PTY；界面只报告已请求启动、不冒充助手已就绪，初始消息不写入标签恢复命令；Windows 脚本包装器在这条路径明确拒绝，不回退 shell。
 - 开发模式的超大会话也可带有界摘要轮换到同一家 CLI 的新会话，不续接、截断或删除原始转录。
 - 关闭终端确认只显示登记的助手名称，不再显示整条启动命令；长文本在弹窗内换行。
 - 补齐恢复续接命令的函数导入，未处理/失败标签按原顺序保留到启动成功。每条恢复记录结果、等待过久有提示，主动关闭的标签不会复活；启动命令写入失败不再被后续成功输入掩盖。

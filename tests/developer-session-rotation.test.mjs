@@ -29,20 +29,20 @@ function harness(failure = '') {
       if (method === 'write_session_handoff') return { relativePath: '.vibe/handoff/test.md' };
       assert.fail(`Unexpected IPC: ${method}`);
     },
-    createProjectToolSession: async (p, command) => {
-      calls.push({ method: 'create', command });
+    createProjectToolSession: async (p, command, options) => {
+      calls.push({ method: 'create', command, options });
       assert.equal(p, project);
       sessions.set('new-terminal', { restorable: failure !== 'create', status: failure === 'create' ? 'failed' : 'running', tool: command, cwd: p.localPath });
       return 'new-terminal';
     },
-    injectToSession: async (id, prompt) => { calls.push({ method: 'inject', id, prompt }); return failure !== 'inject'; },
+    injectToSession: () => assert.fail('不能向未验证的 PTY 盲打交接消息'),
     rollbackCreatedSessions: async (ids, state) => { rollbacks.push(ids); assert.deepEqual(state, { old: true }); ids.forEach(id => sessions.delete(id)); },
   };
   const run = new Function(...Object.keys(deps), `${implementation}; return openFreshSessionForTool;`)(...Object.values(deps));
   return { run: () => run(project, source), calls, messages, sessions, original, rollbacks, released: () => released };
 }
 
-test('开发模式同家轮换读取精确来源，以裸 CLI 新开并注入有界摘要，不改旧会话', async () => {
+test('开发模式同家轮换通过原生初始参数带摘要，不盲打 PTY 或宣称助手已收到', async () => {
   const h = harness();
   await h.run();
   assert.equal(h.calls.find(c => c.method === 'preview_session_handoff').args.id, source.id);
@@ -50,22 +50,24 @@ test('开发模式同家轮换读取精确来源，以裸 CLI 新开并注入有
   const draft = h.calls.find(c => c.method === 'write_session_handoff').args.content;
   assert.match(draft, /继续测试任务/);
   assert.ok(new TextEncoder().encode(draft).length <= 48 * 1024);
-  const injection = h.calls.find(c => c.method === 'inject');
-  assert.equal(injection.id, 'new-terminal');
-  assert.match(injection.prompt, /当前是新会话/);
-  assert.match(injection.prompt, /不要恢复、修改或删除旧会话记录/);
+  const { initialPrompt } = h.calls.find(c => c.method === 'create').options;
+  assert.match(initialPrompt, /当前是新会话/);
+  assert.match(initialPrompt, /不要恢复、修改或删除旧会话记录/);
+  assert.equal(h.calls.some(c => c.method === 'inject'), false);
+  assert.match(h.messages.at(-1), /请在终端确认助手状态/);
+  assert.doesNotMatch(h.messages.at(-1), /已.*开启新会话|成功/);
   assert.equal(h.sessions.get('old-terminal'), h.original);
   assert.equal(h.rollbacks.length, 0);
   assert.equal(h.released(), 1);
 });
 
-for (const failure of ['preview_session_handoff', 'write_session_handoff', 'create', 'inject']) {
+for (const failure of ['preview_session_handoff', 'write_session_handoff', 'create']) {
   test(`同家轮换 ${failure} 失败只回滚本次新终端`, async () => {
     const h = harness(failure);
     await h.run();
     assert.equal(h.sessions.get('old-terminal'), h.original);
     assert.equal(h.sessions.has('new-terminal'), false);
-    assert.deepEqual(h.rollbacks, ['create', 'inject'].includes(failure) ? [['new-terminal']] : []);
+    assert.deepEqual(h.rollbacks, failure === 'create' ? [['new-terminal']] : []);
     assert.equal(h.released(), 1);
     assert.match(h.messages.at(-1), /轮换失败/);
   });
