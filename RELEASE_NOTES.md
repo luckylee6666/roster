@@ -1,19 +1,31 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.8.0 / 本版更新
+## What's new in v1.9.0 / 本版更新
 
 **English**
 
-- **Roster now watches session size.** Every history row shows how big a session has grown (plus an estimated token count), and marks it when it is getting close to — or past — that CLI's context window. Windows are registered per CLI with their source, so the number is stated rather than guessed; sizes are always shown as estimates.
-- **A session that has grown past its CLI's window is no longer resumed blindly.** Roster asks first and offers the way out: **continue in a new session of the same CLI carrying a bounded handoff summary** (the same 24-message / 18KB brief used when handing a session to another CLI), leaving the old session untouched. Auto-opening the newest history skips such a session with a hint; Developer mode's tab restore and「Open CLI」move on to the newest session that is not over the line.
-- **Only CLIs whose on-disk history really is the next request are blocked** — `cmd` (it replays the whole transcript every turn; a 1.27M-token request was rejected outright) and `mimo` / `opencode` (session load reads every stored part; a 41.9MB session once hung the CLI *and* its compaction). `claude`, `codex`, `grok`, `agy` and `qwen` keep the size badge but are never blocked: their transcripts are append-only logs and the CLI compacts on its own. This was tuned against real history before release — it caught a MiMo window registered 5× too small, and stopped long-lived Claude (22MB) and Codex (210MB) sessions from being blocked at all.
+- **Drive Roster from your phone, like the Codex mobile app.** Open「Phone remote」and scan the QR code: your phone can pick a project, browse the merged history of all eight CLIs, open a session, start or continue a conversation, choose that CLI's own permission mode (full-access modes ask twice), watch the reply stream in, and stop a turn.
+- **The desktop stays the only executor.** A phone request goes through exactly the same path as the desktop composer — one turn per project, the concurrency cap, project memory, resume and over-window checks — and the desktop shows it live. The phone can also join a turn that is already running on the desktop, and both sides render the same event stream.
+- **Keep it running in the background.** The panel now opens from both workspaces and can stay on after you close it, with a visible indicator on both entry buttons; stopping it revokes the PIN immediately. Tailscale addresses are listed with their own QR code for use away from home.
+- **Optional Android app.** A tiny shell (`mobile-android/`, build with `mobile-android/build.sh`) remembers the computer, opens full-screen, and can be picked straight from the camera when scanning the QR code. Any phone browser works too.
+- Also includes the unreleased fixes since v1.8.0: startup input barrier, native-argv session rotation and cross-CLI handoff, restore that keeps failed tabs, and more — see the changelog.
 
 **中文**
 
-- **Roster 现在盯着会话体积。** 历史行会显示这条会话长到多大了（附估算 token），接近或超过这家 CLI 的上下文窗口时会标出来。窗口逐家登记并写明出处，数字是"查到的"而不是猜的；体积一律标明是估算。
-- **超过窗口的会话不再闷头续接。** Roster 会先问一句，并给出出路：**同一位助手开新会话 + 有界交接摘要**（沿用把一个会话交给别的 CLI 时那套 24 条 / 18KB），旧会话原样保留。自动打开最近历史时会跳过它并给出提示；开发模式恢复标签与「打开 CLI」顺延到没超线的那条。
-- **只有"磁盘上的历史真的就是下一轮请求"的家才会被拦**——`cmd`（每轮回放整条转录，实测 1.27M token 的请求被直接拒掉）与 `mimo` / `opencode`（加载会话要读整份 part 数据，曾有一次 41.9MB 会话把 CLI 与压缩一起卡死）。`claude`、`codex`、`grok`、`agy`、`qwen` 保留体积徽标但**永不拦**：它们的转录是只增日志、由 CLI 自己压缩。这条判据是发版前拿真实历史核对出来的——它揪出 MiMo 窗口登记小了 5 倍，也让本机 22MB 的 Claude、210MB 的 Codex 会话不至于被当成"必死"挡下来。
+- **像 Codex 手机端一样用手机遥控 Roster。** 打开「手机远程」扫码，手机就能选项目、看 8 家 CLI 合并的历史、打开会话、开新对话或续接、按这家 CLI 自己的权限档位发指令（不开沙箱的档位要二次确认）、实时看回复、随时停止。
+- **电脑是唯一的执行者。** 手机的请求和桌面输入框走完全同一条路——同一项目一轮、并发上限、项目记忆、续接与超窗复核——电脑上同步显示；手机也能中途接上电脑正在跑的一轮，两边看的是同一份事件。
+- **可以后台保持连接。** 面板在两个工作台都能打开，关掉面板后可以继续运行，两个入口都会显示「已开启」；停止即作废 PIN。面板还会列出 Tailscale 地址和二维码，出门也能连。
+- **可选的安卓 App。** 一个很小的外壳（`mobile-android/`，用 `mobile-android/build.sh` 构建），记住电脑地址、全屏打开，扫码时可直接选它打开；不装 App 用手机浏览器也行。
+- 同时包含 v1.8.0 之后未发版的修复：启动输入屏障、原生参数轮换与跨 CLI 交接、恢复时保留失败的标签等，详见更新日志。
+
+## Phone remote / 手机远程
+
+1. In Roster, click「手机远程」(bottom of the conversation sidebar, or the Developer-mode header) and choose「保持连接，收起面板」/ 在 Roster 里点「手机远程」，选「保持连接，收起面板」
+2. Scan the QR code with the phone — same Wi-Fi uses the LAN code, away from home use the Tailscale code / 用手机扫码：同一 WiFi 扫「局域网」码，出门扫「Tailscale」码
+3. If macOS asks whether Roster may accept incoming connections, choose Allow / macOS 问是否允许 Roster 接受传入连接时点「允许」
+
+Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only — use a trusted network or Tailscale. / 安全：局域网 + PIN、明文 HTTP，只接受私网与 Tailscale 来源，请在可信网络或 Tailscale 下使用。
 
 ## Upgrade / 升级
 

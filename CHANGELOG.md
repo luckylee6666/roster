@@ -2,9 +2,14 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
-## Unreleased
+## v1.9.0
 
 ### English
+
+**Added**
+- Phone remote now drives the conversation workspace, like the Codex mobile app: pick a project, browse the merged history of all CLIs, open a session, send an instruction and watch the reply stream in, stop a turn, and pick the CLI's own permission mode (full-access modes ask for confirmation). The desktop stays the only executor: phone requests go through the same send path as the desktop composer (one turn per project, concurrency cap, memory, resume and over-window checks), the desktop shows phone-started turns live, and the phone can join a turn already running. Phone and desktop share one event reducer. Terminal mirroring moved to its own tab.
+- The phone-remote panel is available from both workspaces and can keep running in the background with a visible indicator; closing or stopping it still revokes the PIN and disconnects phones. The panel now also lists the machine's Tailscale address with its own QR code (the server already accepted Tailscale peers).
+- **Android app (optional).** `mobile-android/` is a small native WebView shell (`mobile-android/build.sh` builds a ~110KB APK offline with the SDK command-line tools, no Gradle). It remembers the computer, opens the phone page full-screen, and can be picked directly when scanning the panel's QR code. The UI still comes from the desktop, so phone-page updates need no reinstall. Cleartext HTTP is only allowed to LAN / Tailscale / `.local` hosts; every other link opens in the system browser.
 
 **Fixed**
 - Developer-mode cross-CLI handoff to OpenCode, MiMo Code and cmd now passes the handoff-file instruction as a native initial message, matching size rotation instead of racing CLI startup with timed terminal input. Conversation-mode handoff keeps its source until the first turn succeeds, so a target thread created before a failed/cancelled prompt cannot lose the source on retry.
@@ -15,7 +20,16 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Restore imports the actual resume-command helpers and preserves unprocessed/failed tabs in their original order until startup succeeds. Each attempt logs its result, slow starts show a notice, and explicitly closed tabs are not resurrected. Startup-write failure is no longer hidden by a later successful buffered write.
 - Project-card CLI context menus use document-level delegation, so the cmd full-access menu survives card redraws.
 
+**Notes**
+- The phone remote is LAN + PIN over plain HTTP, restricted to private-network and Tailscale peers; use it only on a trusted network or over Tailscale. TLS, persistent pairing and push notifications are not included yet; approvals are still answered on the desktop.
+- The Android APK is signed with the builder's local debug key for sideloading. On HarmonyOS NEXT, the Android Tailscale app running inside the compatibility container does not route native apps' traffic; use a native HarmonyOS Tailscale client or the LAN address.
+
 ### 中文
+
+**新增**
+- 手机远程可以像 Codex 手机端一样遥控对话工作台：选项目、看各家 CLI 合并的历史、打开会话、发指令并实时看回复、停止当前一轮，并按各家 CLI 自己的权限档位执行（不开沙箱的档位要二次确认）。电脑是唯一的执行者：手机请求与桌面输入框走同一条发送路径（同一项目一轮、并发上限、记忆附加、续接与超窗复核），手机发起的一轮在电脑上同步显示，手机也能中途接上电脑正在跑的一轮；两端共用同一个事件归并。终端镜像移到单独的标签页。
+- 「手机远程」面板在两个工作台都能打开，可选「保持连接」在后台运行并显示标记；关闭或停止仍会立即作废 PIN 并断开手机。面板还会列出本机的 Tailscale 地址和对应二维码（服务端本来就放行 Tailscale 来源）。
+- **安卓 App（可选）**：`mobile-android/` 是一个很小的原生 WebView 外壳，`mobile-android/build.sh` 只用 SDK 命令行工具离线构建约 110KB 的 APK（不走 Gradle）。它记住电脑地址、全屏打开手机页，扫面板二维码时可直接选它打开；界面仍由电脑提供，手机页更新无需重装。明文 HTTP 只放行局域网 / Tailscale / `.local` 地址，其他链接一律交系统浏览器。
 
 **修复**
 - 开发模式跨 CLI 交给 OpenCode、MiMo Code、cmd 时，也改用原生初始消息传递交接文件提示，不再延时盲打终端。会话模式保留交接来源直到首轮成功，避免目标会话先创建、首条请求随后失败/取消时，重试丢失来源内容。
@@ -25,6 +39,10 @@ All notable changes to this project are documented here. 本项目的更新记�
 - 关闭终端确认只显示登记的助手名称，不再显示整条启动命令；长文本在弹窗内换行。
 - 补齐恢复续接命令的函数导入，未处理/失败标签按原顺序保留到启动成功。每条恢复记录结果、等待过久有提示，主动关闭的标签不会复活；启动命令写入失败不再被后续成功输入掩盖。
 - 项目卡片 CLI 右键改用文档级事件委托，cmd 完全访问菜单在卡片重绘后仍可用。
+
+**说明**
+- 手机远程的威胁模型仍是「局域网 + PIN、明文 HTTP」，只接受私网与 Tailscale 来源；请只在可信网络或 Tailscale 下使用。TLS、持久配对、推送通知尚未做；审批仍需在电脑上处理。
+- 安卓 APK 用构建者本机的 debug 证书签名，供自己侧载安装。鸿蒙 NEXT 上跑在卓易通兼容容器里的安卓版 Tailscale 管不到鸿蒙原生应用的流量，请改用鸿蒙原生 Tailscale 客户端，或在家直接用局域网地址。
 
 ## v1.8.0
 

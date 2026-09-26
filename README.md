@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.8.0** — Roster now watches session size: history rows show how big a session has grown, and a session that has grown past its CLI's context window is no longer resumed blindly — Roster offers a new session of the same CLI carrying a bounded handoff summary instead. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.9.0** — drive Roster from your phone, like the Codex mobile app: pick a project, browse every CLI's history, send an instruction and watch the reply stream in while the desktop does the work. Works in any phone browser on the same Wi-Fi or over Tailscale; an optional Android app is included. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -18,6 +18,7 @@ Only one instance may use each data directory. `pnpm dev` or `pnpm build:dev` cr
 
 - **Two workspaces** — Roster opens in a calm conversation workspace for everyday use; switch to Developer mode at any time for the full terminal, file editing, split panes, and multi-CLI collaboration tools
 - **Structured multi-CLI conversations** — the conversation workspace only offers locally installed assistants and can run all eight registered CLIs: **Claude / Grok / Codex / OpenCode / agy / Qwen / MiMo Code / Command Code (`cmd`)**. Their recent sessions share one timeline with source badges, preview/delete, same-tool resume, and cross-CLI takeover. History browsing is independent of the smaller handoff context; saved inline screenshots and project-local image/video links render in place, while local text links open in a read-only conversation overlay. Nested links resolve relative to the open document; line links show source with the target line highlighted
+- **Phone remote** — open「Phone remote」, scan the QR code, and your phone can pick a project, browse the merged history of all CLIs, start or continue a conversation, choose the CLI's own permission mode, watch the reply stream in, and stop a turn. The desktop stays the only executor: phone requests take the same path as the desktop composer, and the desktop shows them live. The panel can keep running in the background with a visible indicator; closing it revokes the PIN. Terminal mirroring lives in its own tab. LAN + PIN over plain HTTP (private-network and Tailscale peers only); an optional Android shell app is in `mobile-android/`
 - **Project-aware slash commands** — use Roster actions such as `/model`, `/effort` where supported, `/new`, and `/help`, plus skills/custom commands discovered for the current project and current CLI. The backend rediscovers the selection immediately before launch and rejects stale or cross-provider commands
 - **Project management** — add, edit, delete projects
 - **Run target (optional)** — local machine / server, or leave it unset
