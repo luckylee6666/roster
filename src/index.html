@@ -54,6 +54,11 @@
             <span>外观</span>
             <span class="conversation-theme-label">跟随系统</span>
           </button>
+          <button class="conversation-theme-switch conversation-remote-entry" id="conversation-remote-entry" type="button" data-live="false" title="用手机遥控这台电脑上的对话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>
+            <span>手机远程</span>
+            <span class="conversation-theme-label conversation-remote-state" id="conversation-remote-state">未开启</span>
+          </button>
           <button class="conversation-mode-switch" type="button" data-app-view-target="developer" aria-pressed="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
             <span><strong>开发模式</strong><small>终端、文件和 Git</small></span>
@@ -483,35 +488,6 @@
           <div class="modal-footer">
             <button class="btn btn-default" id="session-preview-cancel" type="button">关闭</button>
             <button class="btn btn-primary" id="session-preview-open" type="button">续接</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 手机远程 Modal -->
-    <div class="modal-mask" id="remote-overlay">
-      <div class="modal-wrap">
-        <div class="modal modal-sm">
-          <div class="modal-header">
-            <span class="modal-title">手机远程</span>
-            <button class="modal-x" id="remote-close">&times;</button>
-          </div>
-          <div class="modal-body">
-            <div class="remote-info">
-              <p class="remote-hint">手机与本机连同一 WiFi，用相机/浏览器<b>扫码即自动登录</b>；也可手动输地址 + PIN。</p>
-              <div class="remote-addrs" id="remote-addrs">
-                <div class="remote-loading">获取地址中…</div>
-              </div>
-              <div class="remote-row">
-                <span class="remote-label">PIN 码</span>
-                <code class="remote-val remote-pin" id="remote-pin">——————</code>
-                <button class="btn btn-default btn-xs" id="remote-copy-pin">复制</button>
-              </div>
-              <p class="remote-warn">⚠️ 此地址可在局域网内操作你电脑上的终端，PIN 勿外泄；请只在可信局域网或 Tailscale 下使用。</p>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-primary" id="remote-ok">知道了</button>
           </div>
         </div>
       </div>
@@ -1096,6 +1072,36 @@
           <div class="modal-footer">
             <button class="btn btn-default" id="confirm-cancel">取消</button>
             <button class="btn btn-danger" id="confirm-delete">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 手机远程：两种工作台都能打开，不能放在会被 hidden + inert 的 development-overlays 内 -->
+    <div class="modal-mask" id="remote-overlay" data-app-global-overlay>
+      <div class="modal-wrap">
+        <div class="modal modal-sm">
+          <div class="modal-header">
+            <span class="modal-title">手机远程</span>
+            <button class="modal-x" id="remote-close" title="停止手机远程并关闭">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="remote-info">
+              <p class="remote-hint">手机与本机连同一 WiFi 或同一 Tailscale 网络，用相机<b>扫码即自动登录</b>。手机上可以选项目、看历史对话、发指令让电脑上的助手执行，也能镜像终端。</p>
+              <div class="remote-addrs" id="remote-addrs">
+                <div class="remote-loading">获取地址中…</div>
+              </div>
+              <div class="remote-row">
+                <span class="remote-label">PIN 码</span>
+                <code class="remote-val remote-pin" id="remote-pin">——————</code>
+                <button class="btn btn-default btn-xs" id="remote-copy-pin">复制</button>
+              </div>
+              <p class="remote-warn">连上的手机可以让电脑上的助手按所选权限执行任务、操作已打开的终端。PIN 勿外泄，只在可信局域网或 Tailscale 下使用；停止后 PIN 立即作废。</p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-default" id="remote-stop">停止远程</button>
+            <button class="btn btn-primary" id="remote-ok" title="手机保持连接；可随时从侧栏或顶栏的「手机远程」回来停止">保持连接，收起面板</button>
           </div>
         </div>
       </div>

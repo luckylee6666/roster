@@ -1,4 +1,5 @@
-// 内嵌远程服务：手机端（局域网）通过浏览器访问，镜像并控制桌面已开的终端会话。
+// 内嵌远程服务：手机端（局域网）通过浏览器访问，镜像并控制桌面已开的终端会话；
+// 对话工作台的遥控走同一个服务里的 `/api/chat/*`（见 remote_chat.rs）。
 //
 // 数据流：PTY ←→ RemoteHub（会话表 + 滚动缓存 + 广播通道）←→ WebSocket ←→ 手机 xterm.js
 // 桌面窗口仍走 Tauri 事件，手机走这里的 WS，两边订阅同一批会话，互不影响。
@@ -160,6 +161,11 @@ impl RemoteHub {
         let _ = self.shutdown_tx.send(());
     }
 
+    /// 订阅「停止」信号：对话通道等其他长连接也要在桌面停止手机远程时一并断开。
+    pub(crate) fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
+        self.shutdown_tx.subscribe()
+    }
+
     /// 由 reader 线程调用：把一段输出同时广播给 WS 客户端并追加进滚动缓存。
     /// `encoded` 由调用方算好（与桌面事件复用同一次 base64，避免对同一块编码两遍）。
     pub fn publish(&self, id: &str, raw: &[u8], encoded: String) {
@@ -223,8 +229,17 @@ pub fn spawn_server(hub: RemoteHub) {
                 .route("/vendor/xterm.css", get(serve_xterm_css))
                 .route("/vendor/xterm.js", get(serve_xterm_js))
                 .route("/vendor/addon-fit.js", get(serve_fit_js))
+                .route("/vendor/marked.js", get(serve_marked_js))
+                .route("/vendor/purify.js", get(serve_purify_js))
+                .route("/app/main.js", get(serve_app_main_js))
+                .route("/app/terminal.js", get(serve_app_terminal_js))
+                .route(
+                    "/lib/conversation-state.js",
+                    get(serve_conversation_state_js),
+                )
                 .route("/api/sessions", get(list_sessions))
                 .route("/ws", get(ws_handler))
+                .merge(crate::remote_chat::routes())
                 .layer(middleware::from_fn(security_headers))
                 .layer(middleware::from_fn(require_private_peer))
                 .with_state(hub.clone());
@@ -340,9 +355,28 @@ async fn serve_fit_js() -> Response {
     )
 }
 
+const JS: &str = "application/javascript; charset=utf-8";
+
+async fn serve_marked_js() -> Response {
+    asset(JS, include_str!("../../src/vendor/marked.umd.js"))
+}
+async fn serve_purify_js() -> Response {
+    asset(JS, include_str!("../../src/vendor/purify.min.js"))
+}
+async fn serve_app_main_js() -> Response {
+    asset(JS, include_str!("../mobile/main.js"))
+}
+async fn serve_app_terminal_js() -> Response {
+    asset(JS, include_str!("../mobile/terminal.js"))
+}
+/// 手机端直接复用桌面的对话状态机（纯函数、无依赖），两边对同一串事件得出同一个结果。
+async fn serve_conversation_state_js() -> Response {
+    asset(JS, include_str!("../../src/conversation-state.js"))
+}
+
 // ===== 鉴权 + API =====
 
-fn token_ok(hub: &RemoteHub, q: &HashMap<String, String>) -> bool {
+pub(crate) fn token_ok(hub: &RemoteHub, q: &HashMap<String, String>) -> bool {
     // 先比对 PIN（定长比较，无论如何都跑完，不泄露时序）。
     let want = hub.token.lock().map(|t| t.clone()).unwrap_or_default();
     let provided = q.get("token").map(|s| s.as_str()).unwrap_or("");

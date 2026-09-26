@@ -29,6 +29,7 @@ mod project_files;
 mod project_memory;
 mod project_sessions;
 mod proxy_settings;
+mod remote_chat;
 mod session_budget;
 mod session_titles;
 mod shared_memory;
@@ -3311,9 +3312,9 @@ fn classify_ipv4(ip: std::net::Ipv4Addr) -> Option<&'static str> {
         return None;
     }
     let o = ip.octets();
-    // Tailscale / CGNAT 100.64.0.0/10：本期不展示
+    // Tailscale 100.64.0.0/10：服务本来就放行（require_private_peer），列出来手机在外面也能扫码连。
     if o[0] == 100 && (64..=127).contains(&o[1]) {
-        return None;
+        return Some("Tailscale");
     }
     if o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168) {
         return Some("局域网");
@@ -3394,10 +3395,24 @@ fn terminal_remote_info(state: State<TerminalState>) -> RemoteInfo {
             }
         }
     }
-    // 局域网优先
-    addrs.sort_by_key(|a| if a.kind == "局域网" { 0 } else { 1 });
+    // 局域网优先，其次 Tailscale
+    addrs.sort_by_key(|a| match a.kind.as_str() {
+        "局域网" => 0,
+        "Tailscale" => 1,
+        _ => 2,
+    });
 
     RemoteInfo { addrs, port, pin }
+}
+
+/// 主窗口拒绝了手机发起的一轮（项目正忙、助手未安装、会话已超窗……）：把原因发回手机。
+#[tauri::command]
+fn remote_conversation_reject(
+    run_id: String,
+    provider_id: String,
+    message: String,
+) -> Result<(), String> {
+    remote_chat::reject(&run_id, &provider_id, &message)
 }
 
 /// 关闭「手机远程」面板时调用：真正停掉服务（清空 PIN、踢掉所有已连接的手机、
@@ -3461,6 +3476,29 @@ fn usage_supported_agents() -> Vec<&'static str> {
 /// 读取，不接受前端自行传入 cwd、可执行文件或参数。
 #[tauri::command]
 async fn conversation_chat_start(
+    app: AppHandle,
+    app_state: State<'_, Mutex<AppState>>,
+    request: conversation_chat::ConversationChatStartInput,
+) -> Result<conversation_chat::ConversationChatStartResult, String> {
+    // 先登记再启动：CLI 起来后的第一批事件可能早于这里返回，手机要能接上。
+    // 启动失败时主窗口在本地处理错误，手机只能从 run_start_failed 得知。
+    let run_id = request.run_id.clone();
+    let provider_id = request.provider_id.clone();
+    let registered = remote_chat::run_registered(
+        &request.run_id,
+        &request.project_id,
+        &request.provider_id,
+        &request.thread_id,
+        &request.prompt,
+    );
+    let result = start_conversation_run(app, app_state, request).await;
+    if let Err(error) = &result {
+        remote_chat::run_start_failed(&run_id, &provider_id, registered, error);
+    }
+    result
+}
+
+async fn start_conversation_run(
     app: AppHandle,
     app_state: State<'_, Mutex<AppState>>,
     request: conversation_chat::ConversationChatStartInput,
@@ -3782,6 +3820,8 @@ pub fn run() {
         .setup(move |app| {
             // macOS WKWebView 会吞掉 ESC；本地 NSEvent 监听把裸 ESC 转成 native-esc。
             native_esc::install_native_esc_monitor(app.handle().clone());
+            // 手机远程的对话通道要把指令转给主窗口、读取项目记录。
+            remote_chat::install(app.handle().clone());
             // 会话状态感知：监控线程扫描"活跃后静默"的终端，emit terminal-attention
             let mon_app = app.handle().clone();
             std::thread::spawn(move || monitor_attention(mon_app, activity_for_monitor));
@@ -3857,6 +3897,7 @@ pub fn run() {
             terminal_close,
             terminal_remote_info,
             terminal_remote_stop,
+            remote_conversation_reject,
             notify,
             git_status_batch,
             git_branch,
@@ -3936,6 +3977,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_addresses_list_lan_and_tailscale_but_not_loopback() {
+        let kind = |ip: &str| classify_ipv4(ip.parse().unwrap());
+        assert_eq!(kind("192.168.1.20"), Some("局域网"));
+        assert_eq!(kind("10.0.0.5"), Some("局域网"));
+        assert_eq!(kind("100.101.102.103"), Some("Tailscale"));
+        assert_eq!(kind("100.63.0.1"), Some("其他"));
+        assert_eq!(kind("127.0.0.1"), None);
+        assert_eq!(kind("169.254.3.4"), None);
+    }
+
     #[test]
     fn context_window_follows_the_model_not_a_hardcoded_number() {
         // 上限写死过 200k，模型换代后每个会话都显示 100%——Claude 官方也修过同样

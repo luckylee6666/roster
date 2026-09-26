@@ -2,346 +2,456 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<title>Vibe 远程终端</title>
-<link rel="stylesheet" href="/vendor/xterm.css" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Roster" />
+<meta name="theme-color" content="#f4f6fa" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0f1320" media="(prefers-color-scheme: dark)" />
+<title>Roster 远程</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Crect x='11' y='6' width='10' height='20' rx='2.5' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E" />
 <style>
   :root {
-    --bg: #0f172a; --panel: #1e293b; --panel-2: #273449;
-    --border: #334155; --text: #e2e8f0; --muted: #94a3b8;
-    --accent: #3b82f6; --accent-2: #2563eb; --danger: #ef4444; --ok: #22c55e;
+    color-scheme: light dark;
+    --bg: #f4f6fa;
+    --surface: #ffffff;
+    --surface-2: #eef1f6;
+    --surface-3: #e6eaf2;
+    --line: #e1e6ef;
+    --line-strong: #cfd6e3;
+    --ink: #1b2233;
+    --muted: #5b6477;
+    --faint: #8b93a5;
+    --accent: #4f46e5;
+    --accent-2: #6d5ff5;
+    --accent-ink: #ffffff;
+    --accent-soft: #eef0ff;
+    --accent-line: #d5d8ff;
+    --ok: #1f8a5b;
+    --ok-soft: rgba(31, 138, 91, 0.12);
+    --warn: #b26b12;
+    --warn-soft: #fdf3e2;
+    --danger: #d23b3b;
+    --danger-soft: #fdecec;
+    --code-bg: #f3f5f9;
+    --shadow-1: 0 1px 2px rgba(24, 33, 54, 0.06), 0 1px 1px rgba(24, 33, 54, 0.04);
+    --shadow-2: 0 10px 30px rgba(24, 33, 54, 0.12), 0 2px 6px rgba(24, 33, 54, 0.06);
+    --user-bubble: linear-gradient(135deg, #4f46e5 0%, #6d5ff5 100%);
+    --bar-bg: rgba(244, 246, 250, 0.86);
+    --radius: 14px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1320;
+      --surface: #161b2a;
+      --surface-2: #1d2335;
+      --surface-3: #252c41;
+      --line: #262d42;
+      --line-strong: #343c55;
+      --ink: #e7eaf3;
+      --muted: #a3acc0;
+      --faint: #6f7891;
+      --accent: #8f89ff;
+      --accent-2: #a39dff;
+      --accent-ink: #0f1320;
+      --accent-soft: rgba(143, 137, 255, 0.14);
+      --accent-line: rgba(143, 137, 255, 0.35);
+      --ok: #3ccf8e;
+      --ok-soft: rgba(60, 207, 142, 0.14);
+      --warn: #f0b35a;
+      --warn-soft: rgba(240, 179, 90, 0.13);
+      --danger: #ff6b6b;
+      --danger-soft: rgba(255, 107, 107, 0.13);
+      --code-bg: #111626;
+      --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+      --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.5);
+      --user-bubble: linear-gradient(135deg, #5a52e8 0%, #7a6cf6 100%);
+      --bar-bg: rgba(15, 19, 32, 0.86);
+    }
+  }
+
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-    overflow: hidden; }
-  body { display: flex; flex-direction: column;
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font);
+    font-size: 15px; line-height: 1.5; -webkit-text-size-adjust: 100%; overflow: hidden; }
+  button { font: inherit; color: inherit; }
+  svg { display: block; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-  .top { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    border-bottom: 1px solid var(--border); }
-  .top .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
-  .top .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-  .top .dot.off { background: var(--danger); }
-  .top .title { font-size: 14px; font-weight: 600; flex: 1; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
-  .top button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column;
+    padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
 
-  .view { flex: 1; min-height: 0; display: none; flex-direction: column; }
-  .view.active { display: flex; }
+  /* ===== 顶栏 ===== */
+  .bar { flex: none; display: flex; align-items: center; gap: 6px; min-height: 52px;
+    padding: calc(env(safe-area-inset-top) + 6px) 10px 6px; background: var(--bar-bg);
+    -webkit-backdrop-filter: saturate(160%) blur(16px); backdrop-filter: saturate(160%) blur(16px);
+    border-bottom: 1px solid var(--line); z-index: 5; }
+  .bar-btn { flex: none; display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 11px;
+    background: transparent; color: var(--ink); cursor: pointer; }
+  .bar-btn:active { background: var(--surface-2); }
+  .bar-btn svg { width: 21px; height: 21px; }
+  .bar-btn[hidden] { display: none; }
+  .bar-title { flex: 1; min-width: 0; padding: 0 4px; }
+  .bar-title strong { display: block; font-size: 16px; font-weight: 650; letter-spacing: -0.01em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-title small { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+    overflow: hidden; white-space: nowrap; }
+  .bar-title small:empty { display: none; }
+  .conn { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px;
+    font-size: 12px; color: var(--muted); background: var(--surface-2); }
+  .conn i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .conn[data-state="on"] i { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+  .conn[data-state="connecting"] i { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+  .conn[data-state="off"] i { background: var(--danger); }
+  .conn[hidden] { display: none; }
 
-  .center { justify-content: center; align-items: center; gap: 16px; padding: 24px; }
-  .card { width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--border);
-    border-radius: 14px; padding: 20px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
-  .card h2 { margin: 0 0 4px; font-size: 18px; }
-  .card p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
-  .pin-input { width: 100%; font-size: 28px; letter-spacing: 10px; text-align: center;
-    padding: 14px; background: var(--bg); color: var(--text); border: 1px solid var(--border);
-    border-radius: 10px; outline: none; }
-  .pin-input:focus { border-color: var(--accent); }
-  .btn-primary { width: 100%; margin-top: 14px; padding: 13px; font-size: 15px; font-weight: 600;
-    color: #fff; background: linear-gradient(180deg, var(--accent), var(--accent-2));
-    border: none; border-radius: 10px; }
-  .err { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; text-align: center; }
+  /* ===== 视图 ===== */
+  .stage { flex: 1; min-height: 0; position: relative; }
+  .view { position: absolute; inset: 0; display: none; flex-direction: column; min-height: 0; }
+  .view.active { display: flex; animation: enter 0.18s ease-out; }
+  .scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  .pad { padding: 14px 14px calc(18px + env(safe-area-inset-bottom)); }
+  .has-tabs .pad { padding-bottom: 18px; }
 
-  .list { width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 10px; }
-  .list-head { display: flex; align-items: center; justify-content: space-between; width: 100%; max-width: 480px; }
-  .list-head h2 { margin: 0; font-size: 17px; }
-  .sess { display: flex; align-items: center; gap: 12px; padding: 14px 16px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
-  .sess:active { background: var(--panel-2); }
-  .sess .ic { width: 38px; height: 38px; border-radius: 9px; flex: none; display: grid; place-items: center;
-    font-size: 12px; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
-  .sess .meta { flex: 1; min-width: 0; }
-  .sess .nm { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sess .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
-  .sess .go { color: var(--muted); font-size: 20px; }
-  .empty { color: var(--muted); text-align: center; font-size: 14px; padding: 30px 0; }
+  /* 登录 */
+  .login { justify-content: center; align-items: center; padding: 24px; }
+  .login-card { width: 100%; max-width: 380px; padding: 26px 22px 22px; border-radius: 20px; background: var(--surface);
+    border: 1px solid var(--line); box-shadow: var(--shadow-2); }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .brand-mark { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff;
+    background: linear-gradient(135deg, #4f46e5, #8b5cf6); box-shadow: 0 6px 16px rgba(79, 70, 229, 0.35); }
+  .brand-mark svg { width: 22px; height: 22px; }
+  .brand h1 { margin: 0; font-size: 19px; letter-spacing: -0.01em; }
+  .brand p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+  .pin-input { width: 100%; padding: 14px; font: 600 26px/1 var(--mono); letter-spacing: 12px; text-align: center;
+    color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; outline: none; }
+  .pin-input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .form-error { min-height: 20px; margin: 10px 0 0; font-size: 13px; color: var(--danger); text-align: center; }
+  .login-foot { margin: 14px 0 0; font-size: 12px; color: var(--faint); text-align: center; line-height: 1.6; }
 
+  .link-btn { display: block; margin: 10px auto 0; padding: 8px 12px; border: 0; background: transparent;
+    color: var(--accent); font-size: 13.5px; font-weight: 600; cursor: pointer; }
+  .link-btn[hidden] { display: none; }
+  .btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+    margin-top: 14px; padding: 13px 16px; border: 0; border-radius: 12px; font-size: 15px; font-weight: 650;
+    color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 6px 16px rgba(79, 70, 229, 0.28); cursor: pointer; }
+  .btn-primary:active { transform: scale(0.985); filter: brightness(0.96); }
+  .btn-primary:disabled { opacity: 0.55; box-shadow: none; }
+  .btn-primary svg { width: 18px; height: 18px; }
+
+  /* 列表 */
+  .section-title { display: flex; align-items: center; justify-content: space-between; margin: 18px 4px 8px;
+    font-size: 12px; font-weight: 650; letter-spacing: 0.04em; color: var(--faint); text-transform: uppercase; }
+  .section-title:first-child { margin-top: 2px; }
+  .group { overflow: hidden; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line);
+    box-shadow: var(--shadow-1); }
+  .row { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 11px 14px;
+    border: 0; background: transparent; text-align: left; cursor: pointer; }
+  .row + .row::before { content: ""; position: absolute; top: 0; left: 14px; right: 0; height: 1px; background: var(--line); }
+  .row:active { background: var(--surface-2); }
+  .row-main { flex: 1; min-width: 0; }
+  .row-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
+  .row-title span.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-sub { margin-top: 2px; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-meta { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12px; color: var(--faint); }
+  .chev { flex: none; width: 16px; height: 16px; color: var(--faint); }
+  .project-icon { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent); }
+  .project-icon svg { width: 18px; height: 18px; }
+
+  .chip { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 2px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600; line-height: 18px; white-space: nowrap; border: 1px solid transparent; }
+  .chip.live { color: var(--ok); background: var(--ok-soft); }
+  .chip.live i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.2s ease-in-out infinite; }
+  .chip.warn { color: var(--warn); background: var(--warn-soft); }
+  .chip.danger { color: var(--danger); background: var(--danger-soft); }
+
+  .tool { color: var(--p-ink, var(--muted)); background: var(--p-bg, var(--surface-2)); border-color: var(--p-line, var(--line)); }
+  .p-claude { --p-ink: #9a4f3c; --p-bg: #fbefeb; --p-line: #f0d8d0; }
+  .p-grok { --p-ink: #86631f; --p-bg: #faf3e2; --p-line: #eee0bb; }
+  .p-codex { --p-ink: #2c5e9f; --p-bg: #eaf2fc; --p-line: #cedff3; }
+  .p-opencode { --p-ink: #477637; --p-bg: #eef6e9; --p-line: #d8e9cf; }
+  .p-agy { --p-ink: #1b7b92; --p-bg: #e8f7fa; --p-line: #ccebef; }
+  .p-qwen { --p-ink: #ad4772; --p-bg: #fbeaf2; --p-line: #f0d2e0; }
+  .p-mimo { --p-ink: #b9581f; --p-bg: #fff0e6; --p-line: #f3d7c6; }
+  .p-cmd { --p-ink: #5b49b5; --p-bg: #f1eefb; --p-line: #ddd5f2; }
+  @media (prefers-color-scheme: dark) {
+    .p-claude { --p-ink: #f0a58f; --p-bg: rgba(240, 165, 143, 0.12); --p-line: rgba(240, 165, 143, 0.25); }
+    .p-grok { --p-ink: #e8c46c; --p-bg: rgba(232, 196, 108, 0.12); --p-line: rgba(232, 196, 108, 0.25); }
+    .p-codex { --p-ink: #86b6f2; --p-bg: rgba(134, 182, 242, 0.12); --p-line: rgba(134, 182, 242, 0.25); }
+    .p-opencode { --p-ink: #95cf7f; --p-bg: rgba(149, 207, 127, 0.12); --p-line: rgba(149, 207, 127, 0.25); }
+    .p-agy { --p-ink: #6fd0e4; --p-bg: rgba(111, 208, 228, 0.12); --p-line: rgba(111, 208, 228, 0.25); }
+    .p-qwen { --p-ink: #f08fb9; --p-bg: rgba(240, 143, 185, 0.12); --p-line: rgba(240, 143, 185, 0.25); }
+    .p-mimo { --p-ink: #f5a36e; --p-bg: rgba(245, 163, 110, 0.12); --p-line: rgba(245, 163, 110, 0.25); }
+    .p-cmd { --p-ink: #b3a6ff; --p-bg: rgba(179, 166, 255, 0.12); --p-line: rgba(179, 166, 255, 0.25); }
+  }
+  .tool-mark { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
+    font: 700 12px/1 var(--font); letter-spacing: 0.02em; border: 1px solid transparent; }
+
+  .live-banner { display: flex; align-items: center; gap: 12px; width: 100%; margin-bottom: 12px; padding: 12px 14px;
+    border: 1px solid var(--accent-line); border-radius: var(--radius); background: var(--accent-soft); text-align: left; cursor: pointer; }
+  .live-text { flex: 1; min-width: 0; }
+  .live-banner strong { display: block; font-size: 14px; color: var(--ink); }
+  .live-sub { display: block; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spinner { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--accent-line);
+    border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+
+  .empty { padding: 42px 20px; text-align: center; color: var(--muted); font-size: 14px; line-height: 1.7; }
+  .empty svg { width: 34px; height: 34px; margin: 0 auto 10px; color: var(--faint); }
+  .muted-note { margin: 10px 4px 0; font-size: 12.5px; color: var(--faint); line-height: 1.6; }
+
+  /* ===== 对话 ===== */
+  .thread { background: var(--bg); }
+  .messages { padding: 14px 14px 8px; display: flex; flex-direction: column; gap: 14px; }
+  .notice { margin: 0 0 2px; padding: 10px 12px; border-radius: 12px; font-size: 13px; line-height: 1.6;
+    background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
+  .notice.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+  .notice.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+  .msg { max-width: 100%; }
+  .msg.user { align-self: flex-end; max-width: 86%; }
+  .msg.user .bubble { padding: 10px 14px; border-radius: 18px 18px 6px 18px; color: #fff; background: var(--user-bubble);
+    box-shadow: 0 4px 14px rgba(79, 70, 229, 0.22); white-space: pre-wrap; word-break: break-word; }
+  .msg.user .bubble .images { display: inline-block; margin-top: 6px; font-size: 12px; opacity: 0.85; }
+  .msg.assistant { align-self: stretch; }
+  .msg-head { display: flex; align-items: center; gap: 6px; margin: 0 0 6px 2px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .msg-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--p-ink, var(--faint)); }
+  .md { word-break: break-word; font-size: 15px; line-height: 1.65; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md p { margin: 0 0 10px; }
+  .md h1, .md h2, .md h3, .md h4 { margin: 16px 0 8px; line-height: 1.35; letter-spacing: -0.01em; }
+  .md h1 { font-size: 19px; } .md h2 { font-size: 17.5px; } .md h3, .md h4 { font-size: 16px; }
+  .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+  .md li { margin: 3px 0; }
+  .md a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-line); }
+  .md code { font-family: var(--mono); font-size: 13px; padding: 1px 5px; border-radius: 6px; background: var(--code-bg);
+    border: 1px solid var(--line); }
+  .md pre { margin: 0 0 12px; padding: 12px 14px; overflow-x: auto; border-radius: 12px; background: var(--code-bg);
+    border: 1px solid var(--line); -webkit-overflow-scrolling: touch; }
+  .md pre code { padding: 0; border: 0; background: none; font-size: 12.5px; line-height: 1.55; white-space: pre; }
+  .md blockquote { margin: 0 0 10px; padding: 2px 0 2px 12px; border-left: 3px solid var(--line-strong); color: var(--muted); }
+  .md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 12px; font-size: 13.5px; }
+  .md th, .md td { padding: 6px 10px; border: 1px solid var(--line); text-align: left; }
+  .md hr { border: 0; height: 1px; background: var(--line); margin: 14px 0; }
+  .md .media-placeholder { color: var(--faint); font-size: 13px; }
+  .turn-note { display: inline-flex; margin: 8px 0 0; padding: 4px 10px; border-radius: 999px; font-size: 12.5px;
+    color: var(--muted); background: var(--surface-2); }
+  .md > .turn-note:first-child { margin-top: 0; }
+  .turn-note.danger { color: var(--danger); background: var(--danger-soft); }
+  .typing { display: inline-flex; gap: 4px; padding: 6px 2px; }
+  .typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); animation: blink 1.2s infinite ease-in-out; }
+  .typing i:nth-child(2) { animation-delay: 0.15s; } .typing i:nth-child(3) { animation-delay: 0.3s; }
+  .approval { padding: 12px 14px; border-radius: 14px; border: 1px solid var(--warn); background: var(--warn-soft); }
+  .approval strong { display: block; font-size: 14px; color: var(--warn); margin-bottom: 4px; }
+  .approval p { margin: 0 0 6px; font-size: 13px; color: var(--ink); }
+  .approval code { display: block; font: 12.5px/1.5 var(--mono); padding: 8px 10px; border-radius: 8px; background: var(--code-bg);
+    overflow-x: auto; white-space: pre; }
+  .approval small { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
+
+  .composer { flex: none; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: var(--bar-bg);
+    -webkit-backdrop-filter: saturate(160%) blur(16px); backdrop-filter: saturate(160%) blur(16px); border-top: 1px solid var(--line); }
+  .status-line { display: flex; align-items: center; gap: 8px; min-height: 0; margin: 0 4px 6px; font-size: 12.5px; color: var(--muted); }
+  .status-line:empty { display: none; }
+  .status-line .spinner { width: 13px; height: 13px; border-width: 2px; }
+  .status-line.failed { color: var(--danger); }
+  .compose-row { display: flex; align-items: flex-end; gap: 8px; }
+  .compose-box { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 8px 12px;
+    border-radius: 18px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-1); }
+  .compose-box:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .compose-box textarea { width: 100%; min-height: 24px; max-height: 38vh; padding: 2px 0; resize: none; border: 0; outline: none;
+    background: transparent; color: var(--ink); font: 16px/1.45 var(--font); }
+  .compose-box textarea::placeholder { color: var(--faint); }
+  .compose-tools { display: flex; align-items: center; gap: 6px; }
+  .mode-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px 3px 7px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--surface-2); font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; }
+  .mode-chip[hidden] { display: none; }
+  .mode-chip svg { width: 13px; height: 13px; }
+  .mode-chip[data-level="write"] { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+  .mode-chip[data-level="danger"] { color: var(--danger); background: var(--danger-soft); border-color: transparent; }
+  .send-btn { flex: none; display: grid; place-items: center; width: 42px; height: 42px; border: 0; border-radius: 50%;
+    color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); cursor: pointer;
+    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3); }
+  .send-btn svg { width: 19px; height: 19px; }
+  .send-btn:disabled { opacity: 0.4; box-shadow: none; }
+  .send-btn.stop { background: var(--ink); color: var(--bg); box-shadow: none; }
+  .compose-hint { margin: 6px 6px 0; font-size: 12px; color: var(--faint); }
+  .compose-hint:empty { display: none; }
+
+  /* ===== 终端 ===== */
   #termHost { flex: 1; min-height: 0; background: #0b1120; padding: 6px 8px; overflow: hidden; }
   .xterm { height: 100%; }
-  /* 触摸滚动终端历史（普通会话）；TUI 满屏时无滚动条也正常 */
   .xterm .xterm-viewport { overflow-y: auto !important; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
-  .keys { display: flex; gap: 6px; padding: 6px 8px; background: var(--panel);
-    border-top: 1px solid var(--border); overflow-x: auto; }
-  .keys button { flex: none; padding: 8px 12px; font-size: 13px; font-family: ui-monospace, monospace;
-    background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+  .keys { flex: none; display: flex; gap: 6px; padding: 6px 8px; background: #111827; border-top: 1px solid #1f2937; overflow-x: auto; }
+  .keys button { flex: none; padding: 8px 12px; font: 13px var(--mono); color: #e5e7eb; background: #1f2937;
+    border: 1px solid #334155; border-radius: 8px; }
   .keys button:active { background: var(--accent); border-color: var(--accent); }
-  .inbar { display: flex; gap: 8px; padding: 8px;
-    background: var(--panel); border-top: 1px solid var(--border); }
-  .inbar input { flex: 1; padding: 11px 13px; font-size: 15px; background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 10px; outline: none; }
-  .inbar input:focus { border-color: var(--accent); }
-  .inbar .send { padding: 0 18px; font-weight: 600; color: #fff;
-    background: linear-gradient(180deg, var(--accent), var(--accent-2)); border: none; border-radius: 10px; }
+  .term-input { flex: none; display: flex; gap: 8px; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: #111827; }
+  .term-input input { flex: 1; min-width: 0; padding: 11px 13px; font: 16px var(--mono); color: #e5e7eb; background: #0b1120;
+    border: 1px solid #334155; border-radius: 10px; outline: none; }
+  .term-input input:focus { border-color: var(--accent); }
+  .term-input button { padding: 0 16px; border: 0; border-radius: 10px; font-weight: 650; color: #fff;
+    background: linear-gradient(135deg, #4f46e5, #6d5ff5); }
+
+  /* ===== 底部标签 ===== */
+  .tabs { flex: none; display: flex; padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); gap: 8px;
+    background: var(--bar-bg); -webkit-backdrop-filter: saturate(160%) blur(16px); backdrop-filter: saturate(160%) blur(16px);
+    border-top: 1px solid var(--line); }
+  .tabs[hidden] { display: none; }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; border: 0; border-radius: 12px;
+    background: transparent; color: var(--faint); font-size: 11.5px; font-weight: 600; cursor: pointer; }
+  .tab svg { width: 22px; height: 22px; }
+  .tab[aria-selected="true"] { color: var(--accent); }
+
+  /* ===== 底部面板 ===== */
+  .sheet-mask { position: fixed; inset: 0; z-index: 20; display: flex; align-items: flex-end; justify-content: center;
+    background: rgba(10, 14, 26, 0.38); animation: fade 0.15s ease-out; }
+  .sheet-mask[hidden] { display: none; }
+  .sheet { width: 100%; max-width: 560px; max-height: 78vh; overflow-y: auto; padding: 8px 12px calc(14px + env(safe-area-inset-bottom));
+    border-radius: 20px 20px 0 0; background: var(--surface); box-shadow: var(--shadow-2); animation: rise 0.2s ease-out; }
+  .sheet-grip { width: 38px; height: 5px; margin: 2px auto 10px; border-radius: 3px; background: var(--line-strong); }
+  .sheet h2 { margin: 0 4px 4px; font-size: 16px; }
+  .sheet > p { margin: 0 4px 12px; font-size: 13px; color: var(--muted); }
+  .option { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; border: 1px solid transparent; border-radius: 14px;
+    background: transparent; text-align: left; cursor: pointer; }
+  .option + .option { margin-top: 4px; }
+  .option:active { background: var(--surface-2); }
+  .option[aria-checked="true"] { border-color: var(--accent-line); background: var(--accent-soft); }
+  .option strong { display: block; font-size: 15px; }
+  .option span.hint { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+  .option.danger strong { color: var(--danger); }
+  .option.write strong { color: var(--warn); }
+  .option .check { flex: none; width: 20px; height: 20px; color: var(--accent); visibility: hidden; }
+  .option[aria-checked="true"] .check { visibility: visible; }
+
+  .toast { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 64px); z-index: 30; max-width: calc(100% - 32px);
+    padding: 10px 14px; border-radius: 12px; font-size: 13.5px; color: var(--bg); background: var(--ink); box-shadow: var(--shadow-2);
+    transform: translateX(-50%); animation: drop 0.18s ease-out; }
+  .toast[hidden] { display: none; }
+
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes blink { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+  @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes rise { from { transform: translateY(30px); opacity: 0.4; } }
+  @keyframes drop { from { opacity: 0; transform: translate(-50%, -6px); } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+  }
+  @media (min-width: 720px) {
+    .pad, .messages { max-width: 760px; margin: 0 auto; width: 100%; }
+    .composer > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+  }
 </style>
 </head>
 <body>
-  <div class="top">
-    <span class="dot" id="connDot"></span>
-    <span class="title" id="topTitle">Vibe 远程终端</span>
-    <button id="backBtn" style="display:none">会话</button>
-  </div>
-
-  <div class="view active center" id="loginView">
-    <div class="card">
-      <h2>输入 PIN</h2>
-      <p>在电脑端「手机远程」里查看 6 位 PIN</p>
-      <input class="pin-input" id="pinInput" type="tel" inputmode="numeric" maxlength="6" placeholder="••••••" />
-      <button class="btn-primary" id="pinBtn">连接</button>
-      <div class="err" id="loginErr"></div>
+<div id="app">
+  <header class="bar">
+    <button class="bar-btn" id="backBtn" type="button" aria-label="返回" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <div class="bar-title">
+      <strong id="barTitle">Roster</strong>
+      <small id="barSub"></small>
     </div>
-  </div>
+    <span class="conn" id="conn" data-state="off" hidden><i></i><span id="connText">未连接</span></span>
+    <button class="bar-btn" id="barAction" type="button" aria-label="刷新" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+    </button>
+  </header>
 
-  <div class="view center" id="listView">
-    <div class="list-head">
-      <h2>选择会话</h2>
-      <button id="refreshBtn">刷新</button>
-    </div>
-    <div class="list" id="sessList"></div>
-  </div>
+  <main class="stage">
+    <section class="view login active" id="loginView">
+      <div class="login-card">
+        <div class="brand">
+          <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>
+          <div><h1>Roster 远程</h1><p>遥控电脑上的对话与终端</p></div>
+        </div>
+        <input class="pin-input" id="pinInput" type="tel" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" aria-label="PIN 码" />
+        <button class="btn-primary" id="pinBtn" type="button">连接电脑</button>
+        <p class="form-error" id="loginErr" role="alert"></p>
+        <p class="login-foot">PIN 在电脑端「手机远程」面板里。扫码进入会自动填好。</p>
+        <button class="link-btn" id="switchHostBtn" type="button" hidden>换一台电脑</button>
+      </div>
+    </section>
 
-  <div class="view" id="termView">
-    <div id="termHost"></div>
-    <div class="keys" id="keysRow">
-      <button data-k="enter">⏎ 回车</button>
-      <button data-k="ctrlc">Ctrl+C</button>
-      <button data-k="esc">Esc</button>
-      <button data-k="tab">Tab</button>
-      <button data-k="up">↑</button>
-      <button data-k="down">↓</button>
-      <button data-k="left">←</button>
-      <button data-k="right">→</button>
-    </div>
-    <div class="inbar">
-      <input id="cmdInput" placeholder="输入命令，回车发送…" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" />
-      <button class="send" id="sendBtn">发送</button>
-    </div>
-  </div>
+    <section class="view" id="projectsView">
+      <div class="scroll"><div class="pad" id="projectsBody"></div></div>
+    </section>
 
-  <script src="/vendor/xterm.js"></script>
-  <script src="/vendor/addon-fit.js"></script>
-  <script>
-  (function () {
-    const $ = (id) => document.getElementById(id);
-    const KEY = 'vibe-remote-pin';
-    const ESC = String.fromCharCode(27);
-    const SEQ = {
-      enter: '\r', tab: '\t', ctrlc: String.fromCharCode(3), esc: ESC,
-      up: ESC + '[A', down: ESC + '[B', right: ESC + '[C', left: ESC + '[D',
-    };
-    let pin = localStorage.getItem(KEY) || '';
-    // 扫码进入：URL 带 ?k=PIN 则自动登录（去掉地址栏里的明文 PIN）
-    const urlPin = new URLSearchParams(location.search).get('k');
-    if (urlPin) {
-      pin = urlPin;
-      localStorage.setItem(KEY, pin);
-      try { history.replaceState(null, '', location.pathname); } catch (_) {}
-    }
-    let term = null, fit = null, ws = null, curId = '', curName = '';
+    <section class="view" id="sessionsView">
+      <div class="scroll"><div class="pad" id="sessionsBody"></div></div>
+    </section>
 
-    function show(view) {
-      ['loginView', 'listView', 'termView'].forEach(v => $(v).classList.toggle('active', v === view));
-      $('backBtn').style.display = view === 'termView' ? '' : 'none';
-    }
-    function setConn(state) { $('connDot').className = 'dot' + (state ? ' ' + state : ''); }
+    <section class="view thread" id="threadView">
+      <div class="scroll" id="threadScroll">
+        <div class="messages" id="threadBody"></div>
+      </div>
+      <div class="composer">
+        <div class="status-line" id="threadStatus" aria-live="polite"></div>
+        <div class="compose-row">
+          <div class="compose-box">
+            <textarea id="composer" rows="1" placeholder="让电脑上的助手做点什么…" enterkeyhint="send"></textarea>
+            <div class="compose-tools">
+              <button class="mode-chip" id="modeChip" type="button" data-level="read">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/></svg>
+                <span id="modeLabel">只读</span>
+              </button>
+            </div>
+          </div>
+          <button class="send-btn" id="sendBtn" type="button" aria-label="发送" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+        <p class="compose-hint" id="composeHint"></p>
+      </div>
+    </section>
 
-    // 登录
-    $('pinBtn').onclick = tryLogin;
-    $('pinInput').addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
-    if (pin) $('pinInput').value = pin;
+    <section class="view" id="terminalsView">
+      <div class="scroll"><div class="pad" id="terminalsBody"></div></div>
+    </section>
 
-    async function tryLogin() {
-      const v = $('pinInput').value.trim();
-      if (!v) return;
-      pin = v;
-      $('loginErr').textContent = '';
-      const list = await fetchSessions();
-      if (list === null) { $('loginErr').textContent = 'PIN 错误或无法连接'; return; }
-      localStorage.setItem(KEY, pin);
-      renderList(list);
-      show('listView');
-    }
+    <section class="view" id="terminalView">
+      <div id="termHost"></div>
+      <div class="keys" id="keysRow">
+        <button type="button" data-k="enter">⏎ 回车</button>
+        <button type="button" data-k="ctrlc">Ctrl+C</button>
+        <button type="button" data-k="esc">Esc</button>
+        <button type="button" data-k="tab">Tab</button>
+        <button type="button" data-k="up">↑</button>
+        <button type="button" data-k="down">↓</button>
+        <button type="button" data-k="left">←</button>
+        <button type="button" data-k="right">→</button>
+      </div>
+      <div class="term-input">
+        <input id="cmdInput" placeholder="输入命令，回车发送…" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="send" />
+        <button id="cmdSend" type="button">发送</button>
+      </div>
+    </section>
+  </main>
 
-    // 会话列表
-    async function fetchSessions() {
-      try {
-        const r = await fetch('/api/sessions?token=' + encodeURIComponent(pin));
-        if (!r.ok) return null;
-        return await r.json();
-      } catch (_) { return null; }
-    }
+  <nav class="tabs" id="tabs" role="tablist" hidden>
+    <button class="tab" type="button" role="tab" data-tab="chat" aria-selected="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 01-11.6 7.1L4 20l1-4.4A8 8 0 1121 12z"/></svg>
+      对话
+    </button>
+    <button class="tab" type="button" role="tab" data-tab="terminal" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7.5 9.5l3 2.5-3 2.5M13 15h3.5"/></svg>
+      终端
+    </button>
+  </nav>
+</div>
 
-    // 转义后插入 innerHTML（name/tool 来自桌面会话，可能含 < > 等，避免破版 / 注入）
-    function esc(s) {
-      return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
+<div class="sheet-mask" id="sheetMask" hidden>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
 
-    function renderList(list) {
-      const box = $('sessList');
-      box.innerHTML = '';
-      if (!list.length) {
-        box.innerHTML = '<div class="empty">电脑端还没有打开的终端会话。<br/>先在电脑上打开一个终端 / AI 会话。</div>';
-        return;
-      }
-      list.forEach(s => {
-        const el = document.createElement('div');
-        el.className = 'sess';
-        const tag = esc((s.tool || s.name || '?').slice(0, 4).toUpperCase());
-        el.innerHTML =
-          '<div class="ic">' + tag + '</div>' +
-          '<div class="meta"><div class="nm"></div><div class="sub">' + (s.tool ? '工具 ' + esc(s.tool) : '终端会话') + '</div></div>' +
-          '<div class="go">›</div>';
-        el.querySelector('.nm').textContent = s.name || s.id;
-        el.onclick = () => openSession(s.id, s.name || s.id);
-        box.appendChild(el);
-      });
-    }
-
-    $('refreshBtn').onclick = async () => {
-      const list = await fetchSessions();
-      if (list === null) { show('loginView'); return; }
-      renderList(list);
-    };
-    $('backBtn').onclick = async () => {
-      if (ws) { ws.close(); ws = null; }
-      curId = '';
-      const list = await fetchSessions();
-      renderList(list || []);
-      show('listView');
-    };
-
-    // 终端
-    let ptyCols = 80, ptyRows = 24;
-    function ensureTerm() {
-      if (term) return;
-      term = new window.Terminal({
-        fontSize: 12,
-        fontFamily: 'ui-monospace, "JetBrains Mono", Menlo, monospace',
-        cursorBlink: true,
-        scrollback: 8000,
-        theme: { background: '#0b1120', foreground: '#e2e8f0', cursor: '#3b82f6' },
-      });
-      term.open($('termHost'));
-      term.onData(d => sendInput(d));
-      // 方向/尺寸变化 → 按新宽度重算字号（不改 PTY，仅本地缩放）
-      window.addEventListener('resize', () => applySize(ptyCols, ptyRows));
-      window.addEventListener('orientationchange', () => setTimeout(() => applySize(ptyCols, ptyRows), 300));
-      setupTouchScroll();
-    }
-
-    // 镜像 PTY：列宽必须 = PTY 列宽（否则换行错乱），按宽度自动缩字号铺满；
-    // 行数则取「填满手机高度」与 PTY 行数的较大值——多出的行用历史回滚填，消除底部黑边。
-    // claude 是普通缓冲 TUI，只要列宽对、行数多无害；绝不反向 resize PTY。
-    function applySize(cols, rows) {
-      if (!term || !cols) return;
-      ptyCols = cols; ptyRows = rows || ptyRows;
-      const host = $('termHost');
-      const availW = host.clientWidth - 14;
-      const availH = host.clientHeight - 6;
-      // 字符宽 ≈ 0.6*fontSize；用 0.62 留余量，floor 取整，避免最右列被裁
-      let fs = Math.floor((availW / cols) / 0.62);
-      fs = Math.max(7, Math.min(15, fs));
-      if (term.options.fontSize !== fs) term.options.fontSize = fs;
-      const cellH = fs * 1.2;
-      const fitRows = Math.floor(availH / cellH);
-      const showRows = Math.max(ptyRows, fitRows, 1);
-      try { term.resize(cols, showRows); } catch (_) {}
-    }
-
-    // 自接管触摸滚动：xterm 内置触屏滚动不可靠，touchmove → term.scrollLines 最稳。
-    function setupTouchScroll() {
-      const host = $('termHost');
-      let lastY = null;
-      host.addEventListener('touchstart', e => {
-        lastY = e.touches[0].clientY;
-      }, { passive: true });
-      host.addEventListener('touchmove', e => {
-        if (lastY === null) return;
-        const y = e.touches[0].clientY;
-        const cell = (term.options.fontSize || 12) * 1.2; // 行高约 1.2em
-        const lines = (lastY - y) / cell;
-        const n = lines > 0 ? Math.floor(lines) : Math.ceil(lines);
-        if (n !== 0) { term.scrollLines(n); lastY = y; }
-      }, { passive: true });
-      const clear = () => { lastY = null; };
-      host.addEventListener('touchend', clear, { passive: true });
-      host.addEventListener('touchcancel', clear, { passive: true });
-    }
-
-    function openSession(id, name) {
-      curId = id; curName = name;
-      $('topTitle').textContent = name;
-      show('termView');
-      ensureTerm();
-      term.reset();
-      connectWs();
-    }
-
-    function connectWs() {
-      if (ws) { ws.close(); ws = null; }
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = proto + '://' + location.host + '/ws?token=' + encodeURIComponent(pin) + '&id=' + encodeURIComponent(curId);
-      setConn('off');
-      ws = new WebSocket(url);
-      ws.onopen = () => setConn('on');
-      ws.onmessage = (ev) => {
-        let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
-        if (m.t === 'o') term.write(b64ToBytes(m.d));
-        else if (m.t === 'size') applySize(m.cols, m.rows);
-        else if (m.t === 'exit') {
-          term.write('\r\n\x1b[90m[会话已结束]\x1b[0m\r\n');
-          setConn('off');
-          // 会话已死：清掉 curId，阻止 onclose 触发的自动重连（否则会对死会话每 1.5s 重连一次）
-          curId = '';
-        }
-      };
-      ws.onclose = () => {
-        setConn('off');
-        // 仅在「非正常断开」（curId 还在）时重连；exit 已把 curId 清空，不再重连死会话
-        if (curId && $('termView').classList.contains('active')) {
-          setTimeout(() => { if (curId) connectWs(); }, 1500);
-        }
-      };
-      ws.onerror = () => setConn('off');
-    }
-
-    function sendInput(data) {
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'i', d: data }));
-    }
-
-    $('keysRow').querySelectorAll('button').forEach(b => {
-      b.onclick = () => { sendInput(SEQ[b.dataset.k] || ''); term && term.focus(); };
-    });
-
-    function submitCmd() {
-      const inp = $('cmdInput');
-      sendInput(inp.value + '\r');
-      inp.value = '';
-    }
-    $('sendBtn').onclick = submitCmd;
-    $('cmdInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitCmd(); } });
-
-    function b64ToBytes(b64) {
-      const bin = atob(b64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return bytes;
-    }
-
-    if (pin) {
-      fetchSessions().then(list => {
-        if (list === null) { show('loginView'); return; }
-        renderList(list);
-        show('listView');
-      });
-    }
-  })();
-  </script>
+<script src="/vendor/marked.js"></script>
+<script src="/vendor/purify.js"></script>
+<script type="module" src="/app/main.js"></script>
 </body>
 </html>

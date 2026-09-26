@@ -353,7 +353,9 @@ test('事件监听就绪前禁止发送，连接中取消会等后端注册后�
   const conversation = await read('src/conversation-mode.js');
   assert.match(conversation, /!listenerReady/);
   assert.match(conversation, /dom\.stop\.hidden = !busy/);
-  assert.match(conversation, /!\['starting', 'running'\]\.includes\(state\.status\)/);
+  // 桌面停止按钮与手机停止请求共用 stopConversationRun：只有连接中/处理中的一轮能停。
+  assert.match(conversation, /!\['starting', 'running'\]\.includes\(current\.status\)/);
+  assert.match(conversation, /async function stop\(\) \{\n    await stopConversationRun\(/);
   assert.match(conversation, /runController\.cancel\(runId, \{ backendReady: false \}\)/);
 });
 

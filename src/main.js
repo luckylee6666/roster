@@ -2466,9 +2466,11 @@ function bind() {
 
   // 手机远程入口
   $('remote-entry').onclick = openRemote;
+  $('conversation-remote-entry').onclick = openRemote;
   $('remote-close').onclick = closeRemote;
-  $('remote-ok').onclick = closeRemote;
-  $('remote-overlay').onclick = e => { if (e.target === $('remote-overlay')) closeRemote(); };
+  $('remote-stop').onclick = closeRemote;
+  $('remote-ok').onclick = hideRemotePanel;
+  $('remote-overlay').onclick = e => { if (e.target === $('remote-overlay')) hideRemotePanel(); };
   $('remote-copy-pin').onclick = () => copyText($('remote-pin').textContent);
 
   // 扫描导入
@@ -2981,12 +2983,26 @@ function closeServerList() {
 }
 
 // ===== 手机远程 =====
+// 手机远程是否在对外监听。收起面板不等于停止：用户明确选「保持连接」后服务继续，
+// 两个工作台的入口都挂上"已开启"标记，随时能回来停掉——暴露中的状态必须看得见。
+let remoteLive = false;
+
+function syncRemoteIndicators() {
+  $('remote-entry')?.classList.toggle('is-live', remoteLive);
+  const entry = $('conversation-remote-entry');
+  if (entry) entry.dataset.live = String(remoteLive);
+  const label = $('conversation-remote-state');
+  if (label) label.textContent = remoteLive ? '已开启' : '未开启';
+}
+
 async function openRemote() {
   $('remote-overlay').classList.add('active');
   const box = $('remote-addrs');
   box.innerHTML = '<div class="remote-loading">获取地址中…</div>';
   try {
     const info = await invoke('terminal_remote_info');
+    remoteLive = true;
+    syncRemoteIndicators();
     $('remote-pin').textContent = info.pin;
     const addrs = info.addrs || [];
     if (!addrs.length) {
@@ -3014,11 +3030,17 @@ async function openRemote() {
   }
 }
 
-function closeRemote() {
+function hideRemotePanel() {
   $('remote-overlay').classList.remove('active');
+}
+
+function closeRemote() {
+  hideRemotePanel();
   // 真正停掉手机远程服务（清空 PIN、断开已连接的手机、停止监听），
   // 不只是隐藏这个面板——不然 PIN 和监听会一直有效到应用退出。
   invoke('terminal_remote_stop').catch(() => {});
+  remoteLive = false;
+  syncRemoteIndicators();
 }
 
 // ===== 用量统计 =====

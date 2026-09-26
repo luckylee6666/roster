@@ -5050,6 +5050,22 @@ body {
   font-size: 13px; color: var(--text-1); background: var(--bg-2); border: 1px solid var(--border);
   border-radius: 6px; overflow-x: auto; white-space: nowrap; }
 
+/* 手机远程保持连接时的标记：两个工作台的入口都要看得出"正在对外监听"。 */
+#remote-entry { position: relative; }
+#remote-entry.is-live::after {
+  content: ""; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--green); box-shadow: 0 0 0 2px var(--bg-1, #fff);
+}
+.conversation-remote-entry[data-live="true"] { color: var(--chat-ink); }
+.conversation-remote-entry[data-live="true"] svg { color: var(--chat-success); }
+.conversation-remote-entry[data-live="true"] .conversation-remote-state {
+  display: inline-flex; align-items: center; gap: 5px; color: var(--chat-success);
+}
+.conversation-remote-entry[data-live="true"] .conversation-remote-state::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--chat-success); box-shadow: 0 0 0 3px var(--chat-success-glow);
+}
+
 /* ===== AI 用量面板 ===== */
 .usage-body { display: flex; flex-direction: column; gap: 14px; min-height: 120px; }
 .usage-loading { padding: 28px 0; text-align: center; color: var(--text-3); font-size: 13px; }

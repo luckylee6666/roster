@@ -575,6 +575,9 @@ export function installConversationMode({
   let usageExpiryTimer = null;
   let deletingHistory = null;
   let resumeLatestOnHistory = false;
+  let remoteUnlisten = null;
+  // 手机请求在读历史/转录的 await 期间先占住项目，免得桌面或另一条手机请求插进来。
+  const remotePending = new Set();
   // Each project keeps its own transcript, draft and run, so a turn started in
   // one project keeps streaming while the user reads or types in another.
   const conversationStates = new Map();
@@ -1270,15 +1273,18 @@ export function installConversationMode({
     } catch (_) {}
   }
 
-  function currentModel() {
-    const model = String(providerModels[currentProvider().id] || '').trim();
+  function modelFor(providerId) {
+    const model = String(providerModels[providerId] || '').trim();
     return validateConversationModel(model).ok ? model : '';
   }
 
-  function currentEffort() {
-    const effort = String(providerEfforts[currentProvider().id] || '').trim();
+  function effortFor(providerId) {
+    const effort = String(providerEfforts[providerId] || '').trim();
     return validateConversationEffort(effort).ok ? effort : '';
   }
+
+  const currentModel = () => modelFor(currentProvider().id);
+  const currentEffort = () => effortFor(currentProvider().id);
 
   function slashInspect(value = dom.composer?.value) {
     return inspectConversationSlash(
@@ -3328,6 +3334,10 @@ export function installConversationMode({
     const prompt = promptState.prompt
       || (pendingAttachments.length ? '请查看我粘贴的图片，结合图片回答。' : '');
     if (!project || !selectedProjectExists() || !prompt || isRunning() || isDeletingHistory() || !providerReady(provider.id) || !listenerReady) return;
+    if (remotePending.has(project.id)) {
+      notify?.('手机刚在这个项目发起了一轮，稍等片刻', 'info');
+      return;
+    }
     if (promptState.tooLong) {
       syncComposer();
       dom.composer?.focus();
@@ -3430,16 +3440,190 @@ export function installConversationMode({
     }
   }
 
-  async function stop() {
-    if (!state.runId || !['starting', 'running'].includes(state.status)) return;
-    const runId = state.runId;
-    const projectId = state.projectId || selectedProject?.id || '';
-    const awaitingStart = state.status === 'starting';
-    state = { ...state, status: 'stopping' };
+  /** 停止某个项目的一轮：桌面停止按钮和手机的停止请求共用，后台项目也能停。 */
+  async function stopConversationRun(projectId, runId) {
+    const current = stateForProject(projectId);
+    if (!runId || !current || current.runId !== runId
+      || !['starting', 'running'].includes(current.status)) return;
+    const awaitingStart = current.status === 'starting';
+    const active = commitState(projectId, { ...current, status: 'stopping' });
     armStoppingWatchdog(runId, projectId);
-    renderState();
+    if (active) renderState();
+    else renderProjects();
     if (awaitingStart) await runController.cancel(runId, { backendReady: false });
     else await cancelAcceptedRun(runId, projectId);
+  }
+
+  async function stop() {
+    await stopConversationRun(state.projectId || selectedProject?.id || '', state.runId);
+  }
+
+  // ===== 手机远程 =====
+  // 手机只是第二块屏：它发来的一轮和桌面输入框走同一条路（同一项目一轮、并发上限、
+  // 记忆附加、续接复核），这里只多做一件事——替手机把这个项目的会话状态准备好。
+  // 运行 ID 由手机生成，事件因此能直接对上号；被拒绝的原因经后端发回手机。
+  function rejectRemote(runId, providerId, message) {
+    invoke('remote_conversation_reject', { runId, providerId, message }).catch(() => {});
+  }
+
+  function remoteProjectBusy(projectId) {
+    return projectIsRunning(projectId)
+      || conversationRunning(stateForProject(projectId) || {})
+      || (deletingHistory?.projectId === projectId);
+  }
+
+  async function remoteSend(command) {
+    const runId = String(command?.runId || '');
+    const providerId = String(command?.providerId || '');
+    const projectId = String(command?.projectId || '');
+    const threadId = String(command?.threadId || '');
+    const prompt = String(command?.prompt || '').trim();
+    const mode = String(command?.mode || '');
+    const fail = message => {
+      rejectRemote(runId, providerId, message);
+      return false;
+    };
+    if (!runId || !prompt || activeRuns.has(runId) || settledRuns.has(runId)) return fail('这次请求无效或重复');
+    if (destroyed || !listenerReady) return fail('电脑端的对话服务还没准备好');
+    const project = projects.find(item => item.id === projectId);
+    if (!project) return fail('电脑上找不到这个项目');
+    const provider = conversationProvider(providerId);
+    if (!providerReady(providerId)) return fail(`电脑上的 ${provider.label} 当前不可用`);
+    const busyMessage = '这个项目正在处理另一轮对话，等它结束再发';
+    if (remotePending.has(projectId)) return fail('这个项目上一条手机请求还在准备，稍等再发');
+    if (remoteProjectBusy(projectId)) return fail(busyMessage);
+    if (activeRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
+      return fail(`电脑上最多同时处理 ${MAX_PARALLEL_CONVERSATION_RUNS} 个项目，请先等其中一个完成`);
+    }
+    remotePending.add(projectId);
+    try {
+      const listed = await invoke('conversation_mode_list', { providerId }).catch(() => []);
+      const entries = Array.isArray(listed) ? listed : [];
+      if (mode && !entries.some(entry => entry.id === mode)) return fail('这个权限档位在电脑上不可用');
+      const modeEntry = entries.find(entry => entry.id === mode) || entries[0] || null;
+      let base;
+      if (threadId) {
+        // 手机上的列表比桌面侧栏长（后端最多给 80 条），这里按同样的范围核对。
+        const session = flattenConversationHistory(await loadHistory(project.localPath), { limit: 80 })
+          .find(item => item.tool === providerId && item.id === threadId);
+        if (!session) return fail('电脑上找不到这条历史对话');
+        if (sessionBudgetBlocks(session.budget)) {
+          return fail('这条会话已经超出上下文窗口，续接只会报错；请在电脑上打开它改用新会话继续');
+        }
+        const current = stateForProject(projectId);
+        if (current?.threadId === threadId && current.threadTool === providerId && !current.handoffPending) {
+          base = current;
+        } else {
+          const preview = await invoke('preview_conversation_transcript', {
+            projectId,
+            sourceTool: providerId,
+            id: threadId,
+          });
+          base = loadConversationTranscript({
+            projectId,
+            providerId,
+            sourceTool: providerId,
+            threadId,
+            messages: preview?.messages,
+          });
+        }
+      } else {
+        base = createConversationState({ projectId, providerId });
+      }
+      // 上面的 await 期间桌面可能已经动过这个项目，落地前再核一遍。
+      if (destroyed) return false;
+      if (!projects.some(item => item.id === projectId)) return fail('这个项目刚在电脑上被删除');
+      if (remoteProjectBusy(projectId)) return fail(busyMessage);
+      if (activeRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
+        return fail(`电脑上最多同时处理 ${MAX_PARALLEL_CONVERSATION_RUNS} 个项目，请先等其中一个完成`);
+      }
+      const runContext = conversationRunContext(base);
+      const runEntry = {
+        runId,
+        projectId,
+        providerId: runContext.providerId,
+        project: { ...project },
+        startedAt: Date.now(),
+        remote: true,
+      };
+      if (modeEntry?.writes) {
+        runEntry.baseline = invoke('project_context', { path: project.localPath })
+          .then(result => normalizeProjectChanges(result?.context || result))
+          .catch(() => null);
+        changeReports.delete(projectId);
+      }
+      activeRuns.set(runId, runEntry);
+      const active = isActiveProject(projectId);
+      if (active) {
+        transcriptRevision += 1;
+        resumeLatestOnHistory = false;
+        forceLatestOnNextMessageRender();
+      }
+      commitState(projectId, startConversationTurn(base, {
+        runId,
+        projectId,
+        providerId: runContext.providerId,
+        prompt,
+      }));
+      remotePending.delete(projectId);
+      if (active) {
+        renderState();
+        void refreshModeOptions();
+        void refreshSlashCommands();
+        void refreshUsage({ force: true });
+      }
+      renderProjects();
+      notify?.(`手机发起：${project.name} · ${provider.label}`, 'info');
+      try {
+        await runController.start({
+          projectId,
+          providerId: runContext.providerId,
+          runId,
+          threadId: runContext.threadId,
+          prompt,
+          mode,
+          handoffProviderId: runContext.handoffProviderId,
+          handoffSessionId: runContext.handoffSessionId,
+          model: modelFor(runContext.providerId),
+          effort: effortFor(runContext.providerId),
+          attachments: [],
+        });
+        const current = stateForProject(projectId);
+        if (current?.runId === runId && current.status === 'starting') {
+          if (commitState(projectId, { ...current, status: 'running' })) renderState();
+        }
+      } catch (error) {
+        const message = error?.message || String(error);
+        rejectRemote(runId, runContext.providerId, message);
+        const owned = stateForProject(projectId);
+        if (owned && owned.runId === runId) {
+          handleEvent({ runId, providerId: runContext.providerId, kind: 'error', data: { message } });
+        } else {
+          activeRuns.delete(runId);
+          runController.clear(runId);
+        }
+        renderState();
+        renderProjects();
+      }
+      return true;
+    } catch (error) {
+      return fail(`电脑端准备这一轮时出错：${error?.message || error}`);
+    } finally {
+      remotePending.delete(projectId);
+    }
+  }
+
+  function handleRemoteCommand(command) {
+    if (!command || typeof command !== 'object') return;
+    if (command.type === 'send') {
+      void remoteSend(command);
+      return;
+    }
+    if (command.type === 'cancel') {
+      const runId = String(command.runId || '');
+      const entry = activeRuns.get(runId);
+      if (entry) void stopConversationRun(entry.projectId, runId);
+    }
   }
 
   function elapsedLabel(startedAt) {
@@ -3943,6 +4127,12 @@ export function installConversationMode({
       renderState();
       notify?.(listenerError, 'error');
     });
+    void listen('remote-conversation-command', event => handleRemoteCommand(event?.payload))
+      .then(stopListening => {
+        if (destroyed) stopListening?.();
+        else remoteUnlisten = stopListening;
+      })
+      .catch(() => {});
   } else {
     listenerError = '当前环境无法连接对话服务';
   }
@@ -4028,6 +4218,7 @@ export function installConversationMode({
       elapsedTimer = null;
       clearStoppingWatchdog();
       unlisten?.();
+      remoteUnlisten?.();
     },
   };
 }

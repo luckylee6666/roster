@@ -190,6 +190,8 @@ fn provider_label(id: &str) -> &'static str {
 
 fn emit(app: &AppHandle, run_id: &str, provider_id: &str, kind: &str, data: Value) {
     crate::shared_memory::observe(app, run_id, provider_id, kind, &data);
+    // 手机远程抄送：与主窗口同一份已收敛的事件，不另外加料。
+    crate::remote_chat::publish_event(run_id, provider_id, kind, &data);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.emit(
             "conversation-chat-event",

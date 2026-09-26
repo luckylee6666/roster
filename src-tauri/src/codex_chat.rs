@@ -469,6 +469,12 @@ impl ChatEventSink for MainWebviewSink {
             &event.kind,
             &event.data,
         );
+        crate::remote_chat::publish_event(
+            &event.run_id,
+            &event.provider_id,
+            &event.kind,
+            &event.data,
+        );
         if let Some(window) = self.app.get_webview_window("main") {
             let _ = window.emit("conversation-chat-event", event);
         }

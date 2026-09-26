@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>连接电脑</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f6fa; --surface: #ffffff; --surface-2: #eef1f6; --line: #e1e6ef;
+    --ink: #1b2233; --muted: #5b6477; --faint: #8b93a5;
+    --accent: #4f46e5; --accent-2: #6d5ff5; --accent-ink: #ffffff; --accent-soft: #eef0ff;
+    --danger: #d23b3b; --danger-soft: #fdecec;
+    --shadow: 0 10px 30px rgba(24, 33, 54, 0.12), 0 2px 6px rgba(24, 33, 54, 0.06);
+    --font: -apple-system, "Roboto", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Roboto Mono", ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1320; --surface: #161b2a; --surface-2: #1d2335; --line: #262d42;
+      --ink: #e7eaf3; --muted: #a3acc0; --faint: #6f7891;
+      --accent: #8f89ff; --accent-2: #a39dff; --accent-ink: #0f1320; --accent-soft: rgba(143, 137, 255, 0.14);
+      --danger: #ff6b6b; --danger-soft: rgba(255, 107, 107, 0.13);
+      --shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font); }
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 18px; }
+  .card { width: 100%; max-width: 400px; padding: 26px 22px 22px; border-radius: 20px; background: var(--surface);
+    border: 1px solid var(--line); box-shadow: var(--shadow); }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .mark { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; color: #fff;
+    background: linear-gradient(135deg, #4f46e5, #8b5cf6); box-shadow: 0 6px 16px rgba(79, 70, 229, 0.35); }
+  .mark svg { width: 22px; height: 22px; }
+  h1 { margin: 0; font-size: 19px; }
+  .brand p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+  label { display: block; margin: 14px 2px 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  input { width: 100%; padding: 13px 14px; font-size: 16px; color: var(--ink); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 12px; outline: none; }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  #pin { font: 600 22px/1 var(--mono); letter-spacing: 8px; text-align: center; }
+  button { width: 100%; margin-top: 18px; padding: 14px; border: 0; border-radius: 12px; font: 650 15px var(--font);
+    color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 6px 16px rgba(79, 70, 229, 0.28); }
+  button:active { transform: scale(0.985); }
+  .error { margin: 0 0 4px; padding: 10px 12px; border-radius: 12px; font-size: 13px; line-height: 1.6;
+    color: var(--danger); background: var(--danger-soft); }
+  .error[hidden] { display: none; }
+  .steps { margin: 18px 2px 0; padding: 0; list-style: none; font-size: 12.5px; line-height: 1.7; color: var(--faint); }
+  .steps li { display: flex; gap: 8px; }
+  .steps b { flex: none; width: 18px; height: 18px; margin-top: 2px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 11px; color: var(--accent); background: var(--accent-soft); }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">
+      <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>
+      <div><h1>连接电脑</h1><p>遥控电脑上 Roster 的对话与终端</p></div>
+    </div>
+    <p class="error" id="error" hidden></p>
+    <label for="address">电脑地址</label>
+    <input id="address" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例如 192.168.1.8" />
+    <label for="pin">PIN（上次在这台电脑登录过可以留空）</label>
+    <input id="pin" type="tel" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="one-time-code" />
+    <button id="go" type="button">连接</button>
+    <ol class="steps">
+      <li><b>1</b><span>在电脑的 Roster 里点「手机远程」，选「保持连接」。</span></li>
+      <li><b>2</b><span>用手机相机扫面板上的二维码，选「Roster 远程」打开，就不用手输。</span></li>
+      <li><b>3</b><span>手机和电脑要在同一个 WiFi，或都登录同一个 Tailscale。</span></li>
+    </ol>
+  </main>
+<script>
+  (function () {
+    const $ = id => document.getElementById(id);
+    const params = new URLSearchParams(location.search);
+    let saved = {};
+    try { saved = JSON.parse(window.RosterApp ? window.RosterApp.saved() : '{}') || {}; } catch (_) {}
+    const base = params.get('base') || saved.base || '';
+    $('address').value = base.replace(/^https?:\/\//, '').replace(/:8787$/, '');
+    const error = params.get('error');
+    if (error) {
+      $('error').textContent = `连不上 ${base.replace(/^https?:\/\//, '') || '电脑'}：请确认电脑开着、Roster 的「手机远程」已开启，并且手机和电脑在同一网络。（${error}）`;
+      $('error').hidden = false;
+    }
+    function go() {
+      const address = $('address').value.trim();
+      if (!address) { $('address').focus(); return; }
+      const ok = window.RosterApp && window.RosterApp.open(address, $('pin').value.trim());
+      if (!ok) {
+        $('error').textContent = '这个地址不像局域网或 Tailscale 地址。请填电脑「手机远程」面板上显示的地址，例如 192.168.1.8。';
+        $('error').hidden = false;
+      }
+    }
+    $('go').addEventListener('click', go);
+    $('pin').addEventListener('keydown', event => { if (event.key === 'Enter') go(); });
+    $('address').addEventListener('keydown', event => { if (event.key === 'Enter') $('pin').focus(); });
+    if (!$('address').value) $('address').focus();
+  })();
+</script>
+</body>
+</html>

@@ -76,3 +76,6 @@ __pycache__/
 # Stitch 设计系统文档可保留；云端元数据与生成稿属于本地中间产物。
 /.stitch/metadata.json
 /.stitch/designs/
+
+# 安卓外壳构建产物（mobile-android/build.sh）
+/mobile-android/build/

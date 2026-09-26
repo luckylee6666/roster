@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Roster 远程：安卓外壳。界面由电脑上的 Roster 提供（手机远程页），这里只负责记住电脑地址、
+     全屏打开、接住电脑面板上的二维码链接。明文 HTTP 只在局域网 / Tailscale 地址上放行（见 MainActivity）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.lucky.roster.remote">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="Roster 远程"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|smallestScreenSize"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 用相机扫电脑「手机远程」面板上的二维码（http://局域网地址:8787/?k=PIN）时，
+                 可以直接选「Roster 远程」打开。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" android:host="*" android:port="8787" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

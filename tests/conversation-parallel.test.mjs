@@ -2278,3 +2278,115 @@ test('超窗会话点开先确认：确认走同家轮换，取消就不打开',
   assert.equal(runs[0].handoffProviderId, 'cmd');
   assert.equal(runs[0].handoffSessionId, 'cmd-huge');
 });
+
+// ===== 手机远程：手机发来的一轮与桌面输入框走同一条路 =====
+
+const remoteSend = (fx, command) => fx.fireTauri('remote-conversation-command', {
+  type: 'send', threadId: '', mode: '', providerId: 'claude', ...command,
+});
+const remoteRejections = fx => fx.invokes
+  .filter(entry => entry.command === 'remote_conversation_reject')
+  .map(entry => entry.payload);
+
+test('手机发起的新对话走桌面同一条启动路径，桌面同步显示且不动输入框草稿', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.el('conversation-composer').value = '桌面还没发的草稿';
+  remoteSend(fx, { runId: 'chat-mphone1', projectId: 'a', prompt: '手机的问题' });
+  await flush();
+  const [run] = fx.startedRuns();
+  assert.equal(run.runId, 'chat-mphone1', '运行 ID 由手机生成，事件才能直接对上号');
+  assert.equal(run.projectId, 'a');
+  assert.equal(run.providerId, 'claude');
+  assert.equal(run.threadId, '');
+  assert.equal(run.prompt, '手机的问题');
+  assert.equal(run.mode, '');
+  assert.equal(fx.el('conversation-composer').value, '桌面还没发的草稿');
+  assert.ok(fx.toasts.some(toast => /手机发起/.test(toast.message)));
+  assert.deepEqual(remoteRejections(fx), []);
+
+  fx.emit({ runId: run.runId, providerId: 'claude', kind: 'assistant_message', data: { text: '电脑上的回答' } });
+  fx.emit({ runId: run.runId, providerId: 'claude', kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  const texts = fx.el('conversation-messages').childNodes
+    .map(row => row.childNodes[0].childNodes[1].textContent);
+  assert.deepEqual(texts, ['手机的问题', '电脑上的回答']);
+});
+
+test('项目正忙、档位不认、助手不可用时拒绝手机请求，并把原因发回手机', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
+  await flush();
+  fx.clickProject('a');
+  await flush();
+  await fx.send('桌面先发的一轮');
+  assert.equal(fx.startedRuns().length, 1);
+
+  remoteSend(fx, { runId: 'chat-mbusy', projectId: 'a', prompt: '插队' });
+  remoteSend(fx, { runId: 'chat-mmode', projectId: 'b', prompt: '越权', mode: 'bypassPermissions' });
+  remoteSend(fx, { runId: 'chat-mcli', projectId: 'b', prompt: '没装', providerId: 'codex' });
+  remoteSend(fx, { runId: 'chat-mgone', projectId: 'zzz', prompt: '不存在' });
+  await flush();
+  assert.equal(fx.startedRuns().length, 1, '被拒的请求一个都不能启动');
+  const byRun = Object.fromEntries(remoteRejections(fx).map(item => [item.runId, item.message]));
+  assert.match(byRun['chat-mbusy'], /正在处理另一轮/);
+  assert.match(byRun['chat-mmode'], /权限档位/);
+  assert.match(byRun['chat-mcli'], /Codex 当前不可用/);
+  assert.match(byRun['chat-mgone'], /找不到这个项目/);
+});
+
+test('手机续接历史会话前核对归属与超窗，通过后按原会话续接', async t => {
+  const session = (id, budget = null) => ({ id, tool: 'claude', title: id, atMs: 1, budget });
+  const fx = fixture({
+    projects: [project('a', '项目 A')],
+    history: { groups: [{ tool: 'claude', label: 'Claude', sessions: [
+      session('ok-session'),
+      session('huge-session', { sizeBytes: 9e8, estTokens: 2e8, window: 2e5, band: 'over', blocks: true }),
+    ] }] },
+    transcript: [{ role: 'user', text: '旧问题' }, { role: 'assistant', text: '旧回答' }],
+    t,
+  });
+  await flush();
+  remoteSend(fx, { runId: 'chat-mstray', projectId: 'a', prompt: '续', threadId: 'not-in-history' });
+  remoteSend(fx, { runId: 'chat-mqueued', projectId: 'a', prompt: '连点' });
+  await flush();
+  remoteSend(fx, { runId: 'chat-mhuge', projectId: 'a', prompt: '续', threadId: 'huge-session' });
+  await flush();
+  assert.equal(fx.startedRuns().length, 0);
+  const byRun = Object.fromEntries(remoteRejections(fx).map(item => [item.runId, item.message]));
+  assert.match(byRun['chat-mstray'], /找不到这条历史对话/);
+  assert.match(byRun['chat-mhuge'], /超出上下文窗口/);
+  assert.match(byRun['chat-mqueued'], /上一条手机请求还在准备/, '同一项目的请求在准备期间也要串行');
+
+  remoteSend(fx, { runId: 'chat-mresume', projectId: 'a', prompt: '接着做', threadId: 'ok-session', mode: 'acceptEdits' });
+  await flush();
+  const [run] = fx.startedRuns();
+  assert.equal(run.threadId, 'ok-session');
+  assert.equal(run.mode, 'acceptEdits');
+  assert.equal(run.handoffSessionId, '', '续接自己的会话不是交接');
+  const texts = fx.el('conversation-messages').childNodes
+    .map(row => row.childNodes[0].childNodes[1].textContent);
+  assert.deepEqual(texts.slice(0, 3), ['旧问题', '旧回答', '接着做'], '桌面上看到的是带上下文的同一条会话');
+});
+
+test('手机的停止请求能停后台项目，启动失败也会告诉手机', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
+  await flush();
+  fx.clickProject('b');
+  await flush();
+  remoteSend(fx, { runId: 'chat-mbg', projectId: 'a', prompt: '后台跑' });
+  await flush();
+  assert.equal(fx.startedRuns()[0].runId, 'chat-mbg');
+  fx.fireTauri('remote-conversation-command', { type: 'cancel', runId: 'chat-mbg' });
+  await flush();
+  assert.ok(fx.invokes.some(entry => entry.command === 'conversation_chat_cancel' && entry.payload.runId === 'chat-mbg'));
+  fx.fireTauri('remote-conversation-command', { type: 'cancel', runId: 'chat-unknown' });
+  await flush();
+  assert.equal(fx.invokes.filter(entry => entry.command === 'conversation_chat_cancel').length, 1, '不认识的运行不发取消');
+
+  fx.setStartError('CLI 没能启动');
+  remoteSend(fx, { runId: 'chat-mfail', projectId: 'b', prompt: '会失败' });
+  await flush();
+  const failed = remoteRejections(fx).find(item => item.runId === 'chat-mfail');
+  assert.match(failed?.message || '', /CLI 没能启动/);
+  assert.match(fx.el('conversation-status').textContent, /失败|问题/);
+});
