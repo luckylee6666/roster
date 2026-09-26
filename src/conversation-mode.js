@@ -2414,13 +2414,18 @@ export function installConversationMode({
     // 同一位助手也能轮换（超窗会话的出路）：这时是"新开会话带摘要"，不是换人接手，
     // 所以不显示"改回 X"——没有另一家可回，旧会话本来就没动。
     const sameTool = source.id === target.id;
+    const pendingText = state.handoffPending && isRunning()
+      ? `正在交接 ${source.label} → ${target.label}，来源记录保留到本轮成功完成。`
+      : state.handoffPending && ['failed', 'cancelled'].includes(state.status)
+        ? `上次交接未完成；再次发送会带上 ${source.label} 的来源内容，在新的 ${target.label} 会话中重试。`
+        : '';
     note.appendChild(element(
       document,
       'span',
       'conversation-handoff-text',
-      sameTool
+      pendingText || (sameTool
         ? `发送后开一条新的 ${target.label} 会话继续这段对话：只带最近 24 条正文，旧会话保持不动。`
-        : `发送后由 ${target.label} 接手 ${source.label} 的这段对话：只带最近 24 条正文，${source.label} 的会话保持不动。`,
+        : `发送后由 ${target.label} 接手 ${source.label} 的这段对话：只带最近 24 条正文，${source.label} 的会话保持不动。`),
     ));
     if (sameTool) return;
     const back = element(document, 'button', 'conversation-handoff-undo', `改回 ${source.label}`);

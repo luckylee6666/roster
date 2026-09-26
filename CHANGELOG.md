@@ -7,6 +7,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### English
 
 **Fixed**
+- Developer-mode cross-CLI handoff to OpenCode, MiMo Code and cmd now passes the handoff-file instruction as a native initial message, matching size rotation instead of racing CLI startup with timed terminal input. Conversation-mode handoff keeps its source until the first turn succeeds, so a target thread created before a failed/cancelled prompt cannot lose the source on retry.
 - Abort a terminal's entire startup input batch when its launch write fails, including keystrokes arriving during startup; failed/cancelled queues cannot replay input into a shell.
 - Developer-mode size rotation now launches a registered CLI directly from the backend with native initial-message arguments, without a shell or timed PTY typing. The UI reports only a launch request, not unverified assistant readiness. Initial messages are never saved into the tab's resume command; Windows script wrappers are rejected for this path instead of falling back to a shell.
 - Developer mode can rotate an oversized session into a new session of the same CLI with a bounded handoff summary, without resuming, truncating or deleting the original transcript.
@@ -17,6 +18,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 ### 中文
 
 **修复**
+- 开发模式跨 CLI 交给 OpenCode、MiMo Code、cmd 时，也改用原生初始消息传递交接文件提示，不再延时盲打终端。会话模式保留交接来源直到首轮成功，避免目标会话先创建、首条请求随后失败/取消时，重试丢失来源内容。
 - 终端启动写入失败时立即终止整个启动输入批次，包括启动期间新键入的内容；失败/取消的队列不再把缓存文字发给 shell。
 - 开发模式超窗轮换由后端直接启动登记 CLI，以原生初始消息参数携带交接，不经过 shell 或延时盲打 PTY；界面只报告已请求启动、不冒充助手已就绪，初始消息不写入标签恢复命令；Windows 脚本包装器在这条路径明确拒绝，不回退 shell。
 - 开发模式的超大会话也可带有界摘要轮换到同一家 CLI 的新会话，不续接、截断或删除原始转录。

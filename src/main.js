@@ -1706,29 +1706,36 @@ async function startSessionHandoff() {
       content,
     });
     if (sessionHandoffOperation !== operation) throw new Error('交接任务已失效');
-    createdId = await createProjectToolSession(context.project, targetTool);
+    const prompt = handoffLaunchPrompt(
+      handoff.relativePath,
+      context.sourceTool,
+      targetTool,
+    );
+    // These adapters accept a native initial message. Do not race their TUI
+    // initialization by typing into a PTY after a fixed delay.
+    const nativePrompt = ['opencode', 'mimo', 'cmd'].includes(targetTool);
+    createdId = await createProjectToolSession(context.project, cliCommandName(targetTool),
+      nativePrompt ? { initialPrompt: prompt } : undefined);
     if (sessionHandoffOperation !== operation) throw new Error('交接任务已失效');
     const created = sessions.get(createdId);
     if (!created
+      || !created.restorable
       || created.status === 'failed'
       || created.status === 'exited'
       || normalizeCliToolName(created.tool) !== targetTool
       || !sameProjectCwd(created.cwd, context.project.localPath)) {
       throw new Error('目标终端启动失败');
     }
-    const prompt = handoffLaunchPrompt(
-      handoff.relativePath,
-      context.sourceTool,
-      targetTool,
-    );
-    if (!await injectToSession(createdId, prompt)) throw new Error('交接提示写入失败');
+    if (!nativePrompt && !await injectToSession(createdId, prompt)) throw new Error('交接提示写入失败');
     const targetLabel = CLI_TOOLS.find(tool => tool.id === targetTool)?.label || targetTool;
     closeSessionHandoff(false, { force: true });
     activateSession(createdId);
     invalidateProjectSessionHistory(context.project.localPath);
     reloadVisibleProjectSessionHistory(context.project.localPath);
     const sourceLabel = CLI_TOOLS.find(tool => tool.id === context.sourceTool)?.label || context.sourceTool;
-    msg(`已交给 ${targetLabel}，${sourceLabel} 原会话仍保留`, 'success');
+    msg(nativePrompt
+      ? `交接提示已随启动参数交给 ${targetLabel}，请在目标终端确认；${sourceLabel} 原会话仍保留`
+      : `已交给 ${targetLabel}，${sourceLabel} 原会话仍保留`, nativePrompt ? 'info' : 'success');
   } catch (error) {
     let rollbackError = '';
     if (createdId) {

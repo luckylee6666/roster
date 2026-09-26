@@ -915,6 +915,45 @@ test('左侧分组第一次出现时是折叠的，用户展开后保持展开',
   assert.ok(!personal().classNames.has('is-collapsed'), '重绘后保持用户选择');
 });
 
+test('Codex 交接 OpenCode 首轮失败后，界面重试仍发送原来源且成功后不重复交接', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex', 'opencode'], t });
+  await flush();
+  fx.pickAssistant('codex');
+  await flush();
+  await fx.send('原始任务');
+  const original = fx.startedRuns()[0];
+  fx.emit({ runId: original.runId, providerId: 'codex', kind: 'thread', data: { threadId: 'codex-origin' } });
+  fx.emit({ runId: original.runId, providerId: 'codex', kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  fx.handoffTo('opencode');
+  await flush();
+  assert.equal(fx.startedRuns().length, 1, '选择目标只是准备交接，发送时才真正提交');
+  await fx.send('请接手');
+  const first = fx.startedRuns()[1];
+  assert.equal(first.handoffProviderId, 'codex');
+  assert.equal(first.handoffSessionId, 'codex-origin');
+  assert.equal(first.threadId, '');
+  fx.emit({ runId: first.runId, providerId: 'opencode', kind: 'thread', data: { threadId: 'empty-target' } });
+  fx.emit({ runId: first.runId, providerId: 'opencode', kind: 'error', data: { message: '模拟首条 prompt 失败' } });
+  await flush();
+  const note = fx.el('conversation-handoff-note');
+  assert.equal(note.hidden, false);
+  assert.match(note.childNodes[0].textContent, /上次交接未完成/);
+  await fx.send('重试接手');
+  const retry = fx.startedRuns()[2];
+  assert.equal(retry.threadId, '', '不能续接未确认的空目标会话');
+  assert.equal(retry.handoffSessionId, 'codex-origin');
+  fx.emit({ runId: retry.runId, providerId: 'opencode', kind: 'thread', data: { threadId: 'confirmed-target' } });
+  fx.emit({ runId: retry.runId, providerId: 'opencode', kind: 'assistant_message', data: { text: '已接手' } });
+  fx.emit({ runId: retry.runId, providerId: 'opencode', kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  assert.equal(note.hidden, true);
+  await fx.send('继续');
+  const continued = fx.startedRuns()[3];
+  assert.equal(continued.threadId, 'confirmed-target');
+  assert.equal(continued.handoffSessionId, '');
+});
+
 test('换助手时输入框上方说明会接手什么，并能一键改回', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'grok'], t });
   await flush();

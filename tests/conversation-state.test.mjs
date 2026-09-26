@@ -130,6 +130,50 @@ test('活动按 item ID 更新，完成和停止都形成确定终态', () => {
   assert.equal(stopped.status, 'cancelled');
 });
 
+test('交接目标只创建了会话但首轮失败，重试仍带原来源而非续空会话', () => {
+  const original = loadConversationTranscript({ projectId: 'p1', sourceTool: 'codex', threadId: 'codex-origin', messages: [] });
+  let state = selectConversationProvider(original, 'opencode');
+  state = startConversationTurn(state, { runId: 'handoff-1', projectId: 'p1', prompt: '继续任务' });
+  state = applyConversationChatEvent(state, {
+    runId: 'handoff-1', providerId: 'opencode', kind: 'thread', data: { threadId: 'empty-target' },
+  });
+  for (const [kind, data] of [
+    ['error', { message: 'session/prompt failed' }],
+    ['completed', { status: 'failed', error: 'mode failed' }],
+    ['cancelled', {}],
+  ]) {
+    const failed = applyConversationChatEvent(state, { runId: 'handoff-1', providerId: 'opencode', kind, data });
+    assert.deepEqual(conversationRunContext(failed), { providerId: 'opencode', threadId: '', handoffProviderId: 'codex', handoffSessionId: 'codex-origin' });
+    const retry = startConversationTurn(failed, { runId: 'handoff-2', projectId: 'p1', prompt: '重试' });
+    assert.equal(retry.threadId, '');
+    assert.equal(retry.sourceSessionId, 'codex-origin');
+    assert.equal(selectConversationProvider(failed, 'mimo').sourceSessionId, 'codex-origin', '失败后换第三家不能把空目标当来源');
+  }
+});
+
+test('交接首轮成功后才改为续接目标，后续请求不重复交接', () => {
+  let state = selectConversationProvider(loadConversationTranscript({ projectId: 'p1', sourceTool: 'codex', threadId: 'origin', messages: [] }), 'opencode');
+  state = startConversationTurn(state, { runId: 'handoff-ok', projectId: 'p1', prompt: '继续' });
+  const event = (kind, data) => { state = applyConversationChatEvent(state, { runId: 'handoff-ok', providerId: 'opencode', kind, data }); };
+  event('thread', { threadId: 'target' });
+  assert.equal(conversationRunContext(state).handoffSessionId, 'origin');
+  event('assistant_delta', { text: '收到，处理中' });
+  event('completed', { status: 'completed' });
+  assert.deepEqual(conversationRunContext(state), { providerId: 'opencode', threadId: 'target', handoffProviderId: '', handoffSessionId: '' });
+  assert.equal(state.sourceSessionId, '');
+});
+
+test('同家轮换失败保留旧来源，普通同家历史续接不被误判为交接', () => {
+  const normal = loadConversationTranscript({ projectId: 'p1', sourceTool: 'opencode', threadId: 'normal', messages: [] });
+  assert.equal(normal.handoffPending, false);
+  assert.equal(conversationRunContext(normal).threadId, 'normal');
+  let rotated = rotateConversationTranscript({ projectId: 'p1', sourceTool: 'opencode', sourceSessionId: 'oversized', messages: [] });
+  rotated = startConversationTurn(rotated, { projectId: 'p1', runId: 'rotating', prompt: '继续' });
+  rotated = applyConversationChatEvent(rotated, { runId: 'rotating', providerId: 'opencode', kind: 'thread', data: { threadId: 'new-empty' } });
+  rotated = applyConversationChatEvent(rotated, { runId: 'rotating', providerId: 'opencode', kind: 'cancelled', data: {} });
+  assert.deepEqual(conversationRunContext(rotated), { providerId: 'opencode', threadId: '', handoffProviderId: 'opencode', handoffSessionId: 'oversized' });
+});
+
 test('项目活动只保留最近的有界记录', () => {
   let state = startConversationTurn(createConversationState({ projectId: 'p1' }), {
     runId: 'chat-activity-bound', projectId: 'p1', prompt: '检查项目',
@@ -241,7 +285,7 @@ test('切换 CLI 把当前线程变成交接来源，不会把跨 CLI ID 当成�
   assert.equal(restored.sourceTool, '');
 });
 
-test('新 CLI 建立线程后接管后续会话，并清除旧交接来源', () => {
+test('新 CLI 首轮完成后接管后续会话，并清除旧交接来源', () => {
   let state = selectConversationProvider(loadConversationTranscript({
     projectId: 'p1',
     sourceTool: 'claude',
@@ -264,6 +308,10 @@ test('新 CLI 建立线程后接管后续会话，并清除旧交接来源', () 
   });
   assert.equal(state.threadId, 'grok-thread');
   assert.equal(state.threadTool, 'grok');
+  assert.equal(state.sourceTool, 'claude', '只建立线程不代表交接请求已送达');
+  state = applyConversationChatEvent(state, {
+    runId: 'chat-grok', providerId: 'grok', kind: 'completed', data: { status: 'completed' },
+  });
   assert.equal(state.sourceTool, '');
   assert.equal(state.sourceSessionId, '');
   assert.deepEqual(conversationRunContext(state), {

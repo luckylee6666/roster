@@ -52,9 +52,11 @@ test('交接读取最新磁盘会话和 Git 现场，再安全新开目标终端
   assert.match(openBlock, /sourceTool: current\.sourceTool/);
 
   const writeAt = startBlock.indexOf("invoke('write_session_handoff'");
-  const createAt = startBlock.indexOf('createProjectToolSession(context.project, targetTool)');
+  const createAt = startBlock.indexOf('createProjectToolSession(context.project, cliCommandName(targetTool)');
   const injectAt = startBlock.indexOf('injectToSession(createdId, prompt)');
   assert.ok(writeAt >= 0 && writeAt < createAt && createAt < injectAt);
+  assert.match(startBlock, /nativePrompt \? \{ initialPrompt: prompt \} : undefined/);
+  assert.match(startBlock, /!nativePrompt && !await injectToSession/);
   assert.match(startBlock, /handoffLaunchPrompt\(/);
   assert.match(startBlock, /rollbackCreatedSessions\(\[createdId\], terminalState\)/);
   assert.match(startBlock, /sourceTool !== context\.sourceTool/);

@@ -18,6 +18,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (scenario === 'die-second' && turns === 2) return process.exit(1);
   if (scenario === 'oversized') return process.stdout.write('x'.repeat(1024 * 1024 + 1) + '\n');
   if (request.method === 'session/prompt') {
+    if (scenario === 'reject-prompt') return out({ id: request.id, error: { message: 'prompt rejected' } });
     if (scenario === 'oversized-update') {
       out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'tool_call', toolCallId: 't1', kind: 'read', status: 'completed', content: { type: 'text', text: 'x'.repeat(1024 * 1024 + 1) } } } });
       out({ method: 'session/update', params: { sessionId: session, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `回复${turns}` } } } });

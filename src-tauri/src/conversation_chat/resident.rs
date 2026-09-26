@@ -1373,6 +1373,59 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn opencode_handoff_uses_a_new_session_and_transmits_source_context_verbatim() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let mut r = request(root.path(), "handoff", "", "opencode");
+        r.prompt = format!(
+            "{}用户：Codex 来源任务：修复中文 ' $ 特殊字符\n\n现在继续处理用户的新要求：接手",
+            super::super::handoff_header("codex", "opencode")
+        );
+        let expected = r.prompt.clone();
+        until(
+            &start_fake(&state, root.path(), "opencode", "normal", r),
+            "completed",
+        );
+        let requests: Vec<Value> = std::fs::read_to_string(root.path().join("requests.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["request"].clone())
+            .collect();
+        assert!(requests.iter().any(|r| r["method"] == "session/new"));
+        assert!(requests.iter().all(|r| r["method"] != "session/load"));
+        let sent = requests
+            .iter()
+            .find(|r| r["method"] == "session/prompt")
+            .unwrap();
+        assert_eq!(sent["params"]["sessionId"], "session-opencode");
+        assert_eq!(sent["params"]["prompt"][0]["text"], expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_thread_creation_does_not_imply_first_prompt_succeeded() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let events = until(
+            &launch(
+                &state,
+                root.path(),
+                "handoff-failed",
+                "",
+                "opencode",
+                "reject-prompt",
+            ),
+            "error",
+        );
+        assert!(events.iter().any(|(kind, _)| kind == "thread"));
+        assert!(events.iter().any(|(kind, _)| kind == "error"));
+        assert!(events
+            .iter()
+            .all(|(kind, _)| kind != "completed" && kind != "assistant_delta"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn resident_opencode_and_mimo_session_load_skip_history_replay() {
         for provider in ["opencode", "mimo"] {
             let root = tempfile::tempdir().unwrap();

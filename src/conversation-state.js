@@ -57,15 +57,19 @@ export function createConversationState({
   const thread = typeof threadId === 'string' ? threadId : '';
   const owner = thread ? normalizedTool(threadTool, provider) : '';
   const source = normalizedTool(sourceTool);
+  const sourceId = typeof sourceSessionId === 'string' && sourceSessionId
+    ? sourceSessionId : (source ? thread : '');
   return {
     projectId,
     providerId: provider,
     threadId: thread,
     threadTool: owner,
     sourceTool: source,
-    sourceSessionId: typeof sourceSessionId === 'string' && sourceSessionId
-      ? sourceSessionId
-      : (source ? thread : ''),
+    sourceSessionId: sourceId,
+    // A thread-created event is not proof that the first handoff prompt was
+    // accepted. Keep its source until a successful terminal turn event.
+    handoffPending: Boolean(source && sourceId
+      && (!thread || owner !== provider || source !== provider || sourceId !== thread)),
     runId: '',
     runProviderId: '',
     turnId: '',
@@ -101,12 +105,13 @@ export function selectConversationProvider(state, providerId) {
       threadTool: provider,
       sourceTool: '',
       sourceSessionId: '',
+      handoffPending: false,
       notice: '',
       error: '',
     };
   }
 
-  const currentOwnsThread = ownsThread(state);
+  const currentOwnsThread = ownsThread(state) && !state.handoffPending;
   return {
     ...state,
     providerId: provider,
@@ -114,6 +119,7 @@ export function selectConversationProvider(state, providerId) {
     threadTool: '',
     sourceTool: currentOwnsThread ? state.threadTool : state.sourceTool,
     sourceSessionId: currentOwnsThread ? state.threadId : state.sourceSessionId,
+    handoffPending: Boolean(currentOwnsThread ? state.threadId : state.sourceSessionId),
     notice: '',
     error: '',
   };
@@ -124,7 +130,7 @@ export const switchConversationProvider = selectConversationProvider;
 /** Return the provider-scoped resume and optional cross-provider handoff IDs. */
 export function conversationRunContext(state) {
   const providerId = normalizedTool(state?.providerId, 'codex');
-  const resumable = ownsThread(state, providerId);
+  const resumable = ownsThread(state, providerId) && !state.handoffPending;
   // 交接来源不必是"另一家"：同一位助手也可以轮换——不续接旧会话，把旧会话当来源，
   // 在新会话里带上它的最近对话继续。超窗会话只有这条路走得通，所以这里不按
   // `sourceTool !== providerId` 排除自己；真正的续接仍然优先（resumable 时不给交接）。
@@ -157,9 +163,10 @@ export function startConversationTurn(state, {
     return state;
   }
 
-  const sameProviderThread = ownsThread(state, provider);
+  const sameProviderThread = ownsThread(state, provider) && !state.handoffPending;
   const currentThreadBecomesSource = Boolean(
-    state.threadId
+    !state.handoffPending
+    && state.threadId
     && state.threadTool
     && state.threadTool !== provider,
   );
@@ -174,6 +181,7 @@ export function startConversationTurn(state, {
     threadTool: sameProviderThread ? provider : '',
     sourceTool,
     sourceSessionId,
+    handoffPending: Boolean(sourceTool && sourceSessionId && !sameProviderThread),
     runId,
     runProviderId: provider,
     turnId: '',
@@ -258,8 +266,8 @@ export function applyConversationChatEvent(state, envelope) {
         ...state,
         threadId: data.threadId,
         threadTool: provider,
-        sourceTool: '',
-        sourceSessionId: '',
+        sourceTool: state.handoffPending ? state.sourceTool : '',
+        sourceSessionId: state.handoffPending ? state.sourceSessionId : '',
       };
     }
     case 'turn':
@@ -312,6 +320,7 @@ export function applyConversationChatEvent(state, envelope) {
       return {
         ...next,
         status: failed ? 'failed' : 'completed',
+        ...(!failed && ownsThread(state) ? { handoffPending: false, sourceTool: '', sourceSessionId: '' } : {}),
         error: failed && typeof data.error === 'string' ? data.error : '',
         approval: null,
       };
