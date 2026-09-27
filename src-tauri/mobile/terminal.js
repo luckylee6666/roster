@@ -7,6 +7,16 @@ const SEQ = {
   up: `${ESC}[A`, down: `${ESC}[B`, right: `${ESC}[C`, left: `${ESC}[D`,
 };
 
+// 手机只是镜像：鼠标上报的坐标对应手机上缩放过的画面，不是电脑上的 PTY，一律不发。
+// xterm 6 beta 还会在终端程序开了鼠标模式时，把触摸滑动合成成坐标为 NaN 的滚轮上报
+// （ESC[<64;NaN;NaNM），电脑上的 CLI 只认出前半截，剩下的「aN;NaNM」就进了输入框。
+const MOUSE_REPORT = /\x1b\[<[\dNaIfinty;-]*[Mm]|\x1b\[M[\s\S]{3}|\x1b\[\d+;\d+;\d+M/g;
+
+/** 去掉 SGR / X10 / urxvt 三种鼠标上报，只留键盘输入。 */
+export function stripMouseReports(data) {
+  return String(data ?? '').replace(MOUSE_REPORT, '');
+}
+
 function loadScript(src) {
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
@@ -76,20 +86,29 @@ export function createTerminalPanel({ getPin, setConn, onAuthError }) {
     try { term.resize(cols, Math.max(ptyRows, fitRows, 1)); } catch (_) {}
   }
 
-  // xterm 内置触屏滚动不可靠，touchmove → term.scrollLines 最稳。
+  // 触摸只在手机本地滚动查看（term.scrollLines），在捕获阶段拦下、不再往下传：
+  // xterm 的手势层挂在 document 上，收到滑动会把它变成滚轮上报或方向键发给电脑。
   function setupTouchScroll() {
     let lastY = null;
-    host.addEventListener('touchstart', event => { lastY = event.touches[0].clientY; }, { passive: true });
+    const options = { passive: true, capture: true };
+    host.addEventListener('touchstart', event => {
+      event.stopPropagation();
+      lastY = event.touches[0]?.clientY ?? null;
+    }, options);
     host.addEventListener('touchmove', event => {
+      event.stopPropagation();
       if (lastY === null || !term) return;
       const y = event.touches[0].clientY;
       const lines = (lastY - y) / ((term.options.fontSize || 12) * 1.2);
       const n = lines > 0 ? Math.floor(lines) : Math.ceil(lines);
       if (n !== 0) { term.scrollLines(n); lastY = y; }
-    }, { passive: true });
-    const clear = () => { lastY = null; };
-    host.addEventListener('touchend', clear, { passive: true });
-    host.addEventListener('touchcancel', clear, { passive: true });
+    }, options);
+    const clear = event => {
+      event.stopPropagation();
+      lastY = null;
+    };
+    host.addEventListener('touchend', clear, options);
+    host.addEventListener('touchcancel', clear, options);
   }
 
   function ensureTerm() {
@@ -102,7 +121,10 @@ export function createTerminalPanel({ getPin, setConn, onAuthError }) {
       theme: { background: '#0b1120', foreground: '#e2e8f0', cursor: '#8f89ff' },
     });
     term.open(host);
-    term.onData(data => sendInput(data));
+    term.onData(data => {
+      const clean = stripMouseReports(data);
+      if (clean) sendInput(clean);
+    });
     window.addEventListener('resize', () => applySize(ptyCols, ptyRows));
     window.addEventListener('orientationchange', () => setTimeout(() => applySize(ptyCols, ptyRows), 300));
     setupTouchScroll();

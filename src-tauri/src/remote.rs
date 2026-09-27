@@ -552,6 +552,64 @@ async fn send_scrollback(socket: &mut WebSocket, hub: &RemoteHub, id: &str, rese
     socket.send(Message::Text(out_frame(&d))).await.is_ok()
 }
 
+/// 手机终端镜像只该发键盘输入。鼠标上报（SGR `ESC[<b;x;yM/m`、X10 `ESC[M` + 三个编码字符、
+/// urxvt `ESC[b;x;yM`）一律剥掉：坐标对应的是手机上缩放过的画面，不是这里的 PTY；xterm 6 beta
+/// 还会把触摸滑动合成成坐标为 NaN 的上报，漏进 CLI 输入框就成了「aN;NaNM」乱码。手机页已经不发，
+/// 这里是兜底。
+fn strip_mouse_reports(data: &str) -> String {
+    let mut out = String::with_capacity(data.len());
+    let mut rest = data;
+    while let Some(pos) = rest.find("\x1b[") {
+        out.push_str(&rest[..pos]);
+        let seq = &rest[pos..];
+        match mouse_report_len(seq) {
+            Some(len) => rest = &seq[len..],
+            None => {
+                out.push_str("\x1b[");
+                rest = &seq[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `seq` 以 `ESC [` 开头：若是一段完整的鼠标上报，返回它的字节长度（落在字符边界上）。
+fn mouse_report_len(seq: &str) -> Option<usize> {
+    let mut chars = seq[2..].char_indices();
+    let (_, first) = chars.next()?;
+    match first {
+        // SGR；xterm 算坏坐标时参数里会出现 NaN / Infinity / 负号。
+        '<' => {
+            for (idx, ch) in chars {
+                match ch {
+                    'M' | 'm' => return Some(2 + idx + 1),
+                    '0'..='9' | ';' | '-' | 'N' | 'a' | 'I' | 'n' | 'f' | 'i' | 't' | 'y'
+                        if idx < 64 => {}
+                    _ => return None,
+                }
+            }
+            None
+        }
+        // X10：ESC [ M 后跟三个编码字符（坐标大时是多字节字符）。
+        'M' => chars.nth(2).map(|(idx, ch)| 2 + idx + ch.len_utf8()),
+        // urxvt：恰好三段数字、以 M 结尾。键盘的 `ESC[1;5A`、`ESC[3~` 之类不会命中。
+        '0'..='9' => {
+            let mut separators = 0;
+            for (idx, ch) in chars {
+                match ch {
+                    '0'..='9' if idx < 32 => {}
+                    ';' if idx < 32 => separators += 1,
+                    'M' => return (separators == 2).then_some(2 + idx + 1),
+                    _ => return None,
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn parse_client_input(txt: &str) -> Option<String> {
     if txt.len() > MAX_WS_MESSAGE_SIZE {
         return None;
@@ -567,7 +625,8 @@ fn parse_client_input(txt: &str) -> Option<String> {
     if data.len() > MAX_TERMINAL_INPUT_SIZE {
         return None;
     }
-    Some(data.to_string())
+    let data = strip_mouse_reports(data);
+    (!data.is_empty()).then_some(data)
 }
 
 /// 处理手机键入。解析/长度校验留在 async 线程，可能阻塞的 PTY 写入移到 blocking 池；
@@ -636,6 +695,42 @@ mod tests {
         );
         assert_eq!(parse_client_input(r#"{"t":"r","cols":80}"#), None);
         assert_eq!(parse_client_input("not-json"), None);
+    }
+
+    #[test]
+    fn mouse_reports_never_reach_the_pty() {
+        // 手机上滑时 xterm 合成的坏滚轮上报：整段丢掉，不留「aN;NaNM」。
+        let garbage = "\x1b[<64;NaN;NaNM".repeat(5);
+        let frame = serde_json::json!({ "t": "i", "d": garbage }).to_string();
+        assert_eq!(parse_client_input(&frame), None);
+        assert_eq!(
+            strip_mouse_reports("ls\x1b[<0;10;5Mabc\x1b[<0;10;5m"),
+            "lsabc"
+        );
+        assert_eq!(strip_mouse_reports("\x1b[<65;-Infinity;3M提交"), "提交");
+        // X10 坐标大时是多字节字符，不能切在字符中间。
+        assert_eq!(strip_mouse_reports("\x1b[M ¡€x"), "x");
+        assert_eq!(strip_mouse_reports("\x1b[32;10;5Mok"), "ok");
+    }
+
+    #[test]
+    fn keyboard_sequences_pass_through() {
+        for keys in [
+            "\x1b[A",
+            "\x1b[1;5C",
+            "\x1b[3~",
+            "\x1b",
+            "\x1b[",
+            "\x1b[<",
+            "中文\r",
+            "\x03",
+        ] {
+            assert_eq!(strip_mouse_reports(keys), keys, "{keys:?}");
+        }
+        assert_eq!(
+            parse_client_input(r#"{"t":"i","d":"\u001b[A"}"#).as_deref(),
+            Some("\x1b[A")
+        );
     }
 
     #[test]
