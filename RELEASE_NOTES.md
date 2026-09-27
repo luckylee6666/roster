@@ -1,23 +1,17 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.9.0 / 本版更新
+## What's new in v1.9.1 / 本版更新
 
 **English**
 
-- **Drive Roster from your phone, like the Codex mobile app.** Open「Phone remote」and scan the QR code: your phone can pick a project, browse the merged history of all eight CLIs, open a session, start or continue a conversation, choose that CLI's own permission mode (full-access modes ask twice), watch the reply stream in, and stop a turn.
-- **The desktop stays the only executor.** A phone request goes through exactly the same path as the desktop composer — one turn per project, the concurrency cap, project memory, resume and over-window checks — and the desktop shows it live. The phone can also join a turn that is already running on the desktop, and both sides render the same event stream.
-- **Keep it running in the background.** The panel now opens from both workspaces and can stay on after you close it, with a visible indicator on both entry buttons; stopping it revokes the PIN immediately. Tailscale addresses are listed with their own QR code for use away from home.
-- **Optional Android app.** A tiny shell (`mobile-android/`, build with `mobile-android/build.sh`) remembers the computer, opens full-screen, and can be picked straight from the camera when scanning the QR code. Any phone browser works too.
-- Also includes the unreleased fixes since v1.8.0: startup input barrier, native-argv session rotation and cross-CLI handoff, restore that keeps failed tabs, and more — see the changelog.
+- **Fixed: swiping in the phone's Terminal tab typed garbage into the desktop CLI.** With mouse mode on in the running program (Claude Code turns it on), the phone's terminal turned swipes into mouse-wheel reports — with `NaN` coordinates on HarmonyOS — and the CLI's input box filled up with `aN;NaNM…`, sometimes getting submitted together with a real instruction. Swipes now only scroll on the phone, the phone never sends mouse reports, and the desktop strips any that still arrive. Typing, the key row and the conversation tab are unchanged.
+- v1.9.0 brought the phone remote for the conversation workspace (pick a project, browse every CLI's history, send instructions and watch replies stream while the desktop does the work) and the optional Android app — see the changelog.
 
 **中文**
 
-- **像 Codex 手机端一样用手机遥控 Roster。** 打开「手机远程」扫码，手机就能选项目、看 8 家 CLI 合并的历史、打开会话、开新对话或续接、按这家 CLI 自己的权限档位发指令（不开沙箱的档位要二次确认）、实时看回复、随时停止。
-- **电脑是唯一的执行者。** 手机的请求和桌面输入框走完全同一条路——同一项目一轮、并发上限、项目记忆、续接与超窗复核——电脑上同步显示；手机也能中途接上电脑正在跑的一轮，两边看的是同一份事件。
-- **可以后台保持连接。** 面板在两个工作台都能打开，关掉面板后可以继续运行，两个入口都会显示「已开启」；停止即作废 PIN。面板还会列出 Tailscale 地址和二维码，出门也能连。
-- **可选的安卓 App。** 一个很小的外壳（`mobile-android/`，用 `mobile-android/build.sh` 构建），记住电脑地址、全屏打开，扫码时可直接选它打开；不装 App 用手机浏览器也行。
-- 同时包含 v1.8.0 之后未发版的修复：启动输入屏障、原生参数轮换与跨 CLI 交接、恢复时保留失败的标签等，详见更新日志。
+- **修复：在手机「终端」标签里滑动会往电脑上的 CLI 输入框灌乱码。** 终端程序开了鼠标模式时（Claude Code 会开），手机终端会把滑动变成鼠标滚轮上报，鸿蒙上坐标还是 `NaN`，CLI 输入框里就出现一串 `aN;NaNM…`，有时还会跟着真指令一起被提交。现在滑动只在手机上滚动，手机不再发送鼠标上报，电脑端也会把漏过来的剥掉。打字、快捷键行和对话标签不受影响。
+- v1.9.0 带来了手机遥控对话工作台（选项目、看各家 CLI 历史、发指令并实时看回复，活由电脑来干）和可选的安卓 App，详见更新日志。
 
 ## Phone remote / 手机远程
 
@@ -26,6 +20,14 @@ Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 3. If macOS asks whether Roster may accept incoming connections, choose Allow / macOS 问是否允许 Roster 接受传入连接时点「允许」
 
 Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only — use a trusted network or Tailscale. / 安全：局域网 + PIN、明文 HTTP，只接受私网与 Tailscale 来源，请在可信网络或 Tailscale 下使用。
+
+## Android app / 安卓 App
+
+`Roster-Remote_1.9.1_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.1_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+
+1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
+2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」
+3. On HarmonyOS NEXT, install it through 卓易通; use the LAN address at home, and a native HarmonyOS Tailscale client (e.g. MeshArc) when away / 鸿蒙 NEXT 通过卓易通安装；在家用局域网地址，出门用鸿蒙原生 Tailscale 客户端（如 MeshArc）
 
 ## Upgrade / 升级
 

@@ -10,7 +10,7 @@
 
 <p align="center">多 AI CLI 指挥台桌面应用，基于 Tauri v2 构建。</p>
 
-最新版本：**v1.9.0** — 像 Codex 手机端一样用手机遥控 Roster：选项目、看各家 CLI 的历史、发指令并实时看回复，活由电脑来干。同一 WiFi 或 Tailscale 下用手机浏览器即可，另附可选的安卓 App。详情见[更新日志](CHANGELOG.md)。
+最新版本：**v1.9.1** — 修复在手机「终端」标签滑动时往电脑 CLI 输入框灌乱码。v1.9.0：像 Codex 手机端一样用手机遥控 Roster：选项目、看各家 CLI 的历史、发指令并实时看回复，活由电脑来干。同一 WiFi 或 Tailscale 下用手机浏览器即可，另附可选的安卓 App。详情见[更新日志](CHANGELOG.md)。
 
 ## 功能特性
 

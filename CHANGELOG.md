@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.9.1
+
+### English
+
+**Fixed**
+- Swiping in the phone's Terminal tab no longer types garbage like `aN;NaNM` into the desktop CLI. When the running program had mouse mode on (Claude Code does), the bundled xterm beta turned touch swipes into mouse-wheel reports — with `NaN` coordinates on HarmonyOS — and sent them to the desktop terminal, where the CLI treated the tail as typed text. The phone now scrolls locally and never sends mouse reports; the desktop also strips any mouse report arriving from the phone before it reaches the terminal. Keyboard input and the key row are unchanged.
+
+### 中文
+
+**修复**
+- 在手机「终端」标签里滑动，不会再往电脑上的 CLI 输入框灌 `aN;NaNM` 之类的乱码。原因是：终端程序开了鼠标模式时（Claude Code 会开），手机页内置的 xterm 测试版会把触摸滑动变成鼠标滚轮上报发给电脑，鸿蒙上坐标还算成了 `NaN`，CLI 只认出前半截、剩下的当成了输入。现在手机上滑动只在本地滚动，不再发任何鼠标上报；电脑端也会把手机发来的鼠标上报剥掉再写入终端。键盘输入和快捷键行不受影响。
+
 ## v1.9.0
 
 ### English
