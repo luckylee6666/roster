@@ -3415,6 +3415,12 @@ fn remote_conversation_reject(
     remote_chat::reject(&run_id, &provider_id, &message)
 }
 
+/// 手机停止发生在桌面准备阶段时，回传取消终态；活跃运行仍走原取消控制器。
+#[tauri::command]
+fn remote_conversation_cancel_pending(run_id: String, provider_id: String) -> Result<(), String> {
+    remote_chat::cancel_pending(&run_id, &provider_id)
+}
+
 /// 关闭「手机远程」面板时调用：真正停掉服务（清空 PIN、踢掉所有已连接的手机、
 /// 停止监听），而不是只隐藏桌面 UI。下次打开面板会重新生成新 PIN 并按需监听。
 #[tauri::command]
@@ -3898,6 +3904,7 @@ pub fn run() {
             terminal_remote_info,
             terminal_remote_stop,
             remote_conversation_reject,
+            remote_conversation_cancel_pending,
             notify,
             git_status_batch,
             git_branch,

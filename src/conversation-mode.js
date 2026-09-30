@@ -577,7 +577,8 @@ export function installConversationMode({
   let resumeLatestOnHistory = false;
   let remoteUnlisten = null;
   // 手机请求在读历史/转录的 await 期间先占住项目，免得桌面或另一条手机请求插进来。
-  const remotePending = new Set();
+  const remotePending = new Map();
+  const remotePreparingRuns = new Map();
   // Each project keeps its own transcript, draft and run, so a turn started in
   // one project keeps streaming while the user reads or types in another.
   const conversationStates = new Map();
@@ -3344,7 +3345,7 @@ export function installConversationMode({
       notify?.(promptTooLongMessage(promptState.byteLength), 'error');
       return;
     }
-    if (activeRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
+    if (activeRuns.size + remotePreparingRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
       notify?.(`最多同时处理 ${MAX_PARALLEL_CONVERSATION_RUNS} 个项目，请先等其中一个完成`, 'info');
       return;
     }
@@ -3466,6 +3467,15 @@ export function installConversationMode({
     invoke('remote_conversation_reject', { runId, providerId, message }).catch(() => {});
   }
 
+  function cancelPreparingRemote(preparation) {
+    if (preparation.cancelled) return;
+    preparation.cancelled = true;
+    if (remotePending.get(preparation.projectId) === preparation) remotePending.delete(preparation.projectId);
+    invoke('remote_conversation_cancel_pending', {
+      runId: preparation.runId, providerId: preparation.providerId,
+    }).catch(() => rejectRemote(preparation.runId, preparation.providerId, '已停止准备，但取消状态同步失败'));
+  }
+
   function remoteProjectBusy(projectId) {
     return projectIsRunning(projectId)
       || conversationRunning(stateForProject(projectId) || {})
@@ -3479,11 +3489,13 @@ export function installConversationMode({
     const threadId = String(command?.threadId || '');
     const prompt = String(command?.prompt || '').trim();
     const mode = String(command?.mode || '');
+    let preparation = null;
     const fail = message => {
+      if (preparation?.cancelled) return false;
       rejectRemote(runId, providerId, message);
       return false;
     };
-    if (!runId || !prompt || activeRuns.has(runId) || settledRuns.has(runId)) return fail('这次请求无效或重复');
+    if (!runId || !prompt || activeRuns.has(runId) || settledRuns.has(runId) || remotePreparingRuns.has(runId)) return fail('这次请求无效或重复');
     if (destroyed || !listenerReady) return fail('电脑端的对话服务还没准备好');
     const project = projects.find(item => item.id === projectId);
     if (!project) return fail('电脑上找不到这个项目');
@@ -3492,12 +3504,15 @@ export function installConversationMode({
     const busyMessage = '这个项目正在处理另一轮对话，等它结束再发';
     if (remotePending.has(projectId)) return fail('这个项目上一条手机请求还在准备，稍等再发');
     if (remoteProjectBusy(projectId)) return fail(busyMessage);
-    if (activeRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
+    if (activeRuns.size + remotePreparingRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
       return fail(`电脑上最多同时处理 ${MAX_PARALLEL_CONVERSATION_RUNS} 个项目，请先等其中一个完成`);
     }
-    remotePending.add(projectId);
+    preparation = { runId, providerId, projectId, cancelled: false };
+    remotePending.set(projectId, preparation);
+    remotePreparingRuns.set(runId, preparation);
     try {
       const listed = await invoke('conversation_mode_list', { providerId }).catch(() => []);
+      if (preparation.cancelled) return false;
       const entries = Array.isArray(listed) ? listed : [];
       if (mode && !entries.some(entry => entry.id === mode)) return fail('这个权限档位在电脑上不可用');
       const modeEntry = entries.find(entry => entry.id === mode) || entries[0] || null;
@@ -3506,6 +3521,7 @@ export function installConversationMode({
         // 手机上的列表比桌面侧栏长（后端最多给 80 条），这里按同样的范围核对。
         const session = flattenConversationHistory(await loadHistory(project.localPath), { limit: 80 })
           .find(item => item.tool === providerId && item.id === threadId);
+        if (preparation.cancelled) return false;
         if (!session) return fail('电脑上找不到这条历史对话');
         if (sessionBudgetBlocks(session.budget)) {
           return fail('这条会话已经超出上下文窗口，续接只会报错；请在电脑上打开它改用新会话继续');
@@ -3519,6 +3535,7 @@ export function installConversationMode({
             sourceTool: providerId,
             id: threadId,
           });
+          if (preparation.cancelled) return false;
           base = loadConversationTranscript({
             projectId,
             providerId,
@@ -3531,7 +3548,7 @@ export function installConversationMode({
         base = createConversationState({ projectId, providerId });
       }
       // 上面的 await 期间桌面可能已经动过这个项目，落地前再核一遍。
-      if (destroyed) return false;
+      if (destroyed || preparation.cancelled) return false;
       if (!projects.some(item => item.id === projectId)) return fail('这个项目刚在电脑上被删除');
       if (remoteProjectBusy(projectId)) return fail(busyMessage);
       if (activeRuns.size >= MAX_PARALLEL_CONVERSATION_RUNS) {
@@ -3553,6 +3570,7 @@ export function installConversationMode({
         changeReports.delete(projectId);
       }
       activeRuns.set(runId, runEntry);
+      remotePreparingRuns.delete(runId);
       const active = isActiveProject(projectId);
       if (active) {
         transcriptRevision += 1;
@@ -3565,7 +3583,7 @@ export function installConversationMode({
         providerId: runContext.providerId,
         prompt,
       }));
-      remotePending.delete(projectId);
+      if (remotePending.get(projectId) === preparation) remotePending.delete(projectId);
       if (active) {
         renderState();
         void refreshModeOptions();
@@ -3609,7 +3627,8 @@ export function installConversationMode({
     } catch (error) {
       return fail(`电脑端准备这一轮时出错：${error?.message || error}`);
     } finally {
-      remotePending.delete(projectId);
+      if (remotePending.get(projectId) === preparation) remotePending.delete(projectId);
+      if (remotePreparingRuns.get(runId) === preparation) remotePreparingRuns.delete(runId);
     }
   }
 
@@ -3623,6 +3642,10 @@ export function installConversationMode({
       const runId = String(command.runId || '');
       const entry = activeRuns.get(runId);
       if (entry) void stopConversationRun(entry.projectId, runId);
+      else {
+        const preparation = remotePreparingRuns.get(runId);
+        if (preparation) cancelPreparingRemote(preparation);
+      }
     }
   }
 
@@ -4204,6 +4227,7 @@ export function installConversationMode({
     destroy() {
       closeComposerMore();
       destroyed = true;
+      remotePreparingRuns.forEach(cancelPreparingRemote);
       filePreviewRevision += 1;
       clearUsageExpiryTimer();
       historyRevision += 1;

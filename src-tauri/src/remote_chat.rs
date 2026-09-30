@@ -313,6 +313,29 @@ fn hello_frame() -> String {
     }
 }
 
+// Check and publish under the snapshot lock, so a preparing cancellation cannot
+// remove a running snapshot or race a registration between two lock operations.
+fn pending_cancel_frame(table: &mut RunTable, run_id: &str, provider_id: &str) -> Option<Value> {
+    if table.contains(run_id) {
+        return None;
+    }
+    Some(json!({ "t": "ev", "seq": table.next_seq(), "runId": run_id,
+        "providerId": provider_id, "kind": "cancelled", "data": {} }))
+}
+
+pub(crate) fn cancel_pending(run_id: &str, provider_id: &str) -> Result<(), String> {
+    crate::codex_chat::validate_run_id(run_id)?;
+    if !PROVIDERS.iter().any(|(id, _)| *id == provider_id) {
+        return Err("未知的助手".into());
+    }
+    let relay = relay();
+    let mut table = relay.table.lock().map_err(|_| "取消状态暂时不可用")?;
+    if let Some(frame) = pending_cancel_frame(&mut table, run_id, provider_id) {
+        send_frame(relay, frame);
+    }
+    Ok(())
+}
+
 // ===== 手机发来的指令 =====
 
 #[derive(Debug, PartialEq)]
@@ -786,6 +809,23 @@ fn handle_phone_text(txt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparing_cancel_reports_terminal_event_without_removing_active_runs() {
+        let mut table = RunTable::default();
+        table.register(snapshot("chat-active"));
+        let frame = pending_cancel_frame(&mut table, "chat-preparing", "claude").unwrap();
+        assert_eq!(frame["kind"], "cancelled");
+        assert_eq!(frame["runId"], "chat-preparing");
+        assert_eq!(frame["providerId"], "claude");
+        assert_eq!(table.runs.len(), 1);
+        let seq = table.seq;
+        assert!(pending_cancel_frame(&mut table, "chat-active", "claude").is_none());
+        assert_eq!(table.seq, seq);
+        assert!(table.contains("chat-active"));
+        assert!(cancel_pending("invalid id", "claude").is_err());
+        assert!(cancel_pending("chat-valid", "unknown").is_err());
+    }
 
     fn snapshot(run_id: &str) -> RunSnapshot {
         RunSnapshot {

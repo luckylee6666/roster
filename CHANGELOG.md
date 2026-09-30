@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased
+
+### English
+
+**Fixed**
+- File-tree drag labels now clean up after lost mouse-release events, cancelled drags, focus/visibility changes and tree/terminal lifecycle changes. Starting another drag also removes any orphaned label, while a bounded idle fallback prevents it from remaining indefinitely.
+- Stopping a phone conversation during history preparation now cancels it before an assistant starts and reports the stopped state to the phone. Cancelled preparation cannot clear a newer request's project reservation; desktop and phone requests share the preparation/activity limit.
+
+### 中文
+
+**修复**
+- 文件树拖拽标签在松开事件丢失、取消、焦点/可见性变化及树/终端切换时清理；新拖动也会移除孤立标签，并有空闲兜底，避免蓝色文件夹名一直残留。
+- 手机远程在准备历史期间点停止，会在助手启动前取消并向手机回传已停止；旧准备任务不会清掉同项目新请求的占用，桌面与手机共用准备/运行数量限制。
+
 ## v1.9.1
 
 ### English

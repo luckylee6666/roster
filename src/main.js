@@ -400,6 +400,7 @@ async function bindNativeEscListener() {
   if (typeof listen !== 'function') return;
   await listen('native-esc', () => {
     if (!developerTerminalVisible()) return;
+    cleanupTreeDrag();
     const renameInput = document.querySelector('.group-rename-input');
     if (renameInput) {
       renameInput.blur();
@@ -5198,6 +5199,7 @@ function makeTreeRow(entry, depth) {
 }
 
 async function renderTree(cwd) {
+  cleanupTreeDrag();
   const revision = ++treeRenderRevision;
   treeRoot = cwd || null;
   treeActiveRow = null;
@@ -5831,6 +5833,7 @@ function closePreview(force = false) {
 }
 
 function toggleTree() {
+  cleanupTreeDrag();
   const hidden = termEl.tree.classList.toggle('hidden');
   termEl.treeBtn.classList.toggle('active', !hidden);
   localStorage.setItem('term-tree-hidden', hidden ? '1' : '0');
@@ -6037,6 +6040,15 @@ function setupSessionRail() {
 // ===== 树项拖入终端（自实现鼠标拖拽，绕开 Tauri 原生 drag-drop 对 HTML5 DnD 的干扰）=====
 let treeDrag = null;
 let treeDragSuppressClick = false;
+let treeDragCleanupTimer = null;
+let treeDragUserSelect = null;
+
+function renewTreeDragCleanup() {
+  clearTimeout(treeDragCleanupTimer);
+  // Native child WebViews can consume every terminating DOM event. Keep the
+  // overlay bounded even if focus and mouseup never return to this document.
+  treeDragCleanupTimer = setTimeout(cleanupTreeDrag, 10000);
+}
 
 function terminalSessionAtViewportPoint(x, y) {
   if (!developerTerminalVisible()) return null;
@@ -6055,23 +6067,38 @@ function setTerminalPaneDragTarget(sessionId) {
 }
 
 function startTreeDragWatch(entry, e) {
-  if (e.button !== 0) return; // 仅左键
+  cleanupTreeDrag(); // clear the old ghost before replacing its reference
   treeDragSuppressClick = false;
+  if (e.button !== 0 || !developerTerminalVisible()) return;
   treeDrag = { entry, x: e.clientX, y: e.clientY, started: false, ghost: null };
+  renewTreeDragCleanup();
 }
 
 // 兜底清理：无论拖拽如何结束（含离开窗口/失焦），都移除残留 ghost
 function cleanupTreeDrag() {
-  if (!treeDrag) return;
-  if (treeDrag.ghost) treeDrag.ghost.remove();
+  const interrupted = !!treeDrag;
+  clearTimeout(treeDragCleanupTimer);
+  treeDragCleanupTimer = null;
+  treeDrag?.ghost?.remove();
+  // Remove any previously orphaned node too, even if the active state is gone.
+  document.querySelectorAll('.tree-drag-ghost').forEach(ghost => ghost.remove());
   treeDrag = null;
-  document.body.style.userSelect = '';
+  // A focus/duplicate termination event after successful mouseup must not
+  // re-enable the synthetic row click. A new mousedown clears it explicitly.
+  if (interrupted) treeDragSuppressClick = false;
+  if (treeDragUserSelect !== null) document.body.style.userSelect = treeDragUserSelect;
+  treeDragUserSelect = null;
   setTerminalPaneDragTarget(null);
 }
 
 function setupTreeDrag() {
   document.addEventListener('mousemove', (e) => {
     if (!treeDrag) return;
+    if (!developerTerminalVisible() || document.hidden || (e.buttons & 1) === 0) {
+      cleanupTreeDrag();
+      return;
+    }
+    renewTreeDragCleanup();
     if (!treeDrag.started) {
       if (Math.hypot(e.clientX - treeDrag.x, e.clientY - treeDrag.y) < 5) return; // 阈值，区分点击
       treeDrag.started = true;
@@ -6080,13 +6107,14 @@ function setupTreeDrag() {
       g.textContent = treeDrag.entry.name;
       document.body.appendChild(g);
       treeDrag.ghost = g;
+      treeDragUserSelect = document.body.style.userSelect;
       document.body.style.userSelect = 'none';
     }
     treeDrag.ghost.style.left = (e.clientX + 12) + 'px';
     treeDrag.ghost.style.top = (e.clientY + 14) + 'px';
     setTerminalPaneDragTarget(terminalSessionAtViewportPoint(e.clientX, e.clientY));
   });
-  document.addEventListener('mouseup', (e) => {
+  const finish = e => {
     if (!treeDrag) return;
     const d = treeDrag;
     const started = d.started;
@@ -6098,12 +6126,20 @@ function setupTreeDrag() {
         activateSession(targetSessionId, false, () => insertPathToTerminal(d.entry.path, targetSessionId));
       }
     }
-  });
+  };
+  document.addEventListener('mouseup', finish, true);
+  window.addEventListener('mouseup', finish, true);
   // 鼠标移出窗口 / 应用失焦时 mouseup 收不到，ghost 会卡住——兜底清理
   document.addEventListener('mouseleave', (e) => {
     if (treeDrag && (!e.relatedTarget && !e.toElement)) cleanupTreeDrag();
   });
   window.addEventListener('blur', cleanupTreeDrag);
+  window.addEventListener('focus', cleanupTreeDrag);
+  window.addEventListener('pagehide', cleanupTreeDrag);
+  document.addEventListener('pointercancel', cleanupTreeDrag, true);
+  document.addEventListener('contextmenu', cleanupTreeDrag, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') cleanupTreeDrag(); }, true);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cleanupTreeDrag(); });
 }
 
 // ===== 文件树右键菜单：插入路径 / 复制路径 / 移到废纸篓 =====
@@ -6182,6 +6218,7 @@ function openDock() {
 }
 
 function collapseDock() {
+  cleanupTreeDrag();
   // Native companion WebViews are hidden while a header dropdown is open.
   // Close those dropdowns before docking so no stale hide reason survives reopen.
   closeThemeMenu();
@@ -6607,6 +6644,7 @@ function finalizeSessionClose(id) {
 }
 
 async function closeSession(id) {
+  cleanupTreeDrag();
   const session = sessions.get(id);
   if (!session || sessionCloseCoordinator.isClosing(id)) return false;
   if (activeSession === id) closePreview(true);

@@ -274,6 +274,8 @@ function fixture({
   const values = new Map();
   let startGate = null;
   let startError = '';
+  let modeGate = null;
+  const modeReadQueue = [];
   let attachmentGate = null;
   const document = {
     hidden: false,
@@ -327,6 +329,8 @@ function fixture({
       if (command === 'conversation_model_list') return { models: slashLists.models };
       if (command === 'conversation_effort_list') return { efforts: slashLists.efforts };
       if (command === 'conversation_mode_list') {
+        if (modeReadQueue.length) return modeReadQueue.shift().promise;
+        if (modeGate) return modeGate.promise;
         if (payload.providerId === 'claude') {
           return [
             { id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false, unsandboxed: false },
@@ -403,6 +407,12 @@ function fixture({
     setUsage: payload => { oauthUsage = payload; },
     setGrokUsage: payload => { grokUsage = payload; },
     setStartError: message => { startError = message; },
+    holdModeReads: () => { modeGate = deferred(); },
+    holdNextModeRead: () => { const gate = deferred(); modeReadQueue.push(gate); return gate; },
+    releaseModeReads: () => {
+      const gate = modeGate; modeGate = null;
+      gate?.resolve([{ id: 'plan', label: 'plan', writes: false }]);
+    },
     holdStart: () => { startGate = deferred(); },
     releaseStart: (errorMessage = '') => {
       const gate = startGate;
@@ -2366,6 +2376,79 @@ test('手机续接历史会话前核对归属与超窗，通过后按原会话�
   const texts = fx.el('conversation-messages').childNodes
     .map(row => row.childNodes[0].childNodes[1].textContent);
   assert.deepEqual(texts.slice(0, 3), ['旧问题', '旧回答', '接着做'], '桌面上看到的是带上下文的同一条会话');
+});
+
+test('手机准备期间停止立即回报取消，不再启动助手且新请求不受旧准备影响', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.holdModeReads();
+  remoteSend(fx, { runId: 'chat-mprepare', projectId: 'a', prompt: '应该被取消' });
+  await flush();
+  assert.equal(fx.startedRuns().length, 0);
+  fx.fireTauri('remote-conversation-command', { type: 'cancel', runId: 'chat-mprepare' });
+  await flush();
+  assert.ok(fx.invokes.some(entry => entry.command === 'remote_conversation_cancel_pending'
+    && entry.payload.runId === 'chat-mprepare' && entry.payload.providerId === 'claude'));
+  remoteSend(fx, { runId: 'chat-maftercancel', projectId: 'a', prompt: '新请求' });
+  await flush();
+  fx.releaseModeReads();
+  await flush();
+  assert.deepEqual(fx.startedRuns().map(run => run.runId), ['chat-maftercancel']);
+  assert.equal(remoteRejections(fx).some(item => item.runId === 'chat-mprepare'), false);
+});
+
+test('旧手机准备任务结束不能清掉同项目新请求的占用', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const first = fx.holdNextModeRead();
+  remoteSend(fx, { runId: 'chat-moldprep', projectId: 'a', prompt: '旧请求' });
+  await flush();
+  fx.fireTauri('remote-conversation-command', { type: 'cancel', runId: 'chat-moldprep' });
+  const second = fx.holdNextModeRead();
+  remoteSend(fx, { runId: 'chat-mnewprep', projectId: 'a', prompt: '新请求' });
+  await flush();
+  first.resolve([{ id: 'plan', writes: false }]); await flush();
+  remoteSend(fx, { runId: 'chat-mthirdprep', projectId: 'a', prompt: '不能插队' });
+  await flush();
+  assert.match(remoteRejections(fx).find(item => item.runId === 'chat-mthirdprep')?.message || '', /还在准备/);
+  assert.equal(fx.startedRuns().length, 0);
+  second.resolve([{ id: 'plan', writes: false }]); await flush();
+  assert.deepEqual(fx.startedRuns().map(run => run.runId), ['chat-mnewprep']);
+});
+
+test('桌面与手机准备请求共用四轮资源上限', async t => {
+  const fx = fixture({ projects: ['a', 'b', 'c', 'd', 'e'].map(id => project(id, `项目 ${id}`)), t });
+  await flush(); fx.clickProject('e'); await flush();
+  fx.holdModeReads();
+  for (const projectId of ['a', 'b', 'c', 'd']) remoteSend(fx, { runId: `chat-mprep-${projectId}`, projectId, prompt: '准备中' });
+  await flush();
+  await fx.send('桌面第五条');
+  assert.equal(fx.startedRuns().length, 0);
+  assert.ok(fx.toasts.some(toast => /最多.*4/.test(toast.message)));
+  fx.releaseModeReads(); await flush();
+  assert.equal(fx.startedRuns().length, 4);
+});
+
+test('手机准备阶段重复停止和未知停止不重复回报，启动期间停止仍交控制器排队', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  fx.holdModeReads();
+  remoteSend(fx, { runId: 'chat-mpendingcancel', projectId: 'a', prompt: '准备' });
+  await flush();
+  for (const runId of ['chat-mpendingcancel', 'chat-mpendingcancel', 'chat-unknown']) {
+    fx.fireTauri('remote-conversation-command', { type: 'cancel', runId });
+  }
+  await flush();
+  assert.equal(fx.invokes.filter(entry => entry.command === 'remote_conversation_cancel_pending').length, 1);
+  fx.releaseModeReads(); await flush();
+  fx.holdStart();
+  remoteSend(fx, { runId: 'chat-mstartingcancel', projectId: 'a', prompt: '启动在途' });
+  await flush();
+  fx.fireTauri('remote-conversation-command', { type: 'cancel', runId: 'chat-mstartingcancel' });
+  await flush();
+  assert.equal(fx.invokes.filter(entry => entry.command === 'conversation_chat_cancel').length, 0, '未注册到后端前仍排队');
+  fx.releaseStart(); await flush();
+  assert.equal(fx.invokes.filter(entry => entry.command === 'conversation_chat_cancel').length, 1);
 });
 
 test('手机的停止请求能停后台项目，启动失败也会告诉手机', async t => {
