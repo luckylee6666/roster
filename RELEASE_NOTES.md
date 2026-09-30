@@ -1,17 +1,19 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.9.1 / 本版更新
+## What's new in v1.9.2 / 本版更新
 
 **English**
 
-- **Fixed: swiping in the phone's Terminal tab typed garbage into the desktop CLI.** With mouse mode on in the running program (Claude Code turns it on), the phone's terminal turned swipes into mouse-wheel reports — with `NaN` coordinates on HarmonyOS — and the CLI's input box filled up with `aN;NaNM…`, sometimes getting submitted together with a real instruction. Swipes now only scroll on the phone, the phone never sends mouse reports, and the desktop strips any that still arrive. Typing, the key row and the conversation tab are unchanged.
-- v1.9.0 brought the phone remote for the conversation workspace (pick a project, browse every CLI's history, send instructions and watch replies stream while the desktop does the work) and the optional Android app — see the changelog.
+- **Fixed: file-tree drag labels could remain on screen.** Dragging a file or folder now cleans up its blue label when a release event is lost, the drag is cancelled, the window loses focus or the tree changes. Starting another drag also removes orphaned labels, while normal drops still insert the path once.
+- **Fixed: stopping a phone conversation during preparation could still start the assistant.** Stop now cancels the request before it starts and reports the stopped state to the phone. A cancelled request finishing later cannot disturb a newer request; desktop and phone preparation share the same concurrency limit.
+- This patch also includes the phone Terminal swipe fix from v1.9.1. Update Roster on the computer to receive the phone fixes; the Android shell does not need reinstalling.
 
 **中文**
 
-- **修复：在手机「终端」标签里滑动会往电脑上的 CLI 输入框灌乱码。** 终端程序开了鼠标模式时（Claude Code 会开），手机终端会把滑动变成鼠标滚轮上报，鸿蒙上坐标还是 `NaN`，CLI 输入框里就出现一串 `aN;NaNM…`，有时还会跟着真指令一起被提交。现在滑动只在手机上滚动，手机不再发送鼠标上报，电脑端也会把漏过来的剥掉。打字、快捷键行和对话标签不受影响。
-- v1.9.0 带来了手机遥控对话工作台（选项目、看各家 CLI 历史、发指令并实时看回复，活由电脑来干）和可选的安卓 App，详见更新日志。
+- **修复：文件树拖拽标签一直残留。** 拖动文件或文件夹后，即使松开事件丢失、取消拖动、窗口失焦或文件树切换，蓝色标签也会清理；新拖动会移除孤立标签，正常拖入终端仍只插入一次路径。
+- **修复：手机对话准备期间点停止却仍启动助手。** 停止会在请求启动前生效，并向手机显示已停止；旧取消请求后续结束，不会影响同项目的新请求，桌面与手机准备请求共用并发限制。
+- 本版也包含 v1.9.1 的手机终端上滑乱码修复。手机页面由电脑提供，更新电脑上的 Roster 即可生效，已装的安卓外壳无需重装。
 
 ## Phone remote / 手机远程
 
@@ -23,7 +25,7 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Android app / 安卓 App
 
-`Roster-Remote_1.9.1_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.1_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+`Roster-Remote_1.9.2_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.2_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
 
 1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
 2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」
@@ -31,8 +33,8 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Upgrade / 升级
 
-Quit all older Roster instances before opening this version, including Debug builds. Older versions do not participate in the new lock. This release requires no data migration.
-启动新版前请退出所有旧版 Roster，包括 Debug 版。旧版本尚未参与实例锁保护。本版无需数据迁移。
+Quit the installed Roster before replacing it, then reopen to load the update. Roster Dev uses a separate data directory and can run alongside production. This release requires no data migration.
+替换安装包前先退出当前正式版 Roster，安装后重新打开以加载更新。Roster Dev 使用独立数据目录，可与正式版并行。本版无需数据迁移。
 
 ## Install / 安装
 

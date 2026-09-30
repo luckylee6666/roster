@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.9.1** — swiping in the phone's Terminal tab no longer types garbage into the desktop CLI. v1.9.0: drive Roster from your phone, like the Codex mobile app: pick a project, browse every CLI's history, send an instruction and watch the reply stream in while the desktop does the work. Works in any phone browser on the same Wi-Fi or over Tailscale; an optional Android app is included. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.9.2** — fixes stuck file-tree drag labels and stopping phone conversations during preparation. Drive Roster from your phone: pick a project, browse every CLI's history, send an instruction and watch replies stream in while the desktop does the work. Works in any phone browser on the same Wi-Fi or over Tailscale; an optional Android app is included. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
