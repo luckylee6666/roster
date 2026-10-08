@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.9.2** — fixes stuck file-tree drag labels and stopping phone conversations during preparation. Drive Roster from your phone: pick a project, browse every CLI's history, send an instruction and watch replies stream in while the desktop does the work. Works in any phone browser on the same Wi-Fi or over Tailscale; an optional Android app is included. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.9.3** — preview and play project videos directly from the Developer file tree, with playback controls and on-demand reading for large files. Drive Roster from your phone: pick a project, browse every CLI's history, send an instruction and watch replies stream in while the desktop does the work. Works in any phone browser on the same Wi-Fi or over Tailscale; an optional Android app is included. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -113,6 +113,7 @@ A bottom-drawer terminal — open it from a project card's Open CLI buttons or t
 **Supported preview formats**
 - **Code / config / text**: syntax highlighting (dozens of languages) and direct editing while preserving UTF-8 BOM, LF/CRLF line endings, permissions, ACLs, extended attributes, and supported platform metadata
 - **Images**: png / jpg / gif / webp / svg / ico / avif (checkerboard transparency background)
+- **Videos**: mp4 / m4v / mov / webm / ogv, with play/pause, seeking, volume and fullscreen controls. Project files stream locally on demand; closing the preview stops playback. Codec availability follows the system WebView (MP4 with H.264/AAC is recommended)
 - **PDF**: inline rendering
 - **Markdown**: rendered as a formatted page, with a Source / Rendered toggle (XSS-sanitized, safe to preview from any source)
 - **CSV / TSV**: rendered as a table, switchable back to source

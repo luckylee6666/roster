@@ -3425,13 +3425,14 @@ dependencies = [
 
 [[package]]
 name = "roster"
-version = "1.9.2"
+version = "1.9.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
  "block2",
  "chrono",
  "dirs 5.0.1",
+ "futures-util",
  "libc",
  "local-ip-address",
  "objc2-app-kit",

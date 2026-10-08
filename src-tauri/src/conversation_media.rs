@@ -116,12 +116,7 @@ fn bounded_regular_file(path: &Path, max_bytes: u64, too_large: &str) -> Result<
 }
 
 #[cfg(windows)]
-fn bounded_project_regular_file(
-    project: &Path,
-    target: &Path,
-    max_bytes: u64,
-    too_large: &str,
-) -> Result<Vec<u8>, String> {
+pub(crate) fn open_project_regular_file(project: &Path, target: &Path) -> Result<fs::File, String> {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
@@ -168,7 +163,7 @@ fn bounded_project_regular_file(
         return Err("只能显示当前项目目录中的媒体".into());
     }
 
-    read_bounded_regular_file(file, max_bytes, too_large)
+    Ok(file)
 }
 
 /// Opens a canonical project-relative target through already-open directory FDs.
@@ -179,12 +174,7 @@ fn bounded_project_regular_file(
 /// `openat(..., O_NOFOLLOW)` makes every lookup stay below the root FD that we
 /// opened, and rejects a symlink substituted at any level.
 #[cfg(unix)]
-fn bounded_project_regular_file(
-    project: &Path,
-    target: &Path,
-    max_bytes: u64,
-    too_large: &str,
-) -> Result<Vec<u8>, String> {
+pub(crate) fn open_project_regular_file(project: &Path, target: &Path) -> Result<fs::File, String> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
@@ -261,7 +251,21 @@ fn bounded_project_regular_file(
         return Err("媒体路径无法安全读取".into());
     }
     // SAFETY: openat returned a new owned fd on success.
-    read_bounded_regular_file(unsafe { fs::File::from_raw_fd(fd) }, max_bytes, too_large)
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+
+#[cfg(any(unix, windows))]
+fn bounded_project_regular_file(
+    project: &Path,
+    target: &Path,
+    max_bytes: u64,
+    too_large: &str,
+) -> Result<Vec<u8>, String> {
+    read_bounded_regular_file(
+        open_project_regular_file(project, target)?,
+        max_bytes,
+        too_large,
+    )
 }
 
 fn hex(byte: u8) -> Option<u8> {

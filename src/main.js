@@ -96,6 +96,7 @@ import {
   shouldWriteNativeEscapeToPty,
 } from './native-esc-utils.js';
 import { setFilePreviewLayerOpen } from './file-preview-layer.js';
+import { createProjectVideoPreview } from './video-preview.js';
 import { createTerminalInputBuffer } from './terminal-input-buffer.js';
 import { installWorkspaceMode } from './workspace-mode.js';
 import { installAppShell } from './app-shell.js';
@@ -382,6 +383,7 @@ function installApplicationSurfaces() {
     },
     onViewChange: view => {
       if (view === 'conversation') {
+        projectVideoPreview.pause();
         // 开发模式里的 CLI 可能刚把旧会话继续写成了最新会话。切回对话模式时
         // 重新读磁盘历史，不能沿用上一次进入该工作台时的排序。
         void conversationController?.refreshHistory();
@@ -3559,6 +3561,9 @@ const termEl = {
   previewImg: $('file-preview-img'),
   previewRich: $('file-preview-rich'),
   previewPdf: $('file-preview-pdf'),
+  previewVideo: $('file-preview-video-wrap'),
+  previewVideoElement: $('file-preview-video'),
+  previewVideoStatus: $('file-preview-video-status'),
   previewToggle: $('file-preview-toggle'),
   previewEdit: $('file-preview-edit'),
   previewSave: $('file-preview-save'),
@@ -3579,6 +3584,18 @@ const characterTheme = installTerminalCharacterTheme(termEl.characterStage, term
     if (currentThemeDef && currentThemeDef.characterScene) applyTermBackground(currentThemeDef);
   },
   onError: error => appLog('warn', `国风分层人物已降级到静态原画：${error?.message || error}`),
+});
+const projectVideoPreview = createProjectVideoPreview({
+  video: termEl.previewVideoElement,
+  invoke,
+  replaceVideo: (current, next) => {
+    current.replaceWith(next);
+    termEl.previewVideoElement = next;
+  },
+  onError: message => {
+    termEl.previewVideoStatus.textContent = message;
+    termEl.previewVideoStatus.hidden = !message;
+  },
 });
 let workspaceController = null;
 let workspaceAutoMaximized = false;
@@ -5091,7 +5108,10 @@ watchDprChange();
 
 // 页面从后台恢复时清一次图集：WKWebView 后台可能回收 GPU 上下文或留下错位字形。
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return;
+  if (document.hidden) {
+    projectVideoPreview?.pause();
+    return;
+  }
   requestAnimationFrame(() => sessions.forEach(s => clearTermAtlas(s.term)));
 });
 
@@ -5109,6 +5129,7 @@ const TREE_ICONS = {
   config: '<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="#e5c07b" stroke-width="1.8"><path d="M4 7h8M17 7h3M4 17h3M12 17h8"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>',
   doc: '<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="#61afef" stroke-width="1.7"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 16h6"/></svg>',
   image: '<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="#c678dd" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 19l5-5 4 4 2-2 3 3"/></svg>',
+  video: '<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="#c678dd" stroke-width="1.7"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg>',
   file: '<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="#8b94a4" stroke-width="1.7"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>',
 };
 
@@ -5140,6 +5161,7 @@ function fileIconKey(name) {
   if (/^(json5?|jsonc|ya?ml|toml|ini|env|conf|cfg|lock|xml|plist|gradle|properties)$/.test(ext)) return 'config';
   if (/^(md|markdown|txt|rst|adoc|log|pdf|csv|tsv)$/.test(ext)) return 'doc';
   if (/^(png|jpe?g|gif|webp|bmp|ico|svg|avif)$/.test(ext)) return 'image';
+  if (/^(mp4|m4v|mov|webm|ogv)$/.test(ext)) return 'video';
   return 'file';
 }
 
@@ -5264,6 +5286,7 @@ async function insertShellScriptCommand(entry) {
 
 function isImageFile(name) { return /\.(png|jpe?g|gif|webp|bmp|ico|svg|avif)$/i.test(name); }
 function isPdfFile(name) { return /\.pdf$/i.test(name); }
+function isVideoFile(name) { return /\.(mp4|m4v|mov|webm|ogv)$/i.test(name); }
 function isMarkdownFile(name) { return /\.(md|markdown)$/i.test(name); }
 function isCsvFile(name) { return /\.(csv|tsv)$/i.test(name); }
 
@@ -5357,6 +5380,7 @@ function showPreviewView(which) {
   termEl.previewImage.classList.toggle('active', which === 'image');
   termEl.previewRich.classList.toggle('active', which === 'rich');
   termEl.previewPdf.classList.toggle('active', which === 'pdf');
+  termEl.previewVideo.classList.toggle('active', which === 'video');
   termEl.editor.classList.toggle('active', which === 'editor');
   termEl.previewBody.classList.toggle('editor-active', which === 'editor');
 }
@@ -5533,12 +5557,23 @@ async function openPreview(path, name) {
   setFilePreviewLayerOpen(termEl.preview, termEl.bodies, true);
   positionFilePreview();
   revokePreviewPdf();
+  projectVideoPreview.close();
+  termEl.previewVideoStatus.textContent = '';
+  termEl.previewVideoStatus.hidden = true;
   previewRichState = null;
   previewTextState = null;
   termEl.previewToggle.style.display = 'none';
   termEl.previewToggle.classList.remove('active');
   showPreviewView('text');
   updateFileEditorActions();
+
+  if (isVideoFile(name)) {
+    showPreviewView('video');
+    const cwd = activeSession ? sessions.get(activeSession)?.cwd : '';
+    const project = cwd ? findProjectByCwd(cwd) : null;
+    await projectVideoPreview.open(project?.id || '', path);
+    return;
+  }
 
   // 图片
   if (isImageFile(name)) {
@@ -5811,6 +5846,7 @@ function closePreview(force = false) {
     return false;
   }
   previewLoadSeq++;
+  projectVideoPreview.close();
   setFilePreviewLayerOpen(termEl.preview, termEl.bodies, false);
   revokePreviewPdf();
   previewRichState = null;
@@ -6218,6 +6254,7 @@ function openDock() {
 }
 
 function collapseDock() {
+  projectVideoPreview.pause();
   cleanupTreeDrag();
   // Native companion WebViews are hidden while a header dropdown is open.
   // Close those dropdowns before docking so no stale hide reason survives reopen.

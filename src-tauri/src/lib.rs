@@ -35,6 +35,7 @@ mod session_titles;
 mod shared_memory;
 mod terminal_launch;
 mod usage;
+mod video_preview;
 
 /// 手机端远程服务监听端口（局域网）。
 const REMOTE_PORT: u16 = 8787;
@@ -1698,6 +1699,25 @@ fn read_binary_base64(path: String) -> Result<String, String> {
     let p = std::path::Path::new(&path);
     let bytes = read_binary_file_bounded(p, MAX_PDF_FILE_SIZE, "文件过大（>32MB）")?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+#[tauri::command]
+async fn open_project_video(
+    state: State<'_, Mutex<AppState>>,
+    previews: State<'_, video_preview::VideoPreviews>,
+    project_id: String,
+    path: String,
+) -> Result<video_preview::VideoSource, String> {
+    let project = {
+        let state = state.lock().map_err(|_| "项目状态不可用")?;
+        saved_project_path(&state.projects, &project_id)?
+    };
+    previews.open(project, path).await
+}
+
+#[tauri::command]
+fn close_project_video(previews: State<'_, video_preview::VideoPreviews>, token: String) {
+    previews.close(&token);
 }
 
 /// 把文件/文件夹移到系统废纸篓（可恢复，不永久删除）。
@@ -3823,6 +3843,7 @@ pub fn run() {
         .manage(EditorExitGuard::default())
         .manage(conversation_chat::ConversationChatState::default())
         .manage(shared_memory::SharedMemoryState::default())
+        .manage(video_preview::VideoPreviews::default())
         .setup(move |app| {
             // macOS WKWebView 会吞掉 ESC；本地 NSEvent 监听把裸 ESC 转成 native-esc。
             native_esc::install_native_esc_monitor(app.handle().clone());
@@ -3896,6 +3917,8 @@ pub fn run() {
             confirm_window_close,
             read_image,
             read_binary_base64,
+            open_project_video,
+            close_project_video,
             trash_path,
             terminal_create,
             terminal_write,

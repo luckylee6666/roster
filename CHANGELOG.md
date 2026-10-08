@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.9.3
+
+### English
+
+**Added**
+- Project video preview in the Developer file tree: click MP4, M4V, MOV, WebM or OGV to play with native playback, seeking, volume and fullscreen controls. Large files stream on demand from a project-scoped local reader. Closing or switching files releases the video; hiding the workspace pauses it. Codec support follows the system WebView; unsupported videos show a clear message.
+
+### 中文
+
+**新增**
+- 开发模式文件树支持项目视频预览：点击 MP4、M4V、MOV、WebM 或 OGV，可播放/暂停、拖动进度、调整音量和全屏。大文件按需读取，关闭或切换文件释放视频，隐藏工作台时暂停；编码支持取决于系统 WebView，不兼容时显示明确提示。
+
 ## v1.9.2
 
 ### English

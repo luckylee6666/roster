@@ -1,19 +1,19 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.9.2 / 本版更新
+## What's new in v1.9.3 / 本版更新
 
 **English**
 
-- **Fixed: file-tree drag labels could remain on screen.** Dragging a file or folder now cleans up its blue label when a release event is lost, the drag is cancelled, the window loses focus or the tree changes. Starting another drag also removes orphaned labels, while normal drops still insert the path once.
-- **Fixed: stopping a phone conversation during preparation could still start the assistant.** Stop now cancels the request before it starts and reports the stopped state to the phone. A cancelled request finishing later cannot disturb a newer request; desktop and phone preparation share the same concurrency limit.
-- This patch also includes the phone Terminal swipe fix from v1.9.1. Update Roster on the computer to receive the phone fixes; the Android shell does not need reinstalling.
+- **Project video preview and playback.** In Developer mode, click an MP4, M4V, MOV, WebM or OGV file in the project tree to open it in the existing preview area. Native controls provide play/pause, seeking, volume and fullscreen.
+- **On-demand local reading.** Large videos stream in bounded chunks from the selected project instead of loading the entire file into memory. Closing or switching files stops playback and releases the source; hiding the workspace pauses it. Videos do not autoplay.
+- Codec support depends on the system WebView; MP4 with H.264/AAC is recommended. Unsupported videos show an explanatory message. Playback/fullscreen has not yet completed manual WebView acceptance testing; automated lifecycle, range-read and file-boundary tests have passed.
 
 **中文**
 
-- **修复：文件树拖拽标签一直残留。** 拖动文件或文件夹后，即使松开事件丢失、取消拖动、窗口失焦或文件树切换，蓝色标签也会清理；新拖动会移除孤立标签，正常拖入终端仍只插入一次路径。
-- **修复：手机对话准备期间点停止却仍启动助手。** 停止会在请求启动前生效，并向手机显示已停止；旧取消请求后续结束，不会影响同项目的新请求，桌面与手机准备请求共用并发限制。
-- 本版也包含 v1.9.1 的手机终端上滑乱码修复。手机页面由电脑提供，更新电脑上的 Roster 即可生效，已装的安卓外壳无需重装。
+- **项目视频预览与播放。** 在开发模式的文件树点击 MP4、M4V、MOV、WebM 或 OGV，即可在现有预览区打开，支持播放/暂停、拖动进度、音量和全屏。
+- **本机按需读取。** 大视频分段读取，不会一次性加载到内存。关闭预览或切换文件会停止播放并释放资源，隐藏工作台时暂停；打开时不会自动播放。
+- 编码支持取决于系统 WebView，推荐 MP4（H.264/AAC），不兼容的视频会显示明确提示。播放及全屏尚未完成 WebView 人工验收；生命周期、分段读取及文件安全边界自动化测试已通过。
 
 ## Phone remote / 手机远程
 
@@ -25,7 +25,7 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Android app / 安卓 App
 
-`Roster-Remote_1.9.2_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.2_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+`Roster-Remote_1.9.3_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.3_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
 
 1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
 2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」
