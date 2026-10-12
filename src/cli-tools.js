@@ -6,13 +6,23 @@ export const CLI_TOOLS = Object.freeze([
   Object.freeze({ id: 'grok', label: 'Grok', keywords: Object.freeze(['xai']) }),
   Object.freeze({ id: 'codex', label: 'Codex', keywords: Object.freeze(['openai']) }),
   Object.freeze({ id: 'opencode', label: 'OpenCode', keywords: Object.freeze(['sst']) }),
-  Object.freeze({ id: 'agy', label: 'agy', keywords: Object.freeze(['antigravity']) }),
+  // `launchVariants`：卡片上右键这个色标可以选"用哪一档启动"。默认永远是不带
+  // 任何绕过参数的裸命令；变体只能手动选。目前只有 agy 与 cmd 有，都是用户点名的例外。
+  // agy 的 `--dangerously-skip-permissions` 不在它自己的模式环里，按判据本不收，
+  // 是 2026-10-11 用户点名要的（同 cmd 的 --yolo），只进开发模式右键，不进对话档位。
+  Object.freeze({
+    id: 'agy',
+    label: 'agy',
+    keywords: Object.freeze(['antigravity']),
+    launchVariants: Object.freeze([
+      Object.freeze({ label: '完全访问（--dangerously-skip-permissions）', args: '--dangerously-skip-permissions', danger: true }),
+    ]),
+  }),
   Object.freeze({ id: 'qwen', label: 'Qwen', keywords: Object.freeze(['alibaba', 'qianwen', 'tongyi']) }),
   Object.freeze({ id: 'mimo', label: 'MiMo Code', keywords: Object.freeze(['mimocode', 'xiaomi']) }),
   // 命令名与显示名都用 `cmd`（CLI 自己的帮助写的是 `Usage: cmd <command>`）：
   // 用户明确要求菜单里跟命令行一致，别拿产品名 "Command Code" 显示回去。
-  // `launchVariants`：卡片上右键这个色标可以选"用哪一档启动"。默认永远是不带
-  // 任何绕过参数的裸命令；`--yolo` 是用户点名要的完全访问档，只能手动选。
+  // `--yolo` 是用户点名要的完全访问档。
   Object.freeze({
     id: 'cmd',
     label: 'cmd',

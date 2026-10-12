@@ -6701,7 +6701,9 @@ async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry =
   bodyEl.dataset.id = id;
   const toolName = (autoCmd || '').trim().split(/\s+/)[0] || '';
   // 以绕过权限启动的标签要在界面上看得出来：徽标转 danger 配色并带 title。
-  const fullAccess = /(^|\s)--yolo(\s|$)|--dangerously-skip-permissions/.test(autoCmd || '');
+  // 识别 cmd 的 --yolo 与 agy/claude 的 --dangerously-skip-permissions，title 写实际命中的参数。
+  const fullAccessFlag = (autoCmd || '').match(/(?:^|\s)(--yolo|--dangerously-skip-permissions)(?=\s|$)/)?.[1] || '';
+  const fullAccess = Boolean(fullAccessFlag);
   const paneHeadEl = document.createElement('div');
   paneHeadEl.className = 'term-pane-head';
   paneHeadEl.innerHTML =
@@ -6722,7 +6724,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry =
   tabEl.dataset.id = id;
   // 徽标只显示工具名（命令首词），不显示参数——否则恢复命令会整条塞进徽标
   const toolBadge = toolName
-    ? `<span class="term-tab-tool tool-${escAttr(toolName)}${fullAccess ? ' is-full-access' : ''}"${fullAccess ? ' title="以完全访问启动（--yolo）：不再逐条确认"' : ''}>${esc(toolName)}</span>`
+    ? `<span class="term-tab-tool tool-${escAttr(toolName)}${fullAccess ? ' is-full-access' : ''}"${fullAccess ? ` title="以完全访问启动（${escAttr(fullAccessFlag)}）：不再逐条确认"` : ''}>${esc(toolName)}</span>`
     : '';
   tabEl.innerHTML =
     `<span class="term-tab-dot"></span>` +

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased
+
+### English
+
+**Added**
+- agy gains an opt-in full-access launch option in Developer mode, added at the user's request. Right-clicking the `agy` badge on a project card now opens the same small menu as `cmd`, with「完全访问（--dangerously-skip-permissions）」to start the terminal without per-tool approval prompts. Left-click, history resume and restored tabs still use the plain command; the option is never the default, it is styled as dangerous, and tabs started with a bypass keep a red badge whose title names the actual flag. The conversation workspace's agy modes are unchanged.
+
+### 中文
+
+**新增**
+- agy 新增用户点名要求的开发模式「完全访问」启动项。**右键项目卡片上的 `agy` 色标**会弹出与 `cmd` 相同的小菜单，可选「完全访问（--dangerously-skip-permissions）」以免逐条确认的方式打开终端。左键、历史续接与恢复标签仍是不带绕过参数的裸命令；这一项绝不是默认，按危险档配色，以绕过参数启动的标签徽标保持红色，title 写明实际参数。对话工作台的 agy 档位不变。
+
 ## v1.9.3
 
 ### English
