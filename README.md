@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.9.3** — preview and play project videos directly from the Developer file tree, with playback controls and on-demand reading for large files. Drive Roster from your phone: pick a project, browse every CLI's history, send an instruction and watch replies stream in while the desktop does the work. Works in any phone browser on the same Wi-Fi or over Tailscale; an optional Android app is included. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.9.4** — fixes terminal file drops on Retina Macs, adds ordinary file/folder paths to conversation drafts, and includes agy's opt-in Developer-mode full-access launch option. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -60,6 +60,8 @@ Only one instance may use each data directory. `pnpm dev` or `pnpm build:dev` cr
 The conversation workspace is the default view. It is designed for people who want to work on a project through normal language without managing a terminal.
 
 Use the composer’s **+** menu to attach images or manage **Common instructions**. The quick selector appears only after instructions are saved; choosing one fills the draft without sending it.
+
+Drop ordinary files or folders into the conversation workspace to insert their quoted paths at the cursor; supported images become attachments (up to four). Dropping never sends a message or reads ordinary file contents automatically.
 
 ### Project shared memory
 
@@ -139,7 +141,7 @@ The editor supports Tab/Shift+Tab indentation and warns before discarding unsave
 - Terminal shortcuts: `⌘/Ctrl +` to enlarge, `⌘/Ctrl -` to shrink, `⌘/Ctrl 0` to reset, or `⌘/Ctrl + wheel`
 
 **Drag to insert path**
-- Drag a file/folder from Finder / File Explorer onto the terminal panel → its path (quoted if it contains spaces) is written into the active terminal
+- Drag files/folders from Finder / File Explorer onto a terminal pane → quoted paths are pasted into that pane without pressing Enter. Native drops and file-tree insertion respect the CLI's paste mode; invalid or excessive paths show an error.
 
 ## Requirements
 

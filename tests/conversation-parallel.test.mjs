@@ -29,6 +29,8 @@ class FakeEl {
     this.classNames = new Set();
     this.textContent = '';
     this.value = '';
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
     this.hidden = false;
     this.disabled = false;
     this.checked = false;
@@ -138,6 +140,20 @@ class FakeEl {
     return found;
   }
   focus() {}
+  setRangeText(replacement, start = this.selectionStart, end = this.selectionEnd, selectionMode = 'preserve') {
+    this.value = `${this.value.slice(0, start)}${replacement}${this.value.slice(end)}`;
+    const caret = start + replacement.length;
+    if (selectionMode === 'select') {
+      this.selectionStart = start;
+      this.selectionEnd = caret;
+    } else if (selectionMode === 'start') {
+      this.selectionStart = this.selectionEnd = start;
+    } else if (selectionMode === 'preserve') {
+      this.selectionStart = this.selectionEnd = caret;
+    } else {
+      this.selectionStart = this.selectionEnd = caret;
+    }
+  }
   scrollIntoView(options) { this.scrollRequest = options; }
   closest() { return null; }
   contains(node) {
@@ -794,6 +810,11 @@ test('附件读取期间切了项目，图片不能跟着跑进新项目的输�
   fx.releaseAttachmentReads();
   await flush();
   assert.equal(
+    fx.invokes.filter(entry => entry.command === 'read_conversation_attachment_image').length,
+    1,
+    '切出原项目后应停止继续读取后续图片',
+  );
+  assert.equal(
     fx.el('conversation-attachments').childNodes.length,
     0,
     '不能把 A 项目拖的图片挂到 B 项目的输入框',
@@ -1227,7 +1248,7 @@ test('⌘K 聚焦项目搜索，⌘⇧N 在当前项目开新对话', async t =>
   assert.equal(focused, before, '开发模式下不抢这两个快捷键');
 });
 
-test('可以选文件或拖进来加图片，非图片和超量都挡住', async t => {
+test('可以选图片或拖图片，普通文件作为路径文本而图片附件超量被挡住', async t => {
   const fx = fixture({ projects: [project('a', '项目 A')], t });
   await flush();
   const thumbs = () => fx.el('conversation-attachments').childNodes.length;
@@ -1240,12 +1261,152 @@ test('可以选文件或拖进来加图片，非图片和超量都挡住', async
   fx.fireTauri('tauri://drag-drop', { paths: ['/tmp/notes.txt'] });
   await flush();
   assert.equal(thumbs(), 2, '非图片不进来');
-  assert.ok(fx.toasts.some(toast => /只支持 PNG/.test(toast.message)));
+  assert.match(fx.el('conversation-composer').value, /notes\.txt/, '普通文件路径放进输入框');
 
   fx.fireTauri('tauri://drag-drop', { paths: ['/tmp/c.png', '/tmp/d.png', '/tmp/e.png'] });
   await flush();
   assert.equal(thumbs(), 4, '一条消息最多四张');
   assert.ok(fx.toasts.some(toast => /最多附带 4 张图片/.test(toast.message)));
+});
+
+test('一次拖入超过附件上限时明确提示且只读取剩余容量', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const paths = Array.from({ length: 5 }, (_, index) => `/tmp/drop-${index}.png`);
+
+  fx.fireTauri('tauri://drag-drop', { paths });
+  await flush();
+
+  assert.equal(fx.el('conversation-attachments').childNodes.length, 4, '仍只附加允许的四张');
+  assert.equal(
+    fx.invokes.filter(entry => entry.command === 'read_conversation_attachment_image').length,
+    4,
+    '第五张不应调用图片读取 IPC',
+  );
+  assert.ok(fx.toasts.some(toast => /最多附带 4 张图片/.test(toast.message)), '第五张必须明确提示被忽略');
+
+  const full = fixture({ projects: [project('b', '项目 B')], t });
+  await flush();
+  full.setPickedImages(['/tmp/one.png', '/tmp/two.png', '/tmp/three.png']);
+  fire(full.el('conversation-attach-image'), 'click');
+  await flush();
+  const before = full.invokes.filter(entry => entry.command === 'read_conversation_attachment_image').length;
+  full.fireTauri('tauri://drag-drop', { paths });
+  await flush();
+  assert.equal(
+    full.invokes.filter(entry => entry.command === 'read_conversation_attachment_image').length - before,
+    1,
+    '只读取当前还剩的一张容量',
+  );
+  assert.ok(full.toasts.some(toast => /最多附带 4 张图片/.test(toast.message)), '其余图片被拒时提示数量上限');
+});
+
+test('拖普通路径插入光标处，混合图片仍作附件且不读取普通文件', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['claude', 'cmd', 'codex'], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  composer.value = '保留这里尾巴';
+  composer.selectionStart = 2;
+  composer.selectionEnd = 4;
+  const beforeReads = fx.invokes.filter(entry => entry.command === 'read_conversation_attachment_image').length;
+  const windowsPath = String.raw`C:\Users\Lucky\资料\my file.txt`;
+
+  fx.fireTauri('tauri://drag-drop', {
+    paths: ['/tmp/notes 中文.txt', '/tmp/截图.png', '/tmp/folder name', windowsPath],
+  });
+  await flush();
+
+  assert.equal(
+    composer.value,
+    `保留 "/tmp/notes 中文.txt" "/tmp/folder name" ${JSON.stringify(windowsPath)} 尾巴`,
+    '路径以 JSON 引号格式插入选区，并与原草稿两侧分开',
+  );
+  assert.equal(composer.selectionStart, composer.selectionEnd, '光标落在新插入路径之后');
+  assert.equal(fx.el('conversation-attachments').childNodes.length, 1, '图片仍作为待发附件');
+  assert.equal(
+    fx.invokes.filter(entry => entry.command === 'read_conversation_attachment_image').length - beforeReads,
+    1,
+    '普通文件和目录不调用图片读取 IPC',
+  );
+  assert.equal(fx.startedRuns().length, 0, '拖入只编辑草稿，不自动发送');
+
+  fx.pickAssistant('cmd');
+  await flush();
+  assert.match(composer.value, /notes 中文\.txt/, '切换到 cmd 仍保留路径草稿');
+  fx.pickAssistant('claude');
+  await flush();
+  assert.match(composer.value, /folder name/, '同一输入路径行为不依赖 provider');
+  composer.value += '请看这些路径';
+  fire(fx.el('conversation-send'), 'click');
+  await flush();
+  assert.equal(fx.startedRuns()[0].providerId, 'claude');
+  assert.match(fx.startedRuns()[0].prompt, /notes 中文\.txt/);
+
+  const cmd = fixture({ projects: [project('b', '项目 B')], installed: ['cmd'], t });
+  await flush();
+  cmd.fireTauri('tauri://drag-drop', { paths: ['/tmp/命令 行.md'] });
+  cmd.el('conversation-composer').value += '检查';
+  fire(cmd.el('conversation-send'), 'click');
+  await flush();
+  assert.equal(cmd.startedRuns()[0].providerId, 'cmd');
+  assert.match(cmd.startedRuns()[0].prompt, /命令 行\.md/);
+});
+
+test('拖入路径拒绝控制字符并限制数量与总长度', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  const oversizedPath = `/tmp/${'x'.repeat(4100)}`;
+  const tooManyPaths = Array.from({ length: 17 }, (_, index) => `/tmp/file-${index}.txt`);
+
+  fx.fireTauri('tauri://drag-drop', {
+    paths: ['/tmp/has\nnewline.txt', oversizedPath, ...tooManyPaths],
+  });
+  await flush();
+
+  assert.doesNotMatch(composer.value, /has\\nnewline|file-16/);
+  assert.match(composer.value, /file-0\.txt/);
+  assert.ok(fx.toasts.some(toast => /未插入/.test(toast.message)), '受限路径要明确告知用户');
+  assert.ok(Buffer.byteLength(composer.value, 'utf8') <= 16 * 1024 + 1, '普通路径插入文本保持有界');
+
+  composer.value = '';
+  composer.selectionStart = 0;
+  composer.selectionEnd = 0;
+  const longPaths = Array.from({ length: 16 }, (_, index) => `/tmp/${index}-${'x'.repeat(1800)}.txt`);
+  fx.fireTauri('tauri://drag-drop', { paths: longPaths });
+  await flush();
+  assert.ok(Buffer.byteLength(composer.value, 'utf8') <= 16 * 1024 + 2, '多路径总插入字节数有上限');
+});
+
+test('拖入路径在开发视图、无项目、输入禁用、运行中和销毁后都忽略', async t => {
+  const developer = fixture({ projects: [project('a', '项目 A')], appView: 'developer', t });
+  await flush();
+  developer.fireTauri('tauri://drag-drop', { paths: ['/tmp/a.txt'] });
+  assert.equal(developer.el('conversation-composer').value, '');
+
+  const noProject = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  noProject.controller.setProjects([]);
+  noProject.fireTauri('tauri://drag-drop', { paths: ['/tmp/a.txt'] });
+  assert.equal(noProject.el('conversation-composer').value, '');
+
+  const disabled = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  disabled.el('conversation-composer').disabled = true;
+  disabled.fireTauri('tauri://drag-drop', { paths: ['/tmp/a.txt'] });
+  assert.equal(disabled.el('conversation-composer').value, '');
+
+  const running = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await running.send('运行期间的输入');
+  running.fireTauri('tauri://drag-drop', { paths: ['/tmp/a.txt'] });
+  assert.equal(running.el('conversation-composer').value, '');
+
+  const destroyed = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  destroyed.controller.destroy();
+  destroyed.fireTauri('tauri://drag-drop', { paths: ['/tmp/a.txt'] });
+  assert.equal(destroyed.el('conversation-composer').value, '');
 });
 
 test('拖放只在对话工作台响应，开发模式下不接管', async t => {

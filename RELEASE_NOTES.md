@@ -1,19 +1,21 @@
 Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
 
-## What's new in v1.9.3 / 本版更新
+## What's new in v1.9.4 / 本版更新
 
 **English**
 
-- **Project video preview and playback.** In Developer mode, click an MP4, M4V, MOV, WebM or OGV file in the project tree to open it in the existing preview area. Native controls provide play/pause, seeking, volume and fullscreen.
-- **On-demand local reading.** Large videos stream in bounded chunks from the selected project instead of loading the entire file into memory. Closing or switching files stops playback and releases the source; hiding the workspace pauses it. Videos do not autoplay.
-- Codec support depends on the system WebView; MP4 with H.264/AAC is recommended. Unsupported videos show an explanatory message. Playback/fullscreen has not yet completed manual WebView acceptance testing; automated lifecycle, range-read and file-boundary tests have passed.
+- **Reliable terminal file drops.** Fixes incorrect coordinate scaling on Retina Macs that could miss the terminal or target a different pane. Dropped and inserted paths use xterm's paste handling for cmd and other CLIs, without submitting the input. Invalid paths and unavailable terminals show a clear error; startup paste overflow is rejected without leaving partial input.
+- **Files in conversation drafts.** Ordinary files and folders insert quoted paths at the cursor while preserving the draft; supported images remain attachments. Dropping does not send automatically, read ordinary files or grant additional permissions. More than four images now produces an explicit limit message.
+- **agy full-access launch option.** Right-click the agy badge on a project card in Developer mode to opt into `--dangerously-skip-permissions`. It is never the default and uses a red danger badge. Conversation-mode permissions are unchanged.
+- Automated tests cover platform coordinate conversion, pane routing, paste/startup handling and conversation drops. Native Finder/File Explorer drag-and-drop still needs end-to-end confirmation on real machines; CI builds are not a substitute for that check. Video playback/fullscreen manual acceptance from v1.9.3 also remains outstanding.
 
 **中文**
 
-- **项目视频预览与播放。** 在开发模式的文件树点击 MP4、M4V、MOV、WebM 或 OGV，即可在现有预览区打开，支持播放/暂停、拖动进度、音量和全屏。
-- **本机按需读取。** 大视频分段读取，不会一次性加载到内存。关闭预览或切换文件会停止播放并释放资源，隐藏工作台时暂停；打开时不会自动播放。
-- 编码支持取决于系统 WebView，推荐 MP4（H.264/AAC），不兼容的视频会显示明确提示。播放及全屏尚未完成 WebView 人工验收；生命周期、分段读取及文件安全边界自动化测试已通过。
+- **终端拖文件修复。** 修正 Retina Mac 上的坐标重复缩放，避免拖不到终端或落错窗格；cmd 及其他 CLI 的拖入/插入路径统一走 xterm 粘贴处理，不自动回车。非法路径、终端不可用时明确提示；启动缓存不足时整段拒绝，避免留下半截输入。
+- **会话草稿支持文件路径。** 普通文件/目录以带引号的路径插入光标处并保留草稿，支持的图片仍作为附件；不自动发送、不读取普通文件内容、不额外授予权限。超过 4 张图片会明确提示上限。
+- **agy 完全访问启动项。** 在开发模式右键项目卡片的 agy 色标，可主动选择 `--dangerously-skip-permissions`；非默认、红色危险标记，对话模式权限不变。
+- 自动化测试覆盖平台坐标换算、分屏命中、粘贴/启动队列和会话拖入；Finder/资源管理器原生拖放仍需实机端到端确认，不能用 CI 构建替代。v1.9.3 视频播放/全屏人工验收也仍待完成。
 
 ## Phone remote / 手机远程
 
@@ -25,7 +27,7 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Android app / 安卓 App
 
-`Roster-Remote_1.9.3_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.3_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+`Roster-Remote_1.9.4_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.4_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
 
 1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
 2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」

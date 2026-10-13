@@ -98,6 +98,7 @@ import {
 import { setFilePreviewLayerOpen } from './file-preview-layer.js';
 import { createProjectVideoPreview } from './video-preview.js';
 import { createTerminalInputBuffer } from './terminal-input-buffer.js';
+import { nativeFileDropPoint } from './native-file-drop.js';
 import { installWorkspaceMode } from './workspace-mode.js';
 import { installAppShell } from './app-shell.js';
 import {
@@ -2030,6 +2031,24 @@ function queueTerminalInput(id, data) {
   const session = sessions.get(id);
   if (!session || session.status === 'failed' || session.status === 'exited') return false;
   return session.inputBuffer?.write(data) === true;
+}
+
+// File paths are pasted text, not keystrokes. Let xterm apply the CLI's negotiated
+// bracketed-paste mode; onData still passes the result through the startup queue.
+function queueTerminalPaste(id, data) {
+  const session = sessions.get(id);
+  if (!data || !session?.inputBuffer || session.status === 'failed' || session.status === 'exited') return false;
+  session.lastInputAccepted = false;
+  session.pastingInput = true;
+  try {
+    session.term.paste(data);
+    return session.lastInputAccepted === true;
+  } catch (error) {
+    appLog('warn', `终端粘贴失败（${id}）：${error?.message || error}`);
+    return false;
+  } finally {
+    session.pastingInput = false;
+  }
 }
 
 function orchestraSessionId(tool) {
@@ -4836,9 +4855,10 @@ async function bindTermEvents() {
 
   // 拖拽文件/文件夹到终端窗格 → 写入鼠标命中的会话（同 macOS 终端）。
   const targetAtNativePosition = (pos) => {
-    if (!pos || !developerTerminalVisible()) return null;
-    const dpr = window.devicePixelRatio || 1;
-    const x = pos.x / dpr, y = pos.y / dpr;
+    if (!developerTerminalVisible()) return null;
+    const point = nativeFileDropPoint(pos, IS_WINDOWS, window.devicePixelRatio);
+    if (!point) return null;
+    const { x, y } = point;
     return terminalSessionAtViewportPoint(x, y);
   };
   await listen('tauri://drag-over', e => {
@@ -4852,12 +4872,10 @@ async function bindTermEvents() {
     const targetSessionId = targetAtNativePosition(p.position);
     setTerminalPaneDragTarget(null);
     if (!targetSessionId) return;
-    const paths = (p.paths || []).filter(Boolean);
-    if (!paths.length) return;
+    const paths = p.paths;
+    if (!Array.isArray(paths) || !paths.length) return;
     activateSession(targetSessionId, false, () => {
-      const data = paths.map(shellQuotePath).join(' ') + ' ';
-      queueTerminalInput(targetSessionId, data);
-      sessions.get(targetSessionId)?.term.focus();
+      insertPathsToTerminal(paths, targetSessionId);
     });
   });
 }
@@ -5247,10 +5265,28 @@ async function renderTree(cwd) {
   }
 }
 
-function insertPathToTerminal(path, sessionId = activeSession) {
-  if (!sessionId || !sessions.has(sessionId)) return;
-  queueTerminalInput(sessionId, shellQuotePath(path) + ' ');
+function insertPathsToTerminal(paths, sessionId = activeSession) {
+  if (!Array.isArray(paths) || !paths.length || paths.length > 16
+    || paths.some(path => typeof path !== 'string' || !path || path.length > 4096
+      || /[\u0000-\u001f\u007f-\u009f]/.test(path))) {
+    msg('无法插入路径：每次最多 16 项，且路径不能含控制字符或超过长度限制', 'error');
+    return false;
+  }
+  const data = paths.map(shellQuotePath).join(' ') + ' ';
+  if (new TextEncoder().encode(data).length > 64 * 1024) {
+    msg('无法插入路径：路径总长度超过 64KB', 'error');
+    return false;
+  }
+  if (!queueTerminalPaste(sessionId, data)) {
+    msg('插入路径失败：终端不可用或输入缓存已满', 'error');
+    return false;
+  }
   sessions.get(sessionId)?.term.focus();
+  return true;
+}
+
+function insertPathToTerminal(path, sessionId = activeSession) {
+  return insertPathsToTerminal([path], sessionId);
 }
 
 async function insertShellScriptCommand(entry) {
@@ -6770,11 +6806,9 @@ async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry =
     onError: error => appLog('warn', `终端输入写入失败（${id}）：${error}`),
     onOverflow: () => term.write('\r\n\x1b[33m启动期间输入过多，仅保留前 1MB\x1b[0m\r\n'),
   });
-  term.onData(data => inputBuffer.write(data));
-
   const session = {
     term, fit, tabEl, bodyEl, webgl: null, contextLosses: 0, name: label, status: 'running', cwd, tool: autoCmd,
-    inputBuffer,
+    inputBuffer, lastInputAccepted: false,
     paneHeadEl,
     paneIndexEl: paneHeadEl.querySelector('.term-pane-index'),
     paneStatusEl: paneHeadEl.querySelector('.term-pane-status'),
@@ -6784,6 +6818,7 @@ async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry =
     startedAt: Date.now(), restorable: false, restoreEntry,
   };
   sessions.set(id, session);
+  term.onData(data => { session.lastInputAccepted = inputBuffer.write(data, { atomic: session.pastingInput === true }); });
   attachSessionWebgl(session);
   term.onRender(renderRange => scheduleImageCellBackgroundSync(session, renderRange));
 

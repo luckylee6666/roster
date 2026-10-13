@@ -46,6 +46,10 @@ export const CONVERSATION_PROMPT_MAX_BYTES = 64 * 1024;
 const STOPPING_WATCHDOG_MS = 10_000;
 // Mirrors codex_chat.rs MAX_ACTIVE_RUNS: the backend refuses a fifth turn.
 export const MAX_PARALLEL_CONVERSATION_RUNS = 4;
+const MAX_DROPPED_PATH_COUNT = 16;
+const MAX_DROPPED_PATH_BYTES = 16 * 1024;
+const MAX_DROPPED_PATH_CHARS = 4096;
+const DROPPED_PATH_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 const utf8Encoder = typeof globalThis.TextEncoder === 'function'
   ? new globalThis.TextEncoder()
@@ -3167,23 +3171,98 @@ export function installConversationMode({
   const attachmentCapacity = () => CONVERSATION_ATTACHMENT_LIMITS.maxCount - attachmentCount();
 
   const attachmentDropAllowed = () => Boolean(
-    document.documentElement?.dataset?.appView !== 'developer'
-    && selectedProject
+    !destroyed
+    && document.documentElement?.dataset?.appView !== 'developer'
+    && selectedProjectExists()
     && !isRunning()
     && !dom.composer?.disabled,
   );
 
-  // 拖进来和选进来的都是本机路径，读取与校验都放在后端；这里只管数量上限。
+  function insertDroppedPaths(paths) {
+    const composer = dom.composer;
+    if (!attachmentDropAllowed() || !composer) return;
+    const rawPaths = Array.isArray(paths) ? paths : [];
+    const boundedPaths = rawPaths.slice(0, MAX_DROPPED_PATH_COUNT);
+    let rejected = Math.max(0, rawPaths.length - boundedPaths.length);
+    const imagePaths = [];
+    const textPaths = [];
+    let textPathBytes = 0;
+
+    for (const path of boundedPaths) {
+      if (typeof path !== 'string' || !path || DROPPED_PATH_CONTROL.test(path)
+        || path.length > MAX_DROPPED_PATH_CHARS
+        || utf8ByteLength(path) > MAX_DROPPED_PATH_BYTES) {
+        rejected += 1;
+        continue;
+      }
+      if (IMAGE_PATH_PATTERN.test(path)) {
+        imagePaths.push(path);
+        continue;
+      }
+      const encoded = JSON.stringify(path);
+      const bytes = utf8ByteLength(encoded) + (textPaths.length ? 1 : 0);
+      if (textPathBytes + bytes > MAX_DROPPED_PATH_BYTES) {
+        rejected += 1;
+        continue;
+      }
+      textPaths.push(encoded);
+      textPathBytes += bytes;
+    }
+
+    if (textPaths.length) {
+      const value = String(composer.value || '');
+      const start = Number.isInteger(composer.selectionStart)
+        ? Math.max(0, Math.min(value.length, composer.selectionStart)) : value.length;
+      const end = Number.isInteger(composer.selectionEnd)
+        ? Math.max(start, Math.min(value.length, composer.selectionEnd)) : start;
+      const before = value.slice(0, start);
+      const after = value.slice(end);
+      const pathsText = textPaths.join(' ');
+      const leadingSpace = before && !/\s$/.test(before) ? ' ' : '';
+      const trailingSpace = after && !/^\s/.test(after) ? ' ' : (after ? '' : ' ');
+      const insertion = `${leadingSpace}${pathsText}${trailingSpace}`;
+      const nextValue = `${before}${insertion}${after}`;
+      if (inspectConversationPrompt(nextValue).tooLong) {
+        rejected += textPaths.length;
+        notify?.('路径未插入：输入内容超过 64KB 上限', 'error');
+      } else {
+        composer.focus?.();
+        if (typeof composer.setRangeText === 'function') {
+          composer.setRangeText(insertion, start, end, 'end');
+        } else {
+          composer.value = nextValue;
+          const caret = start + insertion.length;
+          composer.setSelectionRange?.(caret, caret);
+        }
+        slashDismissed = false;
+        mentionDismissed = false;
+        syncComposer();
+      }
+    }
+
+    if (rejected) {
+      notify?.(`有 ${rejected} 个拖入项因控制字符或数量/长度限制未插入`, 'error');
+    }
+    if (imagePaths.length) void addAttachmentPaths(imagePaths);
+  }
+
+  // 图片路径读取与内容校验交给后端；普通文件和目录只作为带引号的路径文本插入。
   async function addAttachmentPaths(paths) {
     const candidates = (Array.isArray(paths) ? paths : [])
-      .filter(path => typeof path === 'string' && IMAGE_PATH_PATTERN.test(path.trim()))
-      .slice(0, CONVERSATION_ATTACHMENT_LIMITS.maxCount);
+      .filter(path => typeof path === 'string' && IMAGE_PATH_PATTERN.test(path.trim()));
     if (!candidates.length) {
       if (Array.isArray(paths) && paths.length) notify?.('只支持 PNG、JPEG、GIF、WebP 图片', 'error');
       return;
     }
+    const available = Math.max(0, attachmentCapacity());
+    const accepted = candidates.slice(0, available);
+    const skipped = candidates.length - accepted.length;
+    if (skipped) {
+      notify?.(`一条消息最多附带 ${CONVERSATION_ATTACHMENT_LIMITS.maxCount} 张图片，本次有 ${skipped} 张未读取`, 'error');
+    }
+    if (!accepted.length) return;
     const projectId = selectedProject?.id || '';
-    for (const path of candidates) {
+    for (const path of accepted) {
       if (attachmentCapacity() <= 0) {
         notify?.(`一条消息最多附带 ${CONVERSATION_ATTACHMENT_LIMITS.maxCount} 张图片`, 'error');
         break;
@@ -4130,7 +4209,7 @@ export function installConversationMode({
     void listen('tauri://drag-drop', event => {
       markDropTarget(false);
       if (!attachmentDropAllowed()) return;
-      void addAttachmentPaths(event?.payload?.paths);
+      insertDroppedPaths(event?.payload?.paths);
     })
       .then(stop => { if (destroyed) stop?.(); else dragUnlisteners.push(stop); })
       .catch(() => {});

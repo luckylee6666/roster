@@ -2,17 +2,27 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
-## Unreleased
+## v1.9.4
 
 ### English
 
 **Added**
+- The conversation composer accepts ordinary file and folder drops as quoted paths at the cursor, while supported images remain attachments. Draft text is preserved; dropping files does not send a message, read ordinary file contents or change CLI permissions.
 - agy gains an opt-in full-access launch option in Developer mode, added at the user's request. Right-clicking the `agy` badge on a project card now opens the same small menu as `cmd`, with「完全访问（--dangerously-skip-permissions）」to start the terminal without per-tool approval prompts. Left-click, history resume and restored tabs still use the plain command; the option is never the default, it is styled as dangerous, and tabs started with a bypass keep a red badge whose title names the actual flag. The conversation workspace's agy modes are unchanged.
+
+**Fixed**
+- Native file drops now respect the locked WebView backend's platform coordinate units, fixing missed or wrong-pane drops on Retina macOS. Terminal paths use xterm's negotiated paste mode through the existing startup queue; invalid paths and unavailable terminals show errors, and an overflowing startup paste is rejected whole instead of leaving a partial path or paste marker.
+- Dropping more than four images into an empty conversation composer now reports the attachment limit instead of silently discarding the extra images.
 
 ### 中文
 
 **新增**
+- 会话输入框支持将普通文件和目录以带引号的路径插入光标处，支持的图片仍作为附件；保留原草稿，不自动发送、不读取普通文件内容，也不改变 CLI 权限。
 - agy 新增用户点名要求的开发模式「完全访问」启动项。**右键项目卡片上的 `agy` 色标**会弹出与 `cmd` 相同的小菜单，可选「完全访问（--dangerously-skip-permissions）」以免逐条确认的方式打开终端。左键、历史续接与恢复标签仍是不带绕过参数的裸命令；这一项绝不是默认，按危险档配色，以绕过参数启动的标签徽标保持红色，title 写明实际参数。对话工作台的 agy 档位不变。
+
+**修复**
+- 原生文件拖放按当前锁定的 WebView 后端区分平台坐标单位，修复 Retina Mac 上拖不到终端或误落其他窗格；终端路径改走 xterm 协商后的粘贴模式，继续共用启动输入队列。非法路径或终端不可用时明确报错，启动缓存不足时整段拒绝粘贴，避免留下半截路径或粘贴标记。
+- 空会话输入框一次拖入超过 4 张图片时明确提示附件上限，不再静默丢弃多余图片。
 
 ## v1.9.3
 

@@ -41,14 +41,16 @@ export function createTerminalInputBuffer({
    * 返回是否完整收下这段输入：false 表示已失败、已溢出被截断或为空。
    * 就绪前返回 true 只是"已缓存"，真正发出后可用 flush() 确认结果。
    */
-  function write(data) {
+  function write(data, { atomic = false } = {}) {
     if (!data || failed) return false;
     if (ready) {
       enqueue(data);
       return true;
     }
     const remaining = Math.max(0, maxBufferedLength - buffered.length);
-    buffered += data.slice(0, remaining);
+    // A bracketed paste must not be truncated: that could drop its closing
+    // marker or leave only part of a shell-quoted filename in the input line.
+    if (!atomic || remaining >= data.length) buffered += data.slice(0, remaining);
     if (remaining < data.length) {
       if (!overflowReported) {
         overflowReported = true;

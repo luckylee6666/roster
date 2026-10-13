@@ -133,3 +133,17 @@ test('溢出截断或已失败时 write 返回 false，flush 也报 false', asyn
   assert.equal(failed.write('x'), false);
   assert.equal(await failed.flush(), false);
 });
+
+test('启动缓存装不下完整路径粘贴时整段拒绝，不留下半个路径或半个粘贴标记', async () => {
+  const sent = [];
+  let overflow = 0;
+  const buffer = createTerminalInputBuffer({
+    send: async data => sent.push(data), maxBufferedLength: 20, onOverflow: () => overflow++,
+  });
+  assert.equal(buffer.write('before'), true);
+  assert.equal(buffer.write('\x1b[200~/path/to/file.txt \x1b[201~', { atomic: true }), false);
+  assert.equal(overflow, 1);
+  assert.equal(buffer.write('after', { atomic: true }), true);
+  assert.equal(await buffer.markReady('cmd\r'), true);
+  assert.deepEqual(sent, ['cmd\r', 'beforeafter']);
+});
