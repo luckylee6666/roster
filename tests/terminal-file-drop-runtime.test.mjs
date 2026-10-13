@@ -133,7 +133,7 @@ test('多文件按 shell 引用后通过 xterm paste 一次插入，不发送回
 });
 
 test('所有 CLI 的 xterm paste 都由 onData 进入同一启动输入缓存，并尊重 bracketed-paste 状态', async () => {
-  for (const cli of ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd']) {
+  for (const cli of ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi']) {
     const sent = [];
     const inputBuffer = createTerminalInputBuffer({ send: data => { sent.push(data); } });
     const session = { status: 'running', inputBuffer, lastInputAccepted: false };

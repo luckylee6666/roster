@@ -14,11 +14,12 @@ import {
 } from '../src/cli-tools.js';
 
 test('登记表覆盖现有 CLI，并按 id / 别名过滤', () => {
-  assert.deepEqual(CLI_TOOL_IDS, ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd']);
+  assert.deepEqual(CLI_TOOL_IDS, ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi']);
   assert.equal(CLI_TOOLS.length, CLI_TOOL_IDS.length);
   assert.equal(isKnownCliTool('grok --resume abc'), true);
   assert.equal(isKnownCliTool('mimo --continue'), true);
   assert.equal(isKnownCliTool('cmd --session ses-1'), true);
+  assert.equal(isKnownCliTool('pi --session ses-1'), true);
   assert.equal(isKnownCliTool('bash'), false);
   assert.deepEqual(filterCliTools('g').map(tool => tool.id), ['grok']);
   assert.deepEqual(filterCliTools('xai').map(tool => tool.id), ['grok']);
@@ -27,6 +28,8 @@ test('登记表覆盖现有 CLI，并按 id / 别名过滤', () => {
   assert.deepEqual(filterCliTools('mimocode').map(tool => tool.id), ['mimo']);
   assert.deepEqual(filterCliTools('commandcode').map(tool => tool.id), ['cmd']);
   assert.deepEqual(filterCliTools('cmd').map(tool => tool.id), ['cmd']);
+  assert.deepEqual(filterCliTools('Pi Coding Agent').map(tool => tool.id), ['pi']);
+  assert.deepEqual(filterCliTools('earendil-works').map(tool => tool.id), ['pi']);
   assert.ok(filterCliTools('code').map(tool => tool.id).includes('codex'));
   assert.deepEqual(filterCliTools('没有这个'), []);
   assert.equal(filterCliTools('  ').length, CLI_TOOLS.length);
@@ -45,7 +48,7 @@ test('卡片只展示本机已安装且已登记的 CLI', () => {
 test('最近用过的 CLI 排到最前，方向键在可见列表里循环', () => {
   const ordered = orderCliTools(CLI_TOOLS, 'codex resume x-1');
   assert.equal(ordered[0].id, 'codex');
-  assert.deepEqual(ordered.slice(1).map(tool => tool.id), ['claude', 'grok', 'opencode', 'agy', 'qwen', 'mimo', 'cmd']);
+  assert.deepEqual(ordered.slice(1).map(tool => tool.id), ['claude', 'grok', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi']);
   const visible = visibleCliTools('c', 'codex');
   assert.deepEqual(visible.map(tool => tool.id), ['codex', 'claude', 'cmd']);
   assert.equal(stepCliToolId(visible, 'codex', 1), 'claude');

@@ -187,6 +187,7 @@ const IDS = [
   'conversation-assistant-list',
   'conversation-assistant-title',
   'conversation-assistant-hint',
+  'conversation-safety-note',
   'conversation-send',
   'conversation-stop',
   'conversation-composer-hint',
@@ -359,6 +360,15 @@ function fixture({
             { id: 'approve-for-me', label: '帮我批准', hint: '可改工作区', writes: true, unsandboxed: false },
             { id: 'full-access', label: '完全访问权限', hint: '不开沙箱', writes: true, unsandboxed: true },
           ];
+        }
+        if (payload.providerId === 'pi') {
+          return [{
+            id: 'read-tools',
+            label: '仅读取工具',
+            hint: 'Pi 原生 --tools 允许列表启用 read、grep、find、ls；这不是权限档或 OS 沙箱',
+            writes: false,
+            unsandboxed: false,
+          }];
         }
         return [{ id: 'plan', label: 'plan · 只读计划', hint: '不动文件', writes: false, unsandboxed: false }];
       }
@@ -1958,6 +1968,49 @@ test('示例性列表不能当权威清单：手打的完整模型名 / variant 
     /minimal/,
     'variant 示例不权威，不能删掉手打的值',
   );
+});
+
+test('Pi 工具配置说明不伪装成原生权限模式，非权威模型与 thinking 列表保留手输值', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['pi', 'codex'], t });
+  await flush();
+  fx.setSlashLists({
+    models: [{ id: 'provider/model-from-help', label: 'help 示例模型' }],
+    efforts: [],
+  });
+  fx.pickAssistant('pi');
+  await flush();
+
+  const safetyNote = fx.el('conversation-safety-note').textContent;
+  assert.match(safetyNote, /Pi 使用 CLI 工具配置/);
+  assert.match(safetyNote, /工具允许列表/);
+  assert.match(safetyNote, /不提供审批或系统沙箱/);
+  assert.doesNotMatch(safetyNote, /模式（tools）|原生权限/);
+
+  fx.pickTuning('mode', 'read-tools');
+  const activeSafetyNote = fx.el('conversation-safety-note').textContent;
+  assert.match(activeSafetyNote, /Pi 工具配置「仅读取工具」/);
+  assert.match(activeSafetyNote, /read、grep、find、ls/);
+  assert.match(activeSafetyNote, /不提供审批或系统沙箱/);
+  assert.doesNotMatch(activeSafetyNote, /（read-tools）|原生权限档位/);
+
+  const composer = fx.el('conversation-composer');
+  composer.value = '/model provider/my-custom-model';
+  fire(composer, 'input', {});
+  fire(composer, 'keydown', { key: 'Enter', preventDefault() {}, shiftKey: false });
+  await flush();
+  composer.value = '/effort xhigh';
+  fire(composer, 'input', {});
+  fire(composer, 'keydown', { key: 'Enter', preventDefault() {}, shiftKey: false });
+  await flush();
+  assert.match(fx.el('conversation-tuning-summary').textContent, /provider\/my-custom-model/);
+  assert.match(fx.el('conversation-tuning-summary').textContent, /xhigh/);
+
+  fx.pickAssistant('codex');
+  await flush();
+  fx.pickAssistant('pi');
+  await flush();
+  assert.match(fx.el('conversation-tuning-summary').textContent, /provider\/my-custom-model/);
+  assert.match(fx.el('conversation-tuning-summary').textContent, /xhigh/);
 });
 
 test('用 /model 换模型，同样丢掉新模型不支持的强度', async t => {

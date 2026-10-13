@@ -105,7 +105,8 @@ export function cliCommandName(tool, isWindows = hostIsWindows()) {
  * `-p` 会话不在里面，扑空后 CLI 会直接退出（标签变成死 shell）。
  */
 export function prefersExactResume(tool) {
-  return normalizeCliToolName(tool) === 'cmd';
+  const name = normalizeCliToolName(tool);
+  return name === 'cmd' || name === 'pi';
 }
 
 export function resumeCliCommand(tool, sessionId) {
@@ -122,6 +123,7 @@ export function resumeCliCommand(tool, sessionId) {
   if (name === 'qwen') return `${exe} --resume ${quoteCliArg(id)}`;
   if (name === 'mimo') return `${exe} --session ${quoteCliArg(id)}`;
   if (name === 'cmd') return `${exe} --session ${quoteCliArg(id)}`;
+  if (name === 'pi') return `${exe} --session ${quoteCliArg(id)}`;
   return '';
 }
 
@@ -166,6 +168,7 @@ export function extractResumedSessionId(command) {
   if (tool === 'cmd') {
     return takeFlagValue(args, new Set(['--session', '--resume', '-r']));
   }
+  if (tool === 'pi') return takeFlagValue(args, new Set(['--session']));
   return '';
 }
 
@@ -174,7 +177,7 @@ export function isGenericContinueCommand(command) {
   if (!words.length) return false;
   const tool = normalizeCliToolName(words[0]);
   const args = words.slice(1);
-  if (tool === 'claude' || tool === 'grok' || tool === 'opencode' || tool === 'qwen' || tool === 'mimo' || tool === 'cmd') {
+  if (tool === 'claude' || tool === 'grok' || tool === 'opencode' || tool === 'qwen' || tool === 'mimo' || tool === 'cmd' || tool === 'pi') {
     return args.includes('--continue') || args.includes('-c');
   }
   if (tool === 'codex') {
@@ -244,6 +247,10 @@ export function restoredCliCommand(command) {
   // `-p` 会话不在里面，扑空就会退出、把标签留成一个死 shell。恢复路径会先查
   // 磁盘历史（`prefersExactResume`），拿精确 ID 续，实在没有才开新会话。
   if (tool === 'cmd') return trimmed;
+
+  // Pi 的自动恢复路径由项目历史查询给出完整 session id；通用 --continue
+  // 仅是开发者手动启动时的最近会话语义，不能代替精确恢复。
+  if (tool === 'pi') return trimmed;
 
   return trimmed;
 }

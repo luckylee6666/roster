@@ -96,7 +96,7 @@ test('Rust 交接文件和会话抽取命令已注册', async () => {
     sessions.indexOf('fn source_handoff_messages('),
     sessions.indexOf('pub fn preview_session_handoff_with_home('),
   );
-  for (const tool of ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd']) {
+  for (const tool of ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi']) {
     assert.match(sourceBlock, new RegExp(`"${tool}" =>`));
   }
   assert.match(sessions, /limit_handoff_messages/);

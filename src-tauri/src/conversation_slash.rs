@@ -142,6 +142,8 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
             .unwrap_or_default();
             if provider == "cmd" {
                 parse_commandcode_models(&raw)
+            } else if provider == "pi" {
+                parse_pi_models(&raw)
             } else {
                 parse_cli_models(&raw)
             }
@@ -157,6 +159,17 @@ fn model_list_args(provider: &str) -> Option<&'static [&'static str]> {
         "grok" | "agy" | "opencode" | "mimo" => Some(&["models"]),
         // Command Code 用标志而不是子命令列模型。
         "cmd" => Some(&["--list-models"]),
+        "pi" => Some(&[
+            "--offline",
+            "--no-extensions",
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--no-approve",
+            "--no-context-files",
+            "--list-models",
+        ]),
         _ => None,
     }
 }
@@ -494,6 +507,10 @@ pub fn list_efforts(
                 parse_cli_efforts(&raw)
             }
         }
+        "pi" => {
+            let raw = capture_cli_help("pi", &cwd).unwrap_or_default();
+            parse_pi_efforts(&raw)
+        }
         "agy" => {
             let raw = capture_cli_help("agy", &cwd).unwrap_or_default();
             parse_cli_efforts(&raw)
@@ -530,7 +547,19 @@ fn resolve_provider_bin(provider: &str) -> Result<std::path::PathBuf, String> {
 
 fn capture_cli_help(provider: &str, cwd: &Path) -> Option<String> {
     let binary = resolve_provider_bin(provider).ok()?;
-    let args: &[&str] = if provider == "agy" {
+    let args: &[&str] = if provider == "pi" {
+        &[
+            "--offline",
+            "--no-extensions",
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--no-approve",
+            "--no-context-files",
+            "--help",
+        ]
+    } else if provider == "agy" {
         &["-h"]
     } else {
         &["--help"]
@@ -641,6 +670,7 @@ fn normalize_provider(id: &str) -> Result<&'static str, String> {
         "qwen" => Ok("qwen"),
         "mimo" => Ok("mimo"),
         "cmd" => Ok("cmd"),
+        "pi" => Ok("pi"),
         _ => Err("这个 CLI 还未接入对话模式".into()),
     }
 }
@@ -944,6 +974,54 @@ pub fn parse_commandcode_models(raw: &str) -> Vec<ConversationModel> {
         ids.push((id.clone(), id, description.contains("(default)")));
     }
     finish_models(ids)
+}
+
+// Pi 1.2.0 lists provider/model separately. Preserve both: bare model IDs can
+// resolve to a different provider, and a diagnostic line is not a model row.
+fn parse_pi_models(raw: &str) -> Vec<ConversationModel> {
+    let mut table = false;
+    let mut ids = Vec::new();
+    for line in raw.lines() {
+        let columns: Vec<_> = line.split_whitespace().collect();
+        if columns
+            == [
+                "provider", "model", "context", "max-out", "thinking", "images",
+            ]
+        {
+            table = true;
+            continue;
+        }
+        if !table
+            || columns.len() != 6
+            || !matches!(columns[4], "yes" | "no")
+            || !matches!(columns[5], "yes" | "no")
+            || !columns[2..4].iter().all(|value| {
+                value.starts_with(|ch: char| ch.is_ascii_digit())
+                    && value
+                        .chars()
+                        .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | 'K' | 'M'))
+            })
+        {
+            continue;
+        }
+        if let Some(id) = normalize_model_id(&format!("{}/{}", columns[0], columns[1])) {
+            ids.push((id.clone(), id, false));
+        }
+    }
+    finish_models(ids)
+}
+
+fn parse_pi_efforts(raw: &str) -> Vec<ConversationEffort> {
+    let section = flag_help_section(raw, "--thinking");
+    let Some((_, values)) = section.split_once(':') else {
+        return Vec::new();
+    };
+    let line = values.lines().next().unwrap_or("");
+    finish_efforts(
+        line.split(',')
+            .filter_map(normalize_effort_id)
+            .map(|id| (id.clone(), effort_label(&id), false)),
+    )
 }
 
 fn finish_models(ids: Vec<(String, String, bool)>) -> Vec<ConversationModel> {
@@ -1970,11 +2048,40 @@ mod tests {
     #[test]
     fn all_conversation_providers_accept_dynamic_slash_discovery() {
         for provider in [
-            "claude", "grok", "codex", "opencode", "agy", "qwen", "mimo", "cmd",
+            "claude", "grok", "codex", "opencode", "agy", "qwen", "mimo", "cmd", "pi",
         ] {
             assert_eq!(normalize_provider(provider).unwrap(), provider);
         }
         assert!(normalize_provider("../../bin/sh").is_err());
+    }
+
+    #[test]
+    fn pi_catalog_keeps_provider_and_uses_noninteractive_resource_free_probe() {
+        let args = model_list_args("pi").unwrap();
+        for flag in [
+            "--offline",
+            "--no-extensions",
+            "--no-mcp",
+            "--no-approve",
+            "--list-models",
+        ] {
+            assert!(args.contains(&flag));
+        }
+        let models = parse_pi_models("Warning: not a model\nprovider  model  context  max-out  thinking  images\nanthropic  model-a  200K  64K  yes  yes\nopenai  model-a  1M  32K  no  yes\nanthropic  model-a  200K  64K  yes  yes\nWarning  secret  wrong  sizes  yes  no\n");
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["anthropic/model-a", "openai/model-a"]
+        );
+        assert!(parse_pi_models("not logged in").is_empty());
+        let efforts = parse_pi_efforts("  --thinking <level>  Set thinking level: off, minimal, low, medium, high, xhigh, max\n  --extension <path>  ignored\n");
+        assert_eq!(
+            efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert!(parse_pi_efforts("unavailable").is_empty());
+        // Pi extensions/templates are intentionally disabled in the read-tools
+        // adapter: do not advertise custom commands that it cannot safely run.
+        assert!(skill_roots("pi", Path::new("/project"), Path::new("/home")).is_empty());
     }
 
     #[test]

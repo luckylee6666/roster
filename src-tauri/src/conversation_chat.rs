@@ -46,6 +46,8 @@ enum HeadlessProtocol {
     /// Command Code（`command-code`）：`-p --output-format json` 的 NDJSON
     /// 事件流 + 末尾一行 result。既不是 Anthropic 形状，也不是 ACP。
     CommandCodeJson,
+    /// Pi's long-lived bidirectional JSONL RPC protocol.
+    PiRpc,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,7 +58,7 @@ struct ProviderSpec {
     protocol: HeadlessProtocol,
 }
 
-const HEADLESS_PROVIDERS: [ProviderSpec; 7] = [
+const HEADLESS_PROVIDERS: [ProviderSpec; 8] = [
     ProviderSpec {
         id: "claude",
         label: "Claude",
@@ -101,6 +103,12 @@ const HEADLESS_PROVIDERS: [ProviderSpec; 7] = [
         label: "cmd",
         binary: commandcode_binary(),
         protocol: HeadlessProtocol::CommandCodeJson,
+    },
+    ProviderSpec {
+        id: "pi",
+        label: "Pi",
+        binary: "pi",
+        protocol: HeadlessProtocol::PiRpc,
     },
 ];
 
@@ -184,6 +192,7 @@ fn provider_label(id: &str) -> &'static str {
         "qwen" => "Qwen",
         "mimo" => "MiMo Code",
         "cmd" => "cmd",
+        "pi" => "Pi",
         _ => "CLI",
     }
 }
@@ -623,6 +632,7 @@ fn parse_line(protocol: HeadlessProtocol, value: &Value) -> ParsedLine {
         HeadlessProtocol::OpenCodeJson => parse_opencode_line(value),
         HeadlessProtocol::QwenStream => parse_qwen_line(value),
         HeadlessProtocol::CommandCodeJson => parse_commandcode_line(value),
+        HeadlessProtocol::PiRpc => ParsedLine::default(),
     }
 }
 

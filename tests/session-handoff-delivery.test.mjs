@@ -51,7 +51,7 @@ function harness(targetTool = 'opencode', failure = '') {
   return { ...api, calls, messages, sessions, original, rollbacks, released: () => released };
 }
 
-for (const target of ['opencode', 'mimo', 'cmd']) {
+for (const target of ['opencode', 'mimo', 'cmd', 'pi']) {
   test(`Codex → ${target} 普通交接以原生初始参数携带文件提示，不延时盲打`, async () => {
     const h = harness(target);
     await h.run();

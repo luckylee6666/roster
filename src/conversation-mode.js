@@ -1028,6 +1028,9 @@ export function installConversationMode({
   // 另外列表是按当前项目探测的（OpenCode/MiMo 会合并项目级配置），而选择按
   // provider 持久化；项目目录不同造成的差异不在这里删。
   function tuningListAuthoritative(providerId, kind) {
+    // Pi 的 --model/--thinking 动态列表可能不是当前选择的 provider/model 的权威全集；
+    // 保留用户手输值，且模型变化不据此误删 thinking 选择。
+    if (providerId === 'pi' && (kind === 'model' || kind === 'effort')) return false;
     if (kind === 'model' && providerId === 'claude') return false;
     if (kind === 'effort'
       && (providerId === 'opencode' || providerId === 'mimo' || providerId === 'cmd')) {
@@ -1655,9 +1658,15 @@ export function installConversationMode({
     renderRunStatus();
     if (dom.safetyNote) {
       const active = currentModeEntry();
-      dom.safetyNote.textContent = active
-        ? `当前用 ${provider.label} 自己的「${active.label}」模式（${active.id}）：${active.hint}。模式由该 CLI 自己执行，Roster 不额外提供系统级隔离。`
-        : `${provider.label} 由其自身的默认策略执行，Roster 不额外提供系统级隔离。`;
+      if (provider.id === 'pi') {
+        dom.safetyNote.textContent = active
+          ? `Pi 工具配置「${active.label}」：${active.hint}。这只限制 CLI 工具允许列表，不提供审批或系统沙箱。`
+          : 'Pi 使用 CLI 工具配置；工具允许列表不提供审批或系统沙箱。';
+      } else {
+        dom.safetyNote.textContent = active
+          ? `当前用 ${provider.label} 自己的「${active.label}」模式（${active.id}）：${active.hint}。模式由该 CLI 自己执行，Roster 不额外提供系统级隔离。`
+          : `${provider.label} 由其自身的默认策略执行，Roster 不额外提供系统级隔离。`;
+      }
     }
   }
 

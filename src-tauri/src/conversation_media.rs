@@ -116,7 +116,7 @@ fn bounded_regular_file(path: &Path, max_bytes: u64, too_large: &str) -> Result<
 }
 
 #[cfg(windows)]
-pub(crate) fn open_project_regular_file(project: &Path, target: &Path) -> Result<fs::File, String> {
+pub(crate) fn validate_opened_project_file(project: &Path, file: &fs::File) -> Result<(), String> {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
@@ -136,13 +136,12 @@ pub(crate) fn open_project_regular_file(project: &Path, target: &Path) -> Result
         value.trim_end_matches('\\').to_lowercase()
     }
 
-    let file = fs::File::open(target).map_err(|_| "媒体路径无法安全读取".to_string())?;
-
     // Parent junctions and symlinks are resolved by CreateFile. Ask Windows
     // for the path of the handle that was actually opened, then verify that
     // path against the already-canonical project root. This closes the gap
     // where a parent is replaced between canonicalize and open.
     let mut buffer = vec![0u16; 32_768];
+    // SAFETY: `file` owns a live Windows file handle and `buffer` is writable for its length.
     let length = unsafe {
         GetFinalPathNameByHandleW(
             file.as_raw_handle() as HANDLE,
@@ -163,6 +162,13 @@ pub(crate) fn open_project_regular_file(project: &Path, target: &Path) -> Result
         return Err("只能显示当前项目目录中的媒体".into());
     }
 
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn open_project_regular_file(project: &Path, target: &Path) -> Result<fs::File, String> {
+    let file = fs::File::open(target).map_err(|_| "媒体路径无法安全读取".to_string())?;
+    validate_opened_project_file(project, &file)?;
     Ok(file)
 }
 

@@ -16,6 +16,8 @@
 //! - `grok` / `agy` / `qwen` / `opencode` 本机没有可读的窗口证据（`grok models` 只列名字、
 //!   `opencode models` 不给窗口、Qwen 核对时配额用尽），取保守默认：**宁可早提示**——真实
 //!   窗口比登记值大时只是多一条提示，不会改变任何行为。
+//! - `pi` 不登记固定窗口：它允许跨 provider/model 切换，单个静态值会误导；保留字节数，
+//!   token 窗口与档位显示为 `unknown`，并且永不硬拦。
 //!
 //! `bytes_per_token` 是经验换算比，用 2026-09-18 那条 cmd 会话标定（7.15MB 文件 / 1.27M token
 //! ≈ 5.6，取 6.0 略偏保守）。JSONL 结构开销与图片 base64 都会让它偏大，所以界面展示一律写
@@ -254,5 +256,14 @@ mod tests {
         // 没到窗口、或体积未知时永远不拦。
         assert!(!SessionBudget::for_bytes("cmd", 1024).blocks);
         assert!(!SessionBudget::unknown().blocks);
+    }
+
+    #[test]
+    fn pi_budget_keeps_size_but_does_not_guess_a_model_window_or_block() {
+        let budget = SessionBudget::for_bytes("pi", 64 * 1024 * 1024);
+        assert_eq!(budget.size_bytes, 64 * 1024 * 1024);
+        assert_eq!(budget.window, 0);
+        assert_eq!(budget.band, BAND_UNKNOWN);
+        assert!(!budget.blocks);
     }
 }

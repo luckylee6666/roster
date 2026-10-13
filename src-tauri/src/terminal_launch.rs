@@ -4,7 +4,7 @@ use portable_pty::CommandBuilder;
 use std::path::Path;
 
 fn initial_args(tool: &str, prompt: &str, cwd: &str) -> Result<Vec<String>, String> {
-    if !matches!(tool, "cmd" | "mimo" | "opencode") {
+    if !matches!(tool, "cmd" | "mimo" | "opencode" | "pi") {
         return Err("该工具不支持原生初始消息启动".into());
     }
     if cwd.is_empty()
@@ -17,6 +17,8 @@ fn initial_args(tool: &str, prompt: &str, cwd: &str) -> Result<Vec<String>, Stri
     }
     Ok(if tool == "cmd" {
         vec!["--no-auto-update".into(), prompt.into()]
+    } else if tool == "pi" {
+        vec!["--".into(), prompt.into()]
     } else {
         vec![cwd.into(), "--prompt".into(), prompt.into()]
     })
@@ -57,7 +59,7 @@ mod tests {
     #[test]
     fn native_prompt_is_one_argument_and_never_resume_or_bypass() {
         let prompt = "这是交接 'quoted' $HOME $(touch NEVER) `echo NEVER` ; &";
-        for tool in ["cmd", "mimo", "opencode"] {
+        for tool in ["cmd", "mimo", "opencode", "pi"] {
             let args = initial_args(tool, prompt, "/project").unwrap();
             assert_eq!(args.last().unwrap(), prompt);
             assert!(!args.iter().any(|arg| matches!(
@@ -69,7 +71,9 @@ mod tests {
             assert_eq!(command.get_argv()[0], "/registered/cli");
             assert_eq!(command.get_argv().len(), args.len() + 1);
             assert_eq!(command.get_cwd().unwrap(), "/project");
-            if tool != "cmd" {
+            if tool == "pi" {
+                assert_eq!(args[0], "--");
+            } else if tool != "cmd" {
                 assert_eq!(&args[..2], ["/project", "--prompt"]);
             }
         }

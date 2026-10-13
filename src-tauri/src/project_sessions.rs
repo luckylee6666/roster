@@ -1,7 +1,7 @@
 use crate::conversation_media::{inline_image_attachment, ConversationAttachment};
 use crate::project_memory::encode_claude_project_dir;
 use crate::session_budget::SessionBudget;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -26,6 +26,16 @@ const TRANSCRIPT_MESSAGE_LIMIT: usize = 500;
 const TRANSCRIPT_TEXT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const TRANSCRIPT_INLINE_IMAGE_LIMIT: usize = 8 * 1024 * 1024;
 const TRANSCRIPT_ATTACHMENT_LIMIT: usize = 32;
+// Pi stores one JSONL file per session. Keep discovery and transcript parsing bounded even
+// when a user points PI_CODING_AGENT_SESSION_DIR at a directory shared by many projects.
+const PI_SESSION_SCAN_LIMIT: usize = 2_000;
+const PI_SESSION_DIRECTORY_ENTRY_LIMIT: usize = 20_000;
+const PI_SESSION_FILE_READ_LIMIT: u64 = 64 * 1024 * 1024;
+const PI_SESSION_LIST_PARSE_LIMIT: u64 = 2 * 1024 * 1024;
+const PI_SESSION_HEADER_READ_LIMIT: u64 = 64 * 1024;
+const PI_SESSION_LINE_READ_LIMIT: usize = 1024 * 1024;
+const PI_SESSION_ENTRY_LIMIT: usize = 200_000;
+const PI_SETTINGS_READ_LIMIT: u64 = 64 * 1024;
 // Command Code 的会话目录名是它自己编的 slug，不可还原，找这个项目的会话只能
 // 逐个读 header 复核 cwd。给扫描封顶，别让一台机器上攒了很多项目时卡住列表。
 const COMMANDCODE_SCAN_LIMIT: usize = 600;
@@ -119,6 +129,280 @@ fn millis(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[derive(serde::Deserialize)]
+struct PiSessionDirSetting {
+    #[serde(
+        rename = "sessionDir",
+        default,
+        deserialize_with = "deserialize_pi_session_dir"
+    )]
+    session_dir: Option<Option<String>>,
+}
+
+fn deserialize_pi_session_dir<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PiSettingValue {
+    Missing,
+    Null,
+    Path(String),
+}
+
+/// Normalize a Pi path the same way its `resolvePath`/`normalizePath` use it for an invocation
+/// whose cwd is `cwd`. This intentionally does not canonicalize symlinks: Pi uses lexical
+/// resolution too, and callers reject symlinks before opening any session data.
+fn pi_resolve_path(raw: &str, cwd: &Path, home: &Path) -> Result<PathBuf, String> {
+    if raw.is_empty() || raw.contains('\0') {
+        return Err("Pi 会话目录配置无效".into());
+    }
+    if raw.starts_with("file://") {
+        return Err("Pi 会话目录的 file:// URL 暂不支持安全解析".into());
+    }
+    let expanded = if raw == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        home.join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    let joined = if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd.join(expanded)
+    };
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() && !normalized.has_root() {
+                    normalized.push("..");
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    if !normalized.is_absolute() {
+        return Err("Pi 会话目录无法解析为绝对路径".into());
+    }
+    Ok(normalized)
+}
+
+fn pi_cwd_absolute(cwd: &str, home: &Path) -> Result<PathBuf, String> {
+    let cwd = require_cwd(cwd)?;
+    if cwd.contains('\0') {
+        return Err("项目路径无效".into());
+    }
+    let base = std::env::current_dir().unwrap_or_else(|_| home.to_path_buf());
+    pi_resolve_path(&cwd, &base, home)
+}
+
+fn pi_session_directory_for(
+    cwd: &str,
+    home: &Path,
+    agent_dir_env: Option<&str>,
+    session_dir_env: Option<&str>,
+    global_setting: PiSettingValue,
+) -> Result<PathBuf, String> {
+    let cwd_path = pi_cwd_absolute(cwd, home)?;
+    let session_override = session_dir_env.filter(|value| !value.is_empty());
+    let configured = if let Some(path) = session_override {
+        Some(path.to_string())
+    } else {
+        match &global_setting {
+            PiSettingValue::Path(path) if !path.is_empty() => Some(path.clone()),
+            PiSettingValue::Path(_) | PiSettingValue::Null | PiSettingValue::Missing => None,
+        }
+    };
+
+    let directory = if let Some(path) = configured.as_deref() {
+        pi_resolve_path(path, &cwd_path, home)?
+    } else {
+        let agent_dir = agent_dir_env
+            .filter(|value| !value.is_empty())
+            .map(|value| pi_resolve_path(value, &cwd_path, home))
+            .transpose()?
+            .unwrap_or_else(|| home.join(".pi").join("agent"));
+        let project_cwd = cwd_path.to_string_lossy();
+        let encoded = project_cwd
+            .strip_prefix('/')
+            .or_else(|| project_cwd.strip_prefix('\\'))
+            .unwrap_or(&project_cwd)
+            .replace(['/', '\\', ':'], "-");
+        agent_dir.join("sessions").join(format!("--{encoded}--"))
+    };
+    reject_pi_symlink_path(&directory)?;
+    Ok(directory)
+}
+
+fn pi_setting_from_file(path: &Path) -> Result<PiSettingValue, String> {
+    reject_pi_symlink_path(path)?;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PiSettingValue::Missing)
+        }
+        Err(_) => return Err("无法读取 Pi 的 sessionDir 设置".into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Pi 的设置文件不是普通文件".into());
+    }
+    if metadata.len() > PI_SETTINGS_READ_LIMIT {
+        return Err("Pi 的设置文件超过安全上限".into());
+    }
+    let file = open_pi_file(path)?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
+    file.take(PI_SETTINGS_READ_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "无法读取 Pi 的 sessionDir 设置".to_string())?;
+    if bytes.len() as u64 > PI_SETTINGS_READ_LIMIT {
+        return Err("Pi 的设置文件超过安全上限".into());
+    }
+    // Deserialize only this setting. Other settings (including historical credential fields)
+    // are ignored and never surfaced in errors or logs.
+    let setting: PiSessionDirSetting = serde_json::from_slice(&bytes)
+        .map_err(|_| "Pi 的设置文件无效，无法安全解析 sessionDir".to_string())?;
+    Ok(match setting.session_dir {
+        Some(Some(value)) => PiSettingValue::Path(value),
+        Some(None) => PiSettingValue::Null,
+        None => PiSettingValue::Missing,
+    })
+}
+
+/// Reject links in an existing session path; missing suffixes are fine (listing simply returns
+/// empty and the Pi process may create the native directory on first use).
+fn reject_pi_symlink_path(path: &Path) -> Result<(), String> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("Pi 会话路径包含符号链接".into())
+            }
+            Ok(metadata) if current != path && !metadata.is_dir() => {
+                return Err("Pi 会话路径中包含非目录组件".into())
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) => return Err("无法访问 Pi 会话路径".into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+fn open_pi_file(path: &Path) -> Result<fs::File, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Pi 会话路径不是普通文件".to_string())?;
+    let path_metadata =
+        fs::symlink_metadata(path).map_err(|_| "无法安全打开 Pi 会话文件".to_string())?;
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err("Pi 会话路径不是普通文件".into());
+    }
+    // The metadata check rejects ordinary final-component links. The platform helper then
+    // opens the file and validates the final handle beneath this directory to close parent swaps.
+    let file = crate::conversation_media::open_project_regular_file(parent, path)?;
+    if !file
+        .metadata()
+        .map_err(|_| "无法读取 Pi 会话元数据".to_string())?
+        .is_file()
+    {
+        return Err("Pi 会话路径不是普通文件".into());
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_pi_directory_nofollow(path: &Path) -> Result<fs::File, String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err("Pi 会话目录必须是绝对路径".into());
+    }
+    let mut directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open("/")
+        .map_err(|_| "Pi 会话目录无法安全打开".to_string())?;
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            if matches!(component, Component::RootDir) {
+                continue;
+            }
+            return Err("Pi 会话目录包含非法路径组件".into());
+        };
+        let name =
+            CString::new(name.as_bytes()).map_err(|_| "Pi 会话目录包含非法路径组件".to_string())?;
+        // SAFETY: directory is a pinned directory fd and name is one NUL-free component.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY
+                    | libc::O_DIRECTORY
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err("Pi 会话目录含符号链接或无法安全打开".into());
+        }
+        // SAFETY: openat returned a new owned directory descriptor.
+        directory = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    Ok(directory)
+}
+
+fn pi_session_directory_with_home(cwd: &str, home: &Path) -> Result<PathBuf, String> {
+    let agent_dir_env = std::env::var("PI_CODING_AGENT_DIR").ok();
+    let session_dir_env = std::env::var("PI_CODING_AGENT_SESSION_DIR").ok();
+    if session_dir_env
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return pi_session_directory_for(
+            cwd,
+            home,
+            agent_dir_env.as_deref(),
+            session_dir_env.as_deref(),
+            PiSettingValue::Missing,
+        );
+    }
+    let cwd_path = pi_cwd_absolute(cwd, home)?;
+    let agent_dir = agent_dir_env
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| pi_resolve_path(value, &cwd_path, home))
+        .transpose()?
+        .unwrap_or_else(|| home.join(".pi").join("agent"));
+    let global_setting = pi_setting_from_file(&agent_dir.join("settings.json"))?;
+    pi_session_directory_for(
+        cwd,
+        home,
+        agent_dir_env.as_deref(),
+        session_dir_env.as_deref(),
+        global_setting,
+    )
+}
+
+/// Resolve the effective Pi session directory for a project. The path follows Pi's native
+/// agent/session environment and settings rather than creating a Roster-owned history store.
+pub(crate) fn pi_session_directory(cwd: &str) -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "找不到用户主目录".to_string())?;
+    pi_session_directory_with_home(cwd, &home)
 }
 
 fn parse_rfc3339_ms(value: &str) -> Option<u64> {
@@ -1417,6 +1701,636 @@ fn push_group(
     });
 }
 
+#[derive(Clone)]
+struct PiSessionHeader {
+    id: String,
+    cwd: String,
+}
+
+fn is_pi_session_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-'))
+}
+
+fn pi_session_filename_id(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".jsonl")?;
+    // The timestamp uses no underscores, while valid Pi session IDs may contain them.
+    let (timestamp, id) = stem.split_once('_')?;
+    if timestamp.is_empty()
+        || !timestamp
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || !is_pi_session_id(id)
+    {
+        return None;
+    }
+    Some(id)
+}
+
+fn read_pi_session_header_from_file(file: &mut fs::File) -> Result<PiSessionHeader, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| "无法读取 Pi 会话头".to_string())?;
+    let mut first = Vec::new();
+    let read = {
+        let mut reader = BufReader::new(&mut *file).take(PI_SESSION_HEADER_READ_LIMIT + 1);
+        reader
+            .read_until(b'\n', &mut first)
+            .map_err(|_| "无法读取 Pi 会话头".to_string())?
+    };
+    if read == 0 || read as u64 > PI_SESSION_HEADER_READ_LIMIT {
+        return Err("Pi 会话头超过安全上限".into());
+    }
+    let value = serde_json::from_slice::<serde_json::Value>(&first)
+        .map_err(|_| "Pi 会话头无效".to_string())?;
+    if value.get("type").and_then(|item| item.as_str()) != Some("session") {
+        return Err("Pi 会话头无效".into());
+    }
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| "Pi 会话头无效".to_string())?
+        .to_string();
+    let cwd = value
+        .get("cwd")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| "Pi 会话头无效".to_string())?
+        .to_string();
+    if !is_pi_session_id(&id) || cwd.is_empty() {
+        return Err("Pi 会话头无效".into());
+    }
+    Ok(PiSessionHeader { id, cwd })
+}
+
+fn read_pi_session_header(path: &Path) -> Option<PiSessionHeader> {
+    let mut file = open_pi_file(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    read_pi_session_header_from_file(&mut file).ok()
+}
+
+fn verify_pi_header(path: &Path, cwd: &str, requested_id: Option<&str>) -> Option<PiSessionHeader> {
+    let header = read_pi_session_header(path)?;
+    if pi_session_filename_id(path) != Some(header.id.as_str())
+        || !same_project_cwd(&header.cwd, cwd)
+        || requested_id.is_some_and(|id| id != header.id.as_str())
+    {
+        return None;
+    }
+    Some(header)
+}
+
+fn read_pi_session_entries(
+    path: &Path,
+    cwd: &str,
+    requested_id: Option<&str>,
+) -> Result<(PiSessionHeader, Vec<serde_json::Value>), String> {
+    let mut file = open_pi_file(path)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "无法读取 Pi 会话元数据".to_string())?;
+    if !metadata.is_file() || metadata.len() > PI_SESSION_FILE_READ_LIMIT {
+        return Err("Pi 会话超过安全读取上限".into());
+    }
+    let header = read_pi_session_header_from_file(&mut file)?;
+    if pi_session_filename_id(path) != Some(header.id.as_str())
+        || !same_project_cwd(&header.cwd, cwd)
+        || requested_id.is_some_and(|id| id != header.id.as_str())
+    {
+        return Err("找不到这个 Pi 会话".into());
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| "无法读取 Pi 会话".to_string())?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
+    file.take(PI_SESSION_FILE_READ_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "无法读取 Pi 会话".to_string())?;
+    if bytes.len() as u64 > PI_SESSION_FILE_READ_LIMIT {
+        return Err("Pi 会话超过安全读取上限".into());
+    }
+
+    let mut entries = Vec::new();
+    let mut first_entry_seen = false;
+    let mut previous_legacy_id: Option<String> = None;
+    let mut version = 1_u64;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.len() > PI_SESSION_LINE_READ_LIMIT {
+            return Err("Pi 会话包含超过安全上限的单行".into());
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let Ok(mut entry) = serde_json::from_slice::<serde_json::Value>(line) else {
+            // Pi's parser skips malformed JSONL lines. Keep the same behavior, with the
+            // first valid entry still required to be its session header.
+            continue;
+        };
+        if !first_entry_seen {
+            first_entry_seen = true;
+            if entry.get("type").and_then(|value| value.as_str()) != Some("session")
+                || entry.get("id").and_then(|value| value.as_str()) != Some(header.id.as_str())
+                || entry.get("cwd").and_then(|value| value.as_str()) != Some(header.cwd.as_str())
+            {
+                return Err("Pi 会话头无效".into());
+            }
+            version = entry
+                .get("version")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(1);
+            continue;
+        }
+        if entry.get("type").and_then(|value| value.as_str()) == Some("session") {
+            continue;
+        }
+        if entries.len() >= PI_SESSION_ENTRY_LIMIT {
+            return Err("Pi 会话条目超过安全上限".into());
+        }
+        if version < 2 {
+            let legacy_id = format!("legacy-{}", entries.len());
+            if let Some(object) = entry.as_object_mut() {
+                object.insert("id".into(), serde_json::Value::String(legacy_id.clone()));
+                object.insert(
+                    "parentId".into(),
+                    previous_legacy_id
+                        .clone()
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null),
+                );
+            } else {
+                continue;
+            }
+            previous_legacy_id = Some(legacy_id);
+        } else {
+            let Some(id) = entry.get("id").and_then(|value| value.as_str()) else {
+                // Pi's tree index ignores entries without a usable id only accidentally;
+                // fail closed rather than expose a transcript with uncertain ancestry.
+                return Err("Pi 会话树条目缺少 ID".into());
+            };
+            if !is_pi_session_id(id) {
+                return Err("Pi 会话树包含非法条目 ID".into());
+            }
+        }
+        entries.push(entry);
+    }
+    if !first_entry_seen {
+        return Err("Pi 会话头无效".into());
+    }
+    Ok((header, entries))
+}
+
+fn pi_active_branch(entries: &[serde_json::Value]) -> Result<Vec<&serde_json::Value>, String> {
+    let mut by_id = std::collections::HashMap::with_capacity(entries.len());
+    let mut leaf_id = None;
+    for entry in entries {
+        let id = entry
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "Pi 会话树条目缺少 ID".to_string())?;
+        if by_id.insert(id, entry).is_some() {
+            return Err("Pi 会话树包含重复条目 ID".into());
+        }
+        leaf_id = Some(id);
+    }
+    let mut current = leaf_id;
+    let mut seen = std::collections::HashSet::new();
+    let mut path = Vec::new();
+    while let Some(id) = current {
+        if !seen.insert(id) || path.len() >= PI_SESSION_ENTRY_LIMIT {
+            return Err("Pi 会话树存在循环".into());
+        }
+        let entry = by_id
+            .get(id)
+            .copied()
+            .ok_or_else(|| "Pi 会话树包含断开的父分支".to_string())?;
+        path.push(entry);
+        current = match entry.get("parentId") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(parent)) if parent.is_empty() => None,
+            Some(serde_json::Value::String(parent)) => Some(parent.as_str()),
+            Some(_) => return Err("Pi 会话树父 ID 无效".into()),
+        };
+    }
+    path.reverse();
+    Ok(path)
+}
+
+fn pi_message_text(entry: &serde_json::Value) -> Option<(String, String)> {
+    if entry.get("type").and_then(|value| value.as_str()) != Some("message") {
+        return None;
+    }
+    let message = entry.get("message")?;
+    let role = message.get("role")?.as_str()?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+    let content = message.get("content")?;
+    let text = if let Some(content) = content.as_str() {
+        content.to_string()
+    } else {
+        content
+            .as_array()?
+            .iter()
+            .filter(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let text = sanitize_handoff_text(&text);
+    (!text.trim().is_empty() && (role != "user" || !is_noise_user_text(&text)))
+        .then_some((role.to_string(), text))
+}
+
+type PiNaturalMessages = Vec<(String, String)>;
+
+fn pi_active_messages(entries: &[serde_json::Value]) -> Result<PiNaturalMessages, String> {
+    Ok(pi_active_branch(entries)?
+        .into_iter()
+        .filter_map(pi_message_text)
+        .collect())
+}
+
+fn pi_active_messages_and_title(
+    entries: &[serde_json::Value],
+) -> Result<(Option<String>, PiNaturalMessages), String> {
+    let branch = pi_active_branch(entries)?;
+    let mut name = None;
+    let mut messages = Vec::new();
+    for entry in branch {
+        if entry.get("type").and_then(|value| value.as_str()) == Some("session_info") {
+            // An explicit empty name clears a previous Pi title.
+            name = Some(
+                entry
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            );
+        }
+        if let Some(message) = pi_message_text(entry) {
+            messages.push(message);
+        }
+    }
+    Ok((name, messages))
+}
+
+fn pi_session_history(path: &Path, cwd: &str, header: PiSessionHeader) -> ProjectHistorySession {
+    let metadata = fs::symlink_metadata(path).ok();
+    let at_ms = metadata
+        .as_ref()
+        .and_then(|meta| meta.modified().ok())
+        .map(millis)
+        .unwrap_or(0);
+    let size = metadata
+        .as_ref()
+        .filter(|meta| meta.is_file() && !meta.file_type().is_symlink())
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let (named_title, messages) = if size <= PI_SESSION_LIST_PARSE_LIMIT {
+        read_pi_session_entries(path, cwd, Some(&header.id))
+            .ok()
+            .and_then(|(_, entries)| pi_active_messages_and_title(&entries).ok())
+            .unwrap_or_default()
+    } else {
+        (None, Vec::new())
+    };
+    pi_session_history_from_content(header, at_ms, size, named_title, messages)
+}
+
+fn pi_session_history_from_content(
+    header: PiSessionHeader,
+    at_ms: u64,
+    size: u64,
+    named_title: Option<String>,
+    messages: Vec<(String, String)>,
+) -> ProjectHistorySession {
+    let first_user = messages
+        .iter()
+        .find(|(role, _)| role == "user")
+        .map(|(_, text)| text.as_str())
+        .unwrap_or("");
+    let title = named_title
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(first_user);
+    let mut session = history_session(header.id, "pi", title, at_ms);
+    session.preview = messages
+        .iter()
+        .find(|(role, _)| role == "user")
+        .map(|(_, text)| preview_excerpt(text, PREVIEW_LIST_LIMIT))
+        .unwrap_or_default();
+    session.budget = SessionBudget::for_bytes("pi", size);
+    session
+}
+
+fn list_pi_sessions_in_directory(cwd: &str, directory: &Path) -> Vec<ProjectHistorySession> {
+    if reject_pi_symlink_path(directory).is_err() {
+        return Vec::new();
+    }
+    let Ok(metadata) = fs::symlink_metadata(directory) else {
+        return Vec::new();
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .take(PI_SESSION_DIRECTORY_ENTRY_LIMIT)
+        .flatten()
+        .filter_map(|entry| {
+            let kind = entry.file_type().ok()?;
+            if !kind.is_file() || kind.is_symlink() {
+                return None;
+            }
+            let path = entry.path();
+            pi_session_filename_id(&path)?;
+            let modified = fs::symlink_metadata(&path)
+                .ok()?
+                .modified()
+                .unwrap_or(UNIX_EPOCH);
+            Some((path, modified))
+        })
+        .collect::<Vec<_>>();
+    // Pi keeps the original filename when continuing a session, so filename timestamp is its
+    // creation time rather than last activity. Sort by the filesystem mtime Pi updates on append.
+    paths.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+    paths.truncate(PI_SESSION_SCAN_LIMIT);
+    let mut sessions = Vec::new();
+    for (path, _) in paths {
+        let Some(header) = verify_pi_header(&path, cwd, None) else {
+            continue;
+        };
+        sessions.push(pi_session_history(&path, cwd, header));
+        if sessions.len() >= MAX_SESSIONS_PER_TOOL {
+            break;
+        }
+    }
+    finalize_sessions(sessions)
+}
+
+fn list_pi_sessions(cwd: &str, home: &Path) -> Vec<ProjectHistorySession> {
+    let Ok(directory) = pi_session_directory_with_home(cwd, home) else {
+        return Vec::new();
+    };
+    list_pi_sessions_in_directory(cwd, &directory)
+}
+
+fn resolve_pi_session_path_in_directory(
+    cwd: &str,
+    session_id: &str,
+    directory: &Path,
+) -> Result<PathBuf, String> {
+    let id = require_component_id(session_id)?;
+    if !is_pi_session_id(&id) {
+        return Err("非法 Pi 会话 ID".into());
+    }
+    reject_pi_symlink_path(directory)?;
+    let entries = fs::read_dir(directory).map_err(|_| "找不到这个 Pi 会话".to_string())?;
+    let mut matches = Vec::new();
+    let mut scanned = 0_usize;
+    for entry in entries.flatten() {
+        scanned += 1;
+        if scanned > PI_SESSION_SCAN_LIMIT {
+            return Err("Pi 会话目录超过扫描上限".into());
+        }
+        let kind = match entry.file_type() {
+            Ok(kind) if kind.is_file() && !kind.is_symlink() => kind,
+            _ => continue,
+        };
+        let _ = kind;
+        let path = entry.path();
+        if pi_session_filename_id(&path) != Some(id.as_str()) {
+            continue;
+        }
+        if verify_pi_header(&path, cwd, Some(&id)).is_some() {
+            matches.push(path);
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err("找不到这个 Pi 会话".into()),
+        _ => Err("Pi 会话 ID 不唯一".into()),
+    }
+}
+
+/// Resolve a complete Pi session ID to the single native JSONL file owned by this project.
+pub(crate) fn resolve_pi_session_path(cwd: &str, id: &str) -> Result<PathBuf, String> {
+    let directory = pi_session_directory(cwd)?;
+    resolve_pi_session_path_in_directory(cwd, id, &directory)
+}
+
+fn resolve_pi_session_path_with_home(cwd: &str, id: &str, home: &Path) -> Result<PathBuf, String> {
+    let directory = pi_session_directory_with_home(cwd, home)?;
+    resolve_pi_session_path_in_directory(cwd, id, &directory)
+}
+
+fn delete_pi_session_with_home(cwd: &str, session_id: &str, home: &Path) -> Result<(), String> {
+    let directory = pi_session_directory_with_home(cwd, home)?;
+    let path = resolve_pi_session_path_in_directory(cwd, session_id, &directory)?;
+    #[cfg(unix)]
+    {
+        delete_pi_session_unix(&directory, &path, cwd, session_id)
+    }
+    #[cfg(windows)]
+    {
+        delete_pi_session_windows(&path, &directory, cwd, session_id)
+    }
+}
+
+#[cfg(unix)]
+fn delete_pi_session_unix(
+    directory: &Path,
+    path: &Path,
+    cwd: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    if path.parent() != Some(directory) || pi_session_filename_id(path) != Some(session_id) {
+        return Err("Pi 会话路径无效".into());
+    }
+    let directory_file = open_pi_directory_nofollow(directory)?;
+    let file_name = CString::new(
+        path.file_name()
+            .ok_or_else(|| "Pi 会话路径无效".to_string())?
+            .as_bytes(),
+    )
+    .map_err(|_| "Pi 会话路径无效".to_string())?;
+    // SAFETY: the directory is pinned by an owned fd and `name` is one validated component;
+    // O_NOFOLLOW prevents opening a substituted final symlink.
+    let fd = unsafe {
+        libc::openat(
+            directory_file.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err("无法安全打开 Pi 会话文件".into());
+    }
+    // SAFETY: openat returned a new owned descriptor.
+    let mut file = unsafe { fs::File::from_raw_fd(fd) };
+    let metadata = file
+        .metadata()
+        .map_err(|_| "无法读取 Pi 会话元数据".to_string())?;
+    if !metadata.is_file() {
+        return Err("Pi 会话路径不是普通文件".into());
+    }
+    let header = read_pi_session_header_from_file(&mut file)?;
+    if header.id.as_str() != session_id
+        || !same_project_cwd(&header.cwd, cwd)
+        || pi_session_filename_id(path) != Some(header.id.as_str())
+    {
+        return Err("找不到这个 Pi 会话".into());
+    }
+
+    // Confirm the directory entry still names the validated regular file. unlinkat is anchored
+    // to the pinned no-follow directory; even a final-component race cannot follow a symlink.
+    // SAFETY: fstatat initializes the stat output when it succeeds.
+    let mut current = unsafe { std::mem::zeroed::<libc::stat>() };
+    // SAFETY: the parent fd and NUL-terminated single-component name are valid for fstatat.
+    let stat_result = unsafe {
+        libc::fstatat(
+            directory_file.as_raw_fd(),
+            file_name.as_ptr(),
+            &mut current,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if stat_result != 0
+        || current.st_mode & libc::S_IFMT != libc::S_IFREG
+        || current.st_dev as u64 != metadata.dev()
+        || current.st_ino as u64 != metadata.ino()
+    {
+        return Err("Pi 会话在删除前发生变化".into());
+    }
+    // SAFETY: unlinkat is relative to the pinned directory and does not follow the final link.
+    if unsafe { libc::unlinkat(directory_file.as_raw_fd(), file_name.as_ptr(), 0) } != 0 {
+        return Err("无法删除 Pi 会话文件".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn delete_pi_session_windows(
+    path: &Path,
+    directory: &Path,
+    cwd: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
+        FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    if path.parent() != Some(directory) || pi_session_filename_id(path) != Some(session_id) {
+        return Err("Pi 会话路径无效".into());
+    }
+    let path_metadata =
+        fs::symlink_metadata(path).map_err(|_| "无法安全打开 Pi 会话文件".to_string())?;
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err("Pi 会话路径不是普通文件".into());
+    }
+    // Read-only session previews use open_pi_file. Deletion needs DELETE access on this
+    // dedicated handle and opens the final component as a reparse point so it can reject links.
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .access_mode(GENERIC_READ | DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = options
+        .open(path)
+        .map_err(|_| "无法安全打开 Pi 会话文件".to_string())?;
+    crate::conversation_media::validate_opened_project_file(directory, &file)?;
+    // SAFETY: zero is a valid initial byte pattern for this Win32 output structure.
+    let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    // SAFETY: file owns a live handle and information is writable for the API call.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) } == 0
+        || information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err("Pi 会话路径不是普通文件".into());
+    }
+    if !file
+        .metadata()
+        .map_err(|_| "无法读取 Pi 会话元数据".to_string())?
+        .is_file()
+    {
+        return Err("Pi 会话路径不是普通文件".into());
+    }
+    let header = read_pi_session_header_from_file(&mut file)?;
+    if header.id.as_str() != session_id
+        || !same_project_cwd(&header.cwd, cwd)
+        || pi_session_filename_id(path) != Some(header.id.as_str())
+    {
+        return Err("找不到这个 Pi 会话".into());
+    }
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: file is the opened, validated Pi session handle and disposition has the API layout.
+    let deleted = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle() as HANDLE,
+            FileDispositionInfo,
+            &disposition as *const FILE_DISPOSITION_INFO as *const _,
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if deleted == 0 {
+        return Err("无法删除 Pi 会话文件".into());
+    }
+    Ok(())
+}
+
+fn preview_pi_session(
+    cwd: &str,
+    session_id: &str,
+    home: &Path,
+) -> Result<ProjectHistoryPreview, String> {
+    let path = resolve_pi_session_path_with_home(cwd, session_id, home)?;
+    let (header, entries) = read_pi_session_entries(&path, cwd, Some(session_id))?;
+    let (named_title, messages) = pi_active_messages_and_title(&entries)?;
+    let raw = messages
+        .iter()
+        .map(|(_, text)| text.clone())
+        .collect::<Vec<_>>();
+    let metadata = fs::symlink_metadata(&path).map_err(|_| "无法读取 Pi 会话元数据".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Pi 会话路径不是普通文件".into());
+    }
+    let at_ms = metadata.modified().map(millis).unwrap_or(0);
+    let session =
+        pi_session_history_from_content(header, at_ms, metadata.len(), named_title, messages);
+    Ok(preview_result(session, preview_body(&raw)))
+}
+
+fn pi_handoff_messages(
+    cwd: &str,
+    session_id: &str,
+    home: &Path,
+) -> Result<Vec<SessionHandoffMessage>, String> {
+    let path = resolve_pi_session_path_with_home(cwd, session_id, home)?;
+    let (_, entries) = read_pi_session_entries(&path, cwd, Some(session_id))?;
+    Ok(pi_active_messages(&entries)?
+        .into_iter()
+        .map(|(role, text)| SessionHandoffMessage { role, text })
+        .collect())
+}
+
 pub fn list_project_history_with_home(project_path: &str, home: &Path) -> ProjectHistory {
     let cwd = crate::project_memory::normalize_project_cwd(project_path);
     let mut groups = Vec::new();
@@ -1456,6 +2370,7 @@ pub fn list_project_history_with_home(project_path: &str, home: &Path) -> Projec
         "cmd",
         list_commandcode_sessions(home, &cwd),
     );
+    push_group(&mut groups, "pi", "Pi", list_pi_sessions(&cwd, home));
     ProjectHistory { groups }
 }
 
@@ -2626,6 +3541,7 @@ fn handoff_tool_label(tool: &str) -> &str {
         "qwen" => "Qwen",
         "mimo" => "MiMo Code",
         "cmd" => "cmd",
+        "pi" => "Pi",
         _ => "CLI",
     }
 }
@@ -2937,6 +3853,7 @@ fn source_handoff_messages(
                 truncated,
             )
         }
+        "pi" => (pi_handoff_messages(cwd, session_id, home)?, false),
         "agy" => {
             require_component_id(session_id)?;
             let history = home.join(".gemini/antigravity-cli/history.jsonl");
@@ -3187,6 +4104,7 @@ pub fn preview_project_session_with_home(
         "mimo" => preview_mimo(home, &cwd, session_id),
         "agy" => preview_agy(home, &cwd, session_id),
         "cmd" => preview_commandcode(home, &cwd, session_id),
+        "pi" => preview_pi_session(&cwd, session_id, home),
         "qwen" => {
             let path = qwen_session_path(home, &cwd, session_id)?;
             let session = qwen_session_from_jsonl(&path, &cwd, true)
@@ -3226,6 +4144,7 @@ pub fn delete_project_session_with_home(
         "mimo" => delete_mimo(home, &cwd, session_id),
         "agy" => delete_agy(home, &cwd, session_id),
         "cmd" => delete_commandcode(home, &cwd, session_id),
+        "pi" => delete_pi_session_with_home(&cwd, session_id, home),
         "qwen" => {
             let path = qwen_session_path(home, &cwd, session_id)?;
             fs::remove_file(&path).map_err(|error| error.to_string())?;
@@ -3329,6 +4248,314 @@ mod tests {
         let home = root.path().join("home");
         fs::create_dir_all(&home).unwrap();
         (root, home)
+    }
+
+    fn pi_fixture_entries(session_id: &str, cwd: &str) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({
+                "type": "session", "version": 3, "id": session_id,
+                "timestamp": "2026-10-13T12:00:00.000Z", "cwd": cwd
+            }),
+            serde_json::json!({
+                "type": "message", "id": "root-user", "parentId": null,
+                "message": {"role": "user", "content": "根分支问题"}
+            }),
+            serde_json::json!({
+                "type": "message", "id": "root-assistant", "parentId": "root-user",
+                "message": {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "不应显示的思考"},
+                    {"type": "text", "text": "根分支回答"},
+                    {"type": "toolCall", "name": "bash", "arguments": {"command": "private"}}
+                ]}
+            }),
+            serde_json::json!({
+                "type": "message", "id": "side-user", "parentId": "root-user",
+                "message": {"role": "user", "content": "旁支消息不应出现"}
+            }),
+            serde_json::json!({
+                "type": "message", "id": "active-user", "parentId": "root-assistant",
+                "message": {"role": "user", "content": "当前分支问题"}
+            }),
+            serde_json::json!({
+                "type": "message", "id": "tool-result", "parentId": "active-user",
+                "message": {"role": "toolResult", "content": [{"type": "text", "text": "不应显示的工具结果"}]}
+            }),
+            serde_json::json!({
+                "type": "message", "id": "active-assistant", "parentId": "tool-result",
+                "message": {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "隐藏思考"},
+                    {"type": "text", "text": "当前分支回答"}
+                ]}
+            }),
+            serde_json::json!({
+                "type": "session_info", "id": "session-name", "parentId": "active-assistant",
+                "name": "Pi 合成标题"
+            }),
+            serde_json::json!({
+                "type": "compaction", "id": "compaction", "parentId": "session-name",
+                "summary": "压缩摘要不得当作自然对话交接", "firstKeptEntryId": "active-user"
+            }),
+            serde_json::json!({
+                "type": "branch_summary", "id": "branch-summary", "parentId": "compaction",
+                "summary": "旁支摘要不得伪造为 assistant 正文"
+            }),
+        ]
+    }
+
+    fn write_pi_fixture(directory: &Path, session_id: &str, cwd: &str) -> PathBuf {
+        fs::create_dir_all(directory).unwrap();
+        let path = directory.join(format!("2026-10-13T12-00-00-000Z_{session_id}.jsonl"));
+        let content = pi_fixture_entries(session_id, cwd)
+            .into_iter()
+            .map(|entry| serde_json::to_string(&entry).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{content}\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn pi_native_directory_follows_env_and_settings_precedence() {
+        let (root, home) = temp_home();
+        let root_path = root.path().canonicalize().unwrap();
+        let home = home.canonicalize().unwrap();
+        let cwd = root_path.join("workspace/project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+
+        let default_dir =
+            pi_session_directory_for(&cwd, &home, None, None, PiSettingValue::Missing).unwrap();
+        let encoded = cwd
+            .trim_start_matches(['/', '\\'])
+            .replace(['/', '\\', ':'], "-");
+        let expected_default_name = format!("--{encoded}--");
+        assert_eq!(
+            default_dir.file_name().and_then(|name| name.to_str()),
+            Some(expected_default_name.as_str())
+        );
+
+        let global = pi_session_directory_for(
+            &cwd,
+            &home,
+            Some("~/pi-agent"),
+            None,
+            PiSettingValue::Path("global-sessions".into()),
+        )
+        .unwrap();
+        assert_eq!(global, PathBuf::from(&cwd).join("global-sessions"));
+
+        let environment = pi_session_directory_for(
+            &cwd,
+            &home,
+            None,
+            Some("~/explicit-sessions"),
+            PiSettingValue::Path("global-sessions".into()),
+        )
+        .unwrap();
+        assert_eq!(environment, home.join("explicit-sessions"));
+
+        let agent_override = pi_session_directory_for(
+            &cwd,
+            &home,
+            Some("~/.pi-alt"),
+            None,
+            PiSettingValue::Missing,
+        )
+        .unwrap();
+        assert_eq!(
+            agent_override,
+            home.join(".pi-alt")
+                .join("sessions")
+                .join(expected_default_name)
+        );
+
+        let settings = home.join("settings.json");
+        fs::write(
+            &settings,
+            r#"{"sessionDir":"~/configured-sessions","apiKey":"synthetic-secret"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pi_setting_from_file(&settings).unwrap(),
+            PiSettingValue::Path("~/configured-sessions".into())
+        );
+        fs::write(
+            &settings,
+            r#"{"sessionDir":null,"apiKey":"synthetic-secret"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pi_setting_from_file(&settings).unwrap(),
+            PiSettingValue::Null
+        );
+        fs::write(&settings, r#"{"apiKey":"synthetic-secret"}"#).unwrap();
+        assert_eq!(
+            pi_setting_from_file(&settings).unwrap(),
+            PiSettingValue::Missing
+        );
+    }
+
+    #[test]
+    fn pi_filename_suffix_preserves_valid_underscore_ids() {
+        let (root, home) = temp_home();
+        let root_path = root.path().canonicalize().unwrap();
+        let home = home.canonicalize().unwrap();
+        let cwd = root_path.join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let directory =
+            pi_session_directory_for(&cwd, &home, None, None, PiSettingValue::Missing).unwrap();
+        let id = "pi_session_a_b";
+        let path = write_pi_fixture(&directory, id, &cwd);
+
+        assert_eq!(pi_session_filename_id(&path), Some(id));
+        assert_eq!(
+            resolve_pi_session_path_in_directory(&cwd, id, &directory).unwrap(),
+            path
+        );
+    }
+
+    #[test]
+    fn pi_history_limits_after_sorting_by_last_activity_not_filename_time() {
+        let (root, home) = temp_home();
+        let root_path = root.path().canonicalize().unwrap();
+        let home = home.canonicalize().unwrap();
+        let cwd = root_path.join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let directory =
+            pi_session_directory_for(&cwd, &home, None, None, PiSettingValue::Missing).unwrap();
+        let mut paths = Vec::new();
+        for index in 0..(MAX_SESSIONS_PER_TOOL + 1) {
+            let id = format!("session_{index}");
+            let path = write_pi_fixture(&directory, &id, &cwd);
+            let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(index as u64 + 1))
+                .unwrap();
+            paths.push((id, path));
+        }
+        // Pi keeps the filename's creation timestamp while appending to an existing session.
+        // Make the oldest filename the newest activity and ensure it survives the list cap.
+        let touched = fs::OpenOptions::new()
+            .write(true)
+            .open(&paths[0].1)
+            .unwrap();
+        touched
+            .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(10_000))
+            .unwrap();
+
+        let listed = list_pi_sessions_in_directory(&cwd, &directory);
+        assert_eq!(listed.len(), MAX_SESSIONS_PER_TOOL);
+        assert!(listed.iter().any(|session| session.id == "session_0"));
+        assert!(!listed.iter().any(|session| session.id == "session_1"));
+    }
+
+    #[test]
+    fn pi_history_preview_and_handoff_follow_only_current_natural_language_branch() {
+        let (root, home) = temp_home();
+        let root_path = root.path().canonicalize().unwrap();
+        let home = home.canonicalize().unwrap();
+        let cwd = root_path.join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let session_id = "018f5e21-4ca0-7a13-9c51-45990f98510a";
+        let directory =
+            pi_session_directory_for(&cwd, &home, None, None, PiSettingValue::Missing).unwrap();
+        let path = write_pi_fixture(&directory, session_id, &cwd);
+
+        let sessions = list_pi_sessions_in_directory(&cwd, &directory);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(sessions[0].title, "Pi 合成标题");
+        assert_eq!(sessions[0].preview, "根分支问题");
+        assert_eq!(
+            sessions[0].budget.size_bytes,
+            fs::metadata(&path).unwrap().len()
+        );
+        assert_eq!(sessions[0].budget.window, 0);
+        assert_eq!(sessions[0].budget.band, crate::session_budget::BAND_UNKNOWN);
+        assert!(!sessions[0].budget.blocks);
+        let project_history = list_project_history_with_home(&cwd, &home);
+        assert!(project_history
+            .groups
+            .iter()
+            .any(|group| group.tool == "pi" && group.sessions[0].id == session_id));
+
+        let preview = preview_project_session_with_home(&cwd, "pi", session_id, &home).unwrap();
+        assert_eq!(preview.title, "Pi 合成标题");
+        assert!(preview.body.contains("根分支问题"));
+        assert!(preview.body.contains("根分支回答"));
+        assert!(preview.body.contains("当前分支问题"));
+        assert!(preview.body.contains("当前分支回答"));
+        assert!(!preview.body.contains("旁支消息"));
+        assert!(!preview.body.contains("隐藏思考"));
+        assert!(!preview.body.contains("工具结果"));
+        assert!(!preview.body.contains("压缩摘要"));
+        assert!(!preview.body.contains("branch_summary"));
+
+        let handoff = preview_session_handoff_with_home(&cwd, "pi", session_id, &home).unwrap();
+        assert_eq!(handoff.messages.len(), 4);
+        assert_eq!(handoff.messages[0].role, "user");
+        assert_eq!(handoff.messages[1].role, "assistant");
+        assert!(handoff.messages.iter().all(|message| {
+            !message.text.contains("旁支")
+                && !message.text.contains("thinking")
+                && !message.text.contains("压缩摘要")
+                && !message.text.contains("branch_summary")
+        }));
+
+        assert!(preview_project_session_with_home(&cwd, "pi", "018f5e21", &home).is_err());
+        assert!(preview_project_session_with_home(&cwd, "pi", "../outside", &home).is_err());
+        assert!(
+            preview_project_session_with_home("/another/project", "pi", session_id, &home).is_err()
+        );
+
+        delete_project_session_with_home(&cwd, "pi", session_id, &home).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pi_history_rejects_session_file_and_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let (root, home) = temp_home();
+        let root_path = root.path().canonicalize().unwrap();
+        let home = home.canonicalize().unwrap();
+        let cwd = root_path.join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let directory =
+            pi_session_directory_for(&cwd, &home, None, None, PiSettingValue::Missing).unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        let id = "018f5e21-4ca0-7a13-9c51-45990f98511b";
+        let target = write_pi_fixture(&root_path.join("outside"), id, &cwd);
+        let link = directory.join(format!("2026-10-13T12-00-00-000Z_{id}.jsonl"));
+        symlink(&target, &link).unwrap();
+
+        assert!(resolve_pi_session_path_in_directory(&cwd, id, &directory).is_err());
+        assert!(list_pi_sessions_in_directory(&cwd, &directory).is_empty());
+        assert!(delete_pi_session_with_home(&cwd, id, &home).is_err());
+
+        let link_dir = root_path.join("linked-session-dir");
+        symlink(&directory, &link_dir).unwrap();
+        assert!(resolve_pi_session_path_in_directory(&cwd, id, &link_dir).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pi_windows_delete_uses_a_validated_delete_capable_file_handle() {
+        let (root, _home) = temp_home();
+        let root_path = root.path().canonicalize().unwrap();
+        let cwd_path = root_path.join("project");
+        fs::create_dir_all(&cwd_path).unwrap();
+        let cwd = cwd_path.to_string_lossy().into_owned();
+        let directory = root_path.join("sessions");
+        let id = "pi_session_delete_test";
+        let path = write_pi_fixture(&directory, id, &cwd);
+
+        delete_pi_session_windows(&path, &directory, &cwd, id).unwrap();
+        assert!(!path.exists());
     }
 
     #[cfg(unix)]

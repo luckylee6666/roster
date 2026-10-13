@@ -52,6 +52,7 @@ test('历史会话按工具生成指定 ID 的续接命令', () => {
   assert.equal(resumeCliCommand('codex', 'abc-1'), withCodexNativeProvider('codex resume abc-1'));
   assert.equal(resumeCliCommand('opencode', 'ses_1'), 'opencode --session ses_1');
   assert.equal(resumeCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
+  assert.equal(resumeCliCommand('pi', 'ses-1/full-id'), 'pi --session ses-1/full-id');
   assert.equal(resumeCliCommand('gemini', 'x'), '', 'Gemini 已移除，不再生成续接命令');
   assert.equal(resumeCliCommand('claude', ''), '');
   assert.equal(
@@ -65,10 +66,12 @@ test('历史会话按工具生成指定 ID 的续接命令', () => {
   assert.equal(launchCliCommand('codex', 'x-1'), withCodexNativeProvider('codex resume x-1'));
   assert.equal(launchCliCommand('opencode', 'ses_1'), 'opencode --session ses_1');
   assert.equal(launchCliCommand('agy', 'conv-1'), 'agy --conversation conv-1');
+  assert.equal(launchCliCommand('pi', 'ses-1/full-id'), 'pi --session ses-1/full-id');
   assert.equal(launchCliCommand('grok', ''), 'grok');
   assert.equal(launchCliCommand('codex', ''), 'codex');
   assert.equal(launchCliCommand('', 'abc'), '');
   assert.equal(extractResumedSessionId('claude --resume abc-1'), 'abc-1');
+  assert.equal(extractResumedSessionId('pi --session ses-1/full-id'), 'ses-1/full-id');
   assert.equal(extractResumedSessionId('codex resume --last'), '');
   assert.equal(extractResumedSessionId(withCodexNativeProvider('codex resume abc-1')), 'abc-1');
   assert.equal(sessionTitlePreview('  修好   分屏空窗格  '), '修好 分屏空窗格');
@@ -241,4 +244,15 @@ test('Command Code 的命令名与别名：Windows 用 cmdc，旧写法归到 cm
   assert.equal(extractResumedSessionId('command-code --session s-9'), 's-9');
   assert.equal(isGenericContinueCommand('cmdc --continue'), true);
   assert.equal(cliCommandName('claude', true), 'claude');
+});
+
+test('Pi 精确续接使用完整 session id，恢复时由历史查询决定是否续接', () => {
+  assert.equal(prefersExactResume('pi'), true);
+  assert.equal(resumeCliCommand('pi', 'session-1'), 'pi --session session-1');
+  assert.equal(extractResumedSessionId('pi --session=session-2'), 'session-2');
+  assert.equal(extractResumedSessionId('pi --session'), '');
+  assert.equal(isGenericContinueCommand('pi --continue'), true);
+  assert.equal(restoredCliCommand('pi'), 'pi');
+  assert.equal(restoredCliCommand('pi --continue'), 'pi --continue');
+  assert.equal(restoredCliCommand('pi --session session-1'), 'pi --session session-1');
 });

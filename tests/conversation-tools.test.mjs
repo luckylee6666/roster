@@ -14,11 +14,11 @@ import {
 test('对话 Provider 基于统一 CLI 登记并为未知工具提供只读回退', () => {
   assert.deepEqual(
     CONVERSATION_PROVIDERS.map(provider => provider.id),
-    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd'],
+    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi'],
   );
   assert.deepEqual(
     CONVERSATION_PROVIDERS.filter(provider => provider.runnable).map(provider => provider.id),
-    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd'],
+    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi'],
   );
   const unknown = conversationProvider(' FutureCLI ', '未来模型');
   assert.deepEqual(
@@ -28,9 +28,9 @@ test('对话 Provider 基于统一 CLI 登记并为未知工具提供只读回�
   assert.match(unknown.unavailableReason, /查看历史会话/);
 });
 
-test('八家已安装 CLI 都可进入对话模式，模型与推理强度按能力映射', () => {
-  const options = conversationProviderOptions(['qwen', 'codex', 'claude', 'mimo', 'grok', 'agy', 'unknown']);
-  assert.deepEqual(options.map(provider => provider.id), ['claude', 'grok', 'codex', 'agy', 'qwen', 'mimo']);
+test('已接入 CLI 都可进入对话模式，模型与推理强度按能力映射', () => {
+  const options = conversationProviderOptions(['qwen', 'codex', 'claude', 'mimo', 'grok', 'agy', 'pi', 'unknown']);
+  assert.deepEqual(options.map(provider => provider.id), ['claude', 'grok', 'codex', 'agy', 'qwen', 'mimo', 'pi']);
   assert.equal(options.every(provider => provider.runnable), true);
   const opencode = conversationProvider('opencode');
   const mimo = conversationProvider('mimo');
@@ -51,6 +51,11 @@ test('八家已安装 CLI 都可进入对话模式，模型与推理强度按能
   assert.equal(commandcode.mark, 'Cc');
   assert.equal(commandcode.supportsModel, true);
   assert.equal(commandcode.supportsEffort, true);
+  const pi = conversationProvider('pi');
+  assert.equal(pi.runnable, true);
+  assert.equal(pi.mark, 'Pi');
+  assert.equal(pi.supportsModel, true);
+  assert.equal(pi.supportsEffort, true);
 });
 
 test('历史键同时包含工具和 id，相同会话 id 不会跨 CLI 冲突', () => {

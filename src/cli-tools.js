@@ -31,6 +31,7 @@ export const CLI_TOOLS = Object.freeze([
       Object.freeze({ label: '完全访问（--yolo）', args: '--yolo', danger: true }),
     ]),
   }),
+  Object.freeze({ id: 'pi', label: 'pi', keywords: Object.freeze(['pi coding agent', 'earendil-works']) }),
 ]);
 
 export const CLI_TOOL_IDS = Object.freeze(CLI_TOOLS.map(tool => tool.id));

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import * as restore from '../src/session-restore-utils.js';
 import { cliDisplayLabel } from '../src/cli-tools.js';
+import { latestHistorySession, latestResumableHistorySession } from '../src/project-history-utils.js';
 
 const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const imports = main.match(/import \{([^}]+)\} from '\.\/session-restore-utils\.js'/)[1]
@@ -11,10 +12,15 @@ const imports = main.match(/import \{([^}]+)\} from '\.\/session-restore-utils\.
 // (the original cause of silently lost restored tabs) is a runtime failure.
 const source = main.slice(main.indexOf('let pendingSessionLayout ='), main.indexOf('// ===== Prompt/Snippet 库'));
 
-function harness(layout, { failAt = [], throwAt = [], closeAt = [] } = {}) {
+function harness(layout, {
+  failAt = [],
+  throwAt = [],
+  closeAt = [],
+  history = { groups: [{ tool: 'cmd', sessions: [{ id: 'native-session' }] }] },
+} = {}) {
   let saved = JSON.stringify(layout);
   let prompt;
-  const calls = [], logs = [], messages = [], snapshots = [];
+  const calls = [], logs = [], messages = [], snapshots = [], historyQueries = [];
   const sessions = new Map();
   let api;
   const deps = {
@@ -26,9 +32,9 @@ function harness(layout, { failAt = [], throwAt = [], closeAt = [] } = {}) {
     msg: text => messages.push(text),
     projectTabName: (_, name) => name,
     cliLaunchVariants: () => [{ args: '--yolo' }],
-    loadProjectSessionHistory: async () => ({ groups: [] }),
-    latestResumableHistorySession: () => ({ id: 'native-session' }),
-    latestHistorySession: () => null,
+    loadProjectSessionHistory: async cwd => { historyQueries.push(cwd); return history; },
+    latestResumableHistorySession,
+    latestHistorySession,
     createSession: async options => {
       const index = calls.length;
       calls.push(options);
@@ -44,8 +50,8 @@ function harness(layout, { failAt = [], throwAt = [], closeAt = [] } = {}) {
       return id;
     },
   };
-  api = new Function(...Object.keys(deps), `${source}\nreturn { maybeRestoreSessions, persistSessionLayout, restoreSessions, forgetPendingSessionRestore };`)(...Object.values(deps));
-  return { api, sessions, calls, logs, messages, snapshots, saved: () => JSON.parse(saved), prompt: () => prompt };
+  api = new Function(...Object.keys(deps), `${source}\nreturn { maybeRestoreSessions, persistSessionLayout, restoreSessions, forgetPendingSessionRestore, resumeCommandForRestoredTab };`)(...Object.values(deps));
+  return { api, sessions, calls, logs, messages, snapshots, historyQueries, saved: () => JSON.parse(saved), prompt: () => prompt };
 }
 
 const layout = ['cmd --yolo', 'codex', 'claude', 'opencode', 'cmd'].map((autoCmd, index) => ({ cwd: `/project/${index}`, name: `项目${index}`, autoCmd }));
@@ -83,6 +89,23 @@ test('显式失败和抛错都保留原条目，后续标签继续恢复并记�
   await retry.prompt().onConfirm();
   assert.equal(retry.calls.length, 2);
   assert.match(retry.messages.at(-1), /失败 0 个/);
+});
+
+test('Pi 恢复标签先按项目历史查完整 ID，再精确续接；无历史时启动裸命令', async () => {
+  const cwd = '/project/pi';
+  const sessionId = '018f5e21-4ca0-7a13-9c51-45990f98510a';
+  const withHistory = harness([], {
+    history: { groups: [{ tool: 'pi', sessions: [{ id: sessionId, budget: { blocks: false } }] }] },
+  });
+  assert.equal(
+    await withHistory.api.resumeCommandForRestoredTab(cwd, 'pi'),
+    `pi --session ${sessionId}`,
+  );
+  assert.deepEqual(withHistory.historyQueries, [cwd]);
+
+  const withoutHistory = harness([], { history: { groups: [] } });
+  assert.equal(await withoutHistory.api.resumeCommandForRestoredTab(cwd, 'pi'), 'pi');
+  assert.deepEqual(withoutHistory.historyQueries, [cwd]);
 });
 
 test('取消/替换恢复弹窗并打开新终端，不覆盖尚未恢复的布局', () => {

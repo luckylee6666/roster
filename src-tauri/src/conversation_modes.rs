@@ -211,6 +211,15 @@ const AGENT_MODES: &[ConversationMode] = &[
     ),
 ];
 
+// Pi has no native permission tier or OS sandbox exposed here. This mode is
+// only its explicit built-in tool allowlist; keep the wording limited to that.
+const PI_MODES: &[ConversationMode] = &[mode(
+    "read-tools",
+    "仅读取工具",
+    "Pi 原生 --tools 允许列表仅启用 read、grep、find、ls；这不是权限档或 OS 沙箱",
+    false,
+)];
+
 pub fn modes_for(provider: &str) -> &'static [ConversationMode] {
     match provider {
         "claude" => CLAUDE_MODES,
@@ -220,6 +229,7 @@ pub fn modes_for(provider: &str) -> &'static [ConversationMode] {
         "agy" => AGY_MODES,
         "opencode" | "mimo" => AGENT_MODES,
         "cmd" => COMMANDCODE_MODES,
+        "pi" => PI_MODES,
         _ => &[],
     }
 }
@@ -254,7 +264,7 @@ mod tests {
     #[test]
     fn every_provider_starts_read_only_and_rejects_unknown_modes() {
         for provider in [
-            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd",
+            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd", "pi",
         ] {
             let modes = modes_for(provider);
             assert!(!modes.is_empty(), "{provider} 应该有模式表");

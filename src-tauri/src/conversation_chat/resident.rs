@@ -1,8 +1,8 @@
-//! Bounded resident sessions for the six non-Codex structured adapters.
+//! Bounded resident sessions for non-Codex structured adapters.
 //! No PTY parsing, shell-evaluated prompts, shared leader, or public listener.
 use super::*;
 use crate::codex_chat::{register_process_tree, stop_child, ProcessTreeGuard};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::process::{Child, ChildStdin};
@@ -10,11 +10,15 @@ use std::sync::mpsc::{self, Receiver};
 
 const IDLE_TTL: Duration = Duration::from_secs(30 * 60);
 const MAX_IDLE: usize = 4;
+const PI_READ_TOOLS: &str = "read,grep,find,ls";
 type Sink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 type Lines = Receiver<Result<Option<String>, String>>;
 
 pub(super) fn supports(id: &str) -> bool {
-    matches!(id, "claude" | "agy" | "qwen" | "grok" | "opencode" | "mimo")
+    matches!(
+        id,
+        "claude" | "agy" | "qwen" | "grok" | "opencode" | "mimo" | "pi"
+    )
 }
 
 #[derive(Default)]
@@ -261,6 +265,95 @@ fn command(spec: &ProviderSpec, binary: PathBuf, r: &HeadlessStart) -> Command {
     cmd
 }
 
+fn pi_command(binary: PathBuf, r: &HeadlessStart) -> Result<Command, String> {
+    let cwd = r.cwd.to_str().ok_or("项目路径无法编码为 Pi 会话路径")?;
+    let session_dir = crate::project_sessions::pi_session_directory(cwd)?;
+    let resume_path = if r.thread_id.is_empty() {
+        None
+    } else {
+        Some(crate::project_sessions::resolve_pi_session_path(
+            cwd,
+            &r.thread_id,
+        )?)
+    };
+    pi_command_for_paths(binary, r, session_dir, resume_path)
+}
+
+fn pi_command_for_paths(
+    binary: PathBuf,
+    r: &HeadlessStart,
+    session_dir: PathBuf,
+    resume_path: Option<PathBuf>,
+) -> Result<Command, String> {
+    if !session_dir.is_absolute() {
+        return Err("Pi 项目会话目录必须是绝对路径".into());
+    }
+    if r.thread_id.is_empty() != resume_path.is_none() {
+        return Err("Pi 历史会话路径与续接 ID 不匹配".into());
+    }
+    let mut command = Command::new(binary);
+    command
+        .args([
+            "--mode",
+            "rpc",
+            "--offline",
+            "--tools",
+            PI_READ_TOOLS,
+            "--no-mcp",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--no-approve",
+            "--session-dir",
+        ])
+        .arg(session_dir);
+    if !r.model.is_empty() {
+        command.args(["--model", &r.model]);
+    }
+    if !r.effort.is_empty() {
+        command.args(["--thinking", &r.effort]);
+    }
+    if let Some(path) = resume_path {
+        if !path.is_absolute() {
+            return Err("Pi 历史会话路径无效".into());
+        }
+        command.args(["--session"]).arg(path);
+    }
+    Ok(command)
+}
+
+fn preserve_loopback_proxy_bypass(command: &mut Command) {
+    let mut entries = Vec::new();
+    for key in ["NO_PROXY", "no_proxy"] {
+        let configured = command
+            .get_envs()
+            .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+            .and_then(|(_, value)| value)
+            .map(std::ffi::OsStr::to_os_string)
+            .or_else(|| std::env::var_os(key));
+        if let Some(value) = configured.and_then(|value| value.into_string().ok()) {
+            entries.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    for local in ["localhost", "127.0.0.1", "::1"] {
+        if !entries
+            .iter()
+            .any(|entry| entry.eq_ignore_ascii_case(local))
+        {
+            entries.push(local.into());
+        }
+    }
+    let combined = entries.join(",");
+    command.env("NO_PROXY", &combined).env("no_proxy", combined);
+}
+
 fn signature(spec: &ProviderSpec, r: &HeadlessStart, command: &Command) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     (
@@ -273,6 +366,14 @@ fn signature(spec: &ProviderSpec, r: &HeadlessStart, command: &Command) -> u64 {
     )
         .hash(&mut hash);
     command.get_program().hash(&mut hash);
+    if spec.id == "pi" {
+        let mut arguments: Vec<_> = command.get_args().map(|arg| arg.to_os_string()).collect();
+        if let Some(index) = arguments.iter().position(|arg| arg == "--session") {
+            let end = (index + 2).min(arguments.len());
+            arguments.drain(index..end);
+        }
+        arguments.hash(&mut hash);
+    }
     command.get_envs().collect::<Vec<_>>().hash(&mut hash);
     let mut files = vec![PathBuf::from(command.get_program())];
     if let Some(home) = dirs::home_dir() {
@@ -306,6 +407,35 @@ fn signature(spec: &ProviderSpec, r: &HeadlessStart, command: &Command) -> u64 {
     for file in files {
         if let Ok(meta) = std::fs::metadata(file) {
             (meta.len(), meta.modified().ok()).hash(&mut hash);
+        }
+    }
+    if spec.id == "pi" {
+        let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".pi").join("agent")));
+        let session_dir = std::env::var_os("PI_CODING_AGENT_SESSION_DIR").map(PathBuf::from);
+        let managed_root = std::env::var_os("PI_MANAGED_INSTALL_ROOT")
+            .map(PathBuf::from)
+            .or_else(|| {
+                dirs::home_dir().map(|home| home.join(".pi").join("agent").join("install"))
+            });
+        for path in [
+            agent_dir.as_ref().map(|dir| dir.join("settings.json")),
+            agent_dir.as_ref().map(|dir| dir.join("models.json")),
+            agent_dir.as_ref().map(|dir| dir.join("auth.json")),
+            managed_root
+                .as_ref()
+                .map(|root| root.join("current-version")),
+            session_dir,
+            Some(r.cwd.join(".pi").join("settings.json")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            path.hash(&mut hash);
+            if let Ok(meta) = std::fs::metadata(path) {
+                (meta.len(), meta.modified().ok()).hash(&mut hash);
+            }
         }
     }
     hash.finish()
@@ -345,6 +475,9 @@ pub(super) fn start(
     spec: &ProviderSpec,
     r: HeadlessStart,
 ) -> Result<ConversationChatStartResult, String> {
+    if spec.id == "pi" && (r.slash.is_some() || r.prompt.trim_start().starts_with('/')) {
+        return Err("Pi 对话暂不支持 slash 命令".into());
+    }
     let run_id = r.run_id.clone();
     let provider_id = spec.id.to_string();
     let out_run = run_id.clone();
@@ -352,7 +485,13 @@ pub(super) fn start(
     let sink: Sink = Arc::new(move |kind, data| emit(&app, &out_run, &out_provider, kind, data));
     let cancelled = crate::codex_chat::reserve_run(state, &r.project_id, &run_id)?;
     let result = crate::cli_detect::resolve_registered_cli_bin(spec.binary)
-        .map(|bin| command(spec, bin, &r))
+        .and_then(|bin| {
+            if spec.id == "pi" {
+                pi_command(bin, &r)
+            } else {
+                Ok(command(spec, bin, &r))
+            }
+        })
         .and_then(|cmd| start_reserved(state, *spec, r, cmd, cancelled, sink));
     if let Err(error) = result {
         crate::codex_chat::release_run(state, &run_id);
@@ -383,6 +522,9 @@ fn start_reserved(
         command.env(key, noninteractive_config(inherited.as_deref())?);
     }
     crate::proxy_settings::apply_to_std_command(&mut command);
+    if spec.id == "pi" {
+        preserve_loopback_proxy_bypass(&mut command);
+    }
     let sig = signature(&spec, &r, &command);
     let mut pool = state
         .other_resident
@@ -441,9 +583,15 @@ fn start_reserved(
                 events: 0,
                 sent_text: false,
                 saw_thought: false,
+                pi_current_message: 0,
+                pi_message_deltas: HashMap::new(),
+                pi_failed_message: false,
+                pi_tool_ids: HashSet::new(),
                 provider: spec.id,
             };
-            if matches!(spec.id, "grok" | "opencode" | "mimo") {
+            if spec.id == "pi" {
+                turn.pi(&r, reused)
+            } else if matches!(spec.id, "grok" | "opencode" | "mimo") {
                 turn.acp(&r, reused)
             } else {
                 turn.stream(&r, reused)
@@ -519,6 +667,10 @@ struct Turn<'a> {
     events: usize,
     sent_text: bool,
     saw_thought: bool,
+    pi_current_message: u64,
+    pi_message_deltas: HashMap<u64, HashMap<u64, String>>,
+    pi_failed_message: bool,
+    pi_tool_ids: HashSet<String>,
     provider: &'static str,
 }
 impl Turn<'_> {
@@ -751,6 +903,193 @@ impl Turn<'_> {
                     self.acp_update(&value["params"]["update"])?;
                 }
             }
+        }
+    }
+
+    fn pi_command(&mut self, kind: &str, params: Value) -> Result<Value, String> {
+        let id = format!("roster-{}", self.session.next_id);
+        self.session.next_id += 1;
+        let mut command = params;
+        command["id"] = json!(id);
+        command["type"] = json!(kind);
+        self.session.send(&command)?;
+        loop {
+            let value = self.read()?;
+            if value["type"] == "response" && value["id"] == id {
+                if value["success"] != true {
+                    return Err(format!("Pi RPC {kind} 命令失败"));
+                }
+                return Ok(value["data"].clone());
+            }
+            // Startup notifications carry no user-facing content. During a run
+            // the dedicated event loop below handles and filters every event.
+        }
+    }
+
+    fn pi_event(&mut self, value: &Value) -> Result<(), String> {
+        match value["type"].as_str().unwrap_or("") {
+            "message_start"
+                if value.pointer("/message/role").and_then(Value::as_str) == Some("assistant") =>
+            {
+                self.pi_current_message = self.pi_current_message.saturating_add(1);
+                self.pi_message_deltas
+                    .insert(self.pi_current_message, HashMap::new());
+            }
+            "message_update" => {
+                let update = &value["assistantMessageEvent"];
+                if update["type"] == "text_delta" {
+                    let text = update["delta"].as_str().unwrap_or("");
+                    if !text.is_empty() {
+                        if self.pi_current_message == 0 {
+                            self.pi_current_message = 1;
+                        }
+                        let block = update["contentIndex"].as_u64().unwrap_or(0);
+                        self.pi_message_deltas
+                            .entry(self.pi_current_message)
+                            .or_default()
+                            .entry(block)
+                            .or_default()
+                            .push_str(text);
+                        self.sent_text = true;
+                        self.event("assistant_delta", json!({"text":text}))?;
+                    }
+                }
+                // thinking and serialized tool-call arguments deliberately never
+                // leave this adapter.
+            }
+            "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+                let id = safe_event_id(value["toolCallId"].as_str().unwrap_or(""), "");
+                if id.is_empty() {
+                    return Ok(());
+                }
+                if value["type"] == "tool_execution_start" {
+                    if self.pi_tool_ids.contains(&id) {
+                        return Ok(());
+                    }
+                    if self.pi_tool_ids.len() >= 256 {
+                        return Err("Pi 工具事件超过安全上限".into());
+                    }
+                    self.pi_tool_ids.insert(id.clone());
+                } else if !self.pi_tool_ids.contains(&id) {
+                    return Ok(());
+                }
+                let status = if value["type"] == "tool_execution_end" {
+                    if value["isError"] == true {
+                        "failed"
+                    } else {
+                        "completed"
+                    }
+                } else {
+                    "inProgress"
+                };
+                self.event("activity", tool_activity(&id, "read", status))?;
+            }
+            "message_end" => {
+                let message = &value["message"];
+                if message["role"] == "assistant" {
+                    let stop_reason = message["stopReason"].as_str().unwrap_or("");
+                    self.pi_failed_message = stop_reason == "error";
+                    let final_blocks: Vec<(u64, &str)> = match &message["content"] {
+                        Value::String(text) => vec![(0, text.as_str())],
+                        Value::Array(blocks) => blocks
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, block)| block["type"] == "text")
+                            .filter_map(|(index, block)| {
+                                Some((index as u64, block["text"].as_str()?))
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    for (block, final_text) in final_blocks {
+                        let emitted = self
+                            .pi_message_deltas
+                            .get(&self.pi_current_message)
+                            .and_then(|blocks| blocks.get(&block))
+                            .map(String::as_str)
+                            .unwrap_or("");
+                        if let Some(missing) = final_text.strip_prefix(emitted) {
+                            if !missing.is_empty() {
+                                self.sent_text = true;
+                                self.pi_message_deltas
+                                    .entry(self.pi_current_message)
+                                    .or_default()
+                                    .entry(block)
+                                    .or_default()
+                                    .push_str(missing);
+                                self.event("assistant_delta", json!({"text":missing}))?;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn pi(&mut self, r: &HeadlessStart, reused: bool) -> Result<(), String> {
+        let state = self.pi_command("get_state", json!({}))?;
+        if state["isStreaming"] == true
+            || state["isCompacting"] == true
+            || state["pendingMessageCount"].as_u64().unwrap_or(0) > 0
+        {
+            return Err("Pi 会话仍有活动或排队任务，已拒绝发送新输入".into());
+        }
+        let session_id = state["sessionId"].as_str().unwrap_or("");
+        if !r.thread_id.is_empty() && session_id != r.thread_id {
+            return Err("Pi 没有恢复指定的历史会话".into());
+        }
+        if session_id.is_empty() {
+            return Err("Pi 没有返回会话 ID".into());
+        }
+        // Pi 1.2.0 get_state does not expose active tools. The immutable startup
+        // argv above is therefore the enforcement point; do not imply runtime
+        // verification or an OS sandbox.
+        self.set_thread(session_id)?;
+        self.ready(reused);
+        // Pi's RPC prompt treats slash-prefixed input as extension commands.
+        // Extensions/resources are disabled, so fail closed if Roster did not
+        // resolve a supported local command before reaching this adapter.
+        if r.prompt.trim_start().starts_with('/') || r.slash.is_some() {
+            return Err("Pi 对话暂不支持 slash 命令".into());
+        }
+        let id = format!("roster-prompt-{}", self.session.next_id);
+        self.session.next_id += 1;
+        self.session.send(&json!({
+            "id":id,
+            "type":"prompt",
+            "message":r.prompt
+        }))?;
+        let mut accepted = false;
+        loop {
+            let value = self.read()?;
+            if value["type"] == "response" && value["id"] == id {
+                if value["success"] != true {
+                    return Err("Pi 未接受本轮输入".into());
+                }
+                accepted = true;
+                if value.pointer("/data/disposition").and_then(Value::as_str) == Some("handled") {
+                    return Err("Pi 将输入当作命令处理，本轮未启动".into());
+                }
+                continue;
+            }
+            if value["type"] == "agent_settled" {
+                if !accepted {
+                    return Err("Pi 在确认接受输入前结束了本轮".into());
+                }
+                if value["aborted"] == true {
+                    return Err("Pi 本轮已取消".into());
+                }
+                if self.pi_failed_message {
+                    return Err("Pi 本轮运行失败".into());
+                }
+                if self.sent_text {
+                    return Ok(());
+                }
+                return Err("Pi 完成本轮但没有返回可见回复".into());
+            }
+            self.pi_event(&value)?;
         }
     }
     fn acp_text(content: &Value) -> String {
@@ -1027,6 +1366,27 @@ fn parse_agy(value: &Value) -> ParsedLine {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    struct PiSmokeServer {
+        child: Child,
+        tree: ProcessTreeGuard,
+    }
+    #[cfg(unix)]
+    impl Drop for PiSmokeServer {
+        fn drop(&mut self) {
+            self.tree.terminate();
+            stop_child(&mut self.child, false);
+        }
+    }
+    #[cfg(unix)]
+    struct PiPoolGuard<'a>(&'a ResidentPool);
+    #[cfg(unix)]
+    impl Drop for PiPoolGuard<'_> {
+        fn drop(&mut self) {
+            self.0.shutdown();
+        }
+    }
+
     fn request(cwd: &Path, run: &str, thread: &str, provider: &str) -> HeadlessStart {
         HeadlessStart {
             project_id: cwd.to_string_lossy().into_owned(),
@@ -1079,6 +1439,35 @@ mod tests {
             state,
             *provider_spec(provider).unwrap(),
             r,
+            cmd,
+            cancelled,
+            sink,
+        )
+        .unwrap();
+        rx
+    }
+    #[cfg(unix)]
+    fn start_pi_fake(
+        state: &ConversationChatState,
+        cwd: &Path,
+        run: &str,
+        thread: &str,
+        scenario: &str,
+    ) -> Receiver<(String, Value)> {
+        let (tx, rx) = mpsc::channel();
+        let sink: Sink = Arc::new(move |kind, data| {
+            let _ = tx.send((kind.into(), data));
+        });
+        let mut cmd = Command::new("node");
+        cmd.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-pi-rpc.cjs"))
+            .env("ROSTER_PI_SCENARIO", scenario)
+            .env("ROSTER_PI_LOG", cwd.join("pi-requests.jsonl"));
+        let project_id = cwd.to_string_lossy().into_owned();
+        let cancelled = crate::codex_chat::reserve_run(state, &project_id, run).unwrap();
+        start_reserved(
+            state,
+            *provider_spec("pi").unwrap(),
+            request(cwd, run, thread, "pi"),
             cmd,
             cancelled,
             sink,
@@ -1142,6 +1531,73 @@ mod tests {
                     .any(|a| a == ["--reasoning-effort", "high"]));
             }
         }
+    }
+
+    #[test]
+    fn pi_is_registered_with_only_its_read_tool_mode() {
+        let mode = crate::conversation_modes::resolve("pi", "").unwrap();
+        assert_eq!(mode.id, "read-tools");
+        assert!(!mode.writes);
+        assert!(!mode.unsandboxed);
+        assert!(mode.hint.contains("不是权限档或 OS 沙箱"));
+        assert!(crate::conversation_modes::resolve("pi", "build").is_err());
+        let tools: Vec<_> = PI_READ_TOOLS.split(',').collect();
+        assert_eq!(tools, ["read", "grep", "find", "ls"]);
+        for unsafe_tool in ["bash", "powershell", "edit", "write", "codemode"] {
+            assert!(
+                !tools.contains(&unsafe_tool),
+                "Pi allowlist must exclude {unsafe_tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn pi_rpc_command_uses_fixed_read_only_resources_and_validated_resume_path() {
+        let root = tempfile::tempdir().unwrap();
+        let history = root.path().join("pi-history");
+        let r = request(root.path(), "pi-args", "", "pi");
+        let command =
+            pi_command_for_paths(PathBuf::from("/bin/pi"), &r, history.clone(), None).unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.windows(2).any(|pair| pair == ["--mode", "rpc"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--tools", PI_READ_TOOLS]));
+        for option in [
+            "--offline",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--no-approve",
+        ] {
+            assert!(args.iter().any(|arg| arg == option), "missing {option}");
+        }
+        assert!(!args.iter().any(|arg| matches!(
+            arg.as_str(),
+            "--yolo" | "--no-context-files" | "write" | "bash"
+        )));
+        assert!(pi_command_for_paths(
+            PathBuf::from("/bin/pi"),
+            &r,
+            history.clone(),
+            Some(history.join("session.jsonl"))
+        )
+        .is_err());
+        let mut resumed = r;
+        resumed.thread_id = "pi-session-id".into();
+        let command = pi_command_for_paths(
+            PathBuf::from("/bin/pi"),
+            &resumed,
+            history.clone(),
+            Some(history.join("session.jsonl")),
+        )
+        .unwrap();
+        assert!(command.get_args().any(|arg| arg == "--session"));
     }
     #[test]
     fn agy_current_protocol_keeps_text_and_errors_without_reasoning() {
@@ -1249,6 +1705,362 @@ mod tests {
                 .sessions
                 .is_empty());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pi_rpc_reuses_session_filters_thought_and_tool_arguments_and_waits_for_settled() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path();
+        let state = ConversationChatState::default();
+        let first = until(
+            &start_pi_fake(&state, cwd, "pi-first", "", "normal"),
+            "completed",
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|(kind, _)| kind == "assistant_delta")
+                .map(|(_, data)| data["text"].as_str().unwrap_or(""))
+                .collect::<String>(),
+            "回复1"
+        );
+        let session = state.other_resident.inner.lock().unwrap().sessions[cwd]
+            .thread
+            .clone();
+        assert_eq!(session, "fake-pi-session");
+        let pid = state.other_resident.inner.lock().unwrap().sessions[cwd]
+            .process
+            .lock()
+            .unwrap()
+            .id();
+        let second = until(
+            &start_pi_fake(&state, cwd, "pi-second", &session, "normal"),
+            "completed",
+        );
+        assert_eq!(
+            second
+                .iter()
+                .filter(|(kind, _)| kind == "assistant_delta")
+                .map(|(_, data)| data["text"].as_str().unwrap_or(""))
+                .collect::<String>(),
+            "回复2"
+        );
+        assert_eq!(
+            state.other_resident.inner.lock().unwrap().sessions[cwd]
+                .process
+                .lock()
+                .unwrap()
+                .id(),
+            pid
+        );
+        assert!(first
+            .iter()
+            .chain(second.iter())
+            .all(|(kind, data)| !(kind == "assistant_delta"
+                && data["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("private thought"))));
+        assert!(first
+            .iter()
+            .chain(second.iter())
+            .all(|(_, data)| !data.to_string().contains("/private/path")));
+        let requests = std::fs::read_to_string(cwd.join("pi-requests.jsonl")).unwrap();
+        assert_eq!(requests.matches("\"type\":\"prompt\"").count(), 2);
+        assert_eq!(state.active.lock().unwrap().len(), 0);
+        state.other_resident.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pi_final_text_retry_abort_and_tool_error_events_are_normalized() {
+        for (scenario, terminal, expected) in [
+            ("final-only", "completed", "最终回复"),
+            ("retry", "completed", "重试成功"),
+            ("tool-failed", "completed", "回复1"),
+            ("aborted", "error", "回复1"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let state = ConversationChatState::default();
+            let events = until(
+                &start_pi_fake(&state, root.path(), "pi-scenario", "", scenario),
+                terminal,
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|(kind, _)| kind == "assistant_delta")
+                    .map(|(_, data)| data["text"].as_str().unwrap_or(""))
+                    .collect::<String>(),
+                expected,
+                "{scenario}"
+            );
+            if scenario == "tool-failed" {
+                let activities: Vec<_> = events
+                    .iter()
+                    .filter(|(kind, _)| kind == "activity")
+                    .collect();
+                assert_eq!(activities.len(), 2, "重复 start 应去重，end 应保留");
+                assert!(activities
+                    .iter()
+                    .any(|(_, data)| data["status"] == "failed"));
+                assert!(activities.iter().all(|(_, data)| data["id"] == "call-one"));
+            }
+            assert!(events
+                .iter()
+                .all(|(kind, _)| kind != "completed" || scenario != "aborted"));
+            state.other_resident.shutdown();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pi_agent_end_alone_does_not_complete_and_cancel_reaps_process() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let rx = start_pi_fake(&state, root.path(), "pi-hang", "", "hang");
+        until(&rx, "assistant_delta");
+        crate::codex_chat::cancel(&state, "pi-hang").unwrap();
+        until(&rx, "cancelled");
+        assert!(state
+            .other_resident
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .is_empty());
+        assert!(state.active.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pi_agent_end_without_agent_settled_is_not_reported_as_success() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let events = until(
+            &start_pi_fake(&state, root.path(), "pi-no-settle", "", "agent-end-only"),
+            "error",
+        );
+        assert!(events.iter().all(|(kind, _)| kind != "completed"));
+        assert!(state
+            .other_resident
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .is_empty());
+        assert!(state.active.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pi_oversized_rpc_record_retires_the_resident_process() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        until(
+            &start_pi_fake(&state, root.path(), "pi-oversized", "", "oversized"),
+            "error",
+        );
+        assert!(state
+            .other_resident
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .is_empty());
+        assert!(state.active.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "手动集成验证：仅连接本测试启动的 localhost synthetic Pi provider"]
+    fn installed_pi_runs_two_localhost_only_turns_with_read_tools() {
+        use std::io::BufRead;
+        use std::os::unix::process::CommandExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let config = root.path().join("agent-config");
+        let history = root.path().join("history");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::write(project.join("probe.txt"), "ROSTER_PI_READ_OK").unwrap();
+
+        let mut server = Command::new("node");
+        server
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi-smoke-server.cjs"))
+            .arg(&project)
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let server = server.spawn().unwrap();
+        let server_tree = crate::codex_chat::register_process_tree(&server).unwrap();
+        let mut server = PiSmokeServer {
+            child: server,
+            tree: server_tree,
+        };
+        let mut server_ready = String::new();
+        BufReader::new(server.child.stdout.take().unwrap())
+            .read_line(&mut server_ready)
+            .unwrap();
+        let port = serde_json::from_str::<Value>(&server_ready).unwrap()["port"]
+            .as_u64()
+            .unwrap();
+        let models = json!({
+            "providers": {
+                "roster-test": {
+                    "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+                    "api": "openai-completions",
+                    "apiKey": "local-only",
+                    "models": [{
+                        "id": "pi-test", "reasoning": false, "input": ["text"],
+                        "contextWindow": 8192, "maxTokens": 256,
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+                    }]
+                }
+            }
+        });
+        std::fs::write(
+            config.join("models.json"),
+            serde_json::to_vec(&models).unwrap(),
+        )
+        .unwrap();
+
+        let mut first_r = request(&project, "pi-local-first", "", "pi");
+        first_r.model = "roster-test/pi-test".into();
+        first_r.effort = "off".into();
+        first_r.prompt = "读取 probe.txt 并报告内容".into();
+        let binary = crate::cli_detect::resolve_registered_cli_bin("pi").unwrap();
+        let mut first_command =
+            pi_command_for_paths(binary.clone(), &first_r, history.clone(), None).unwrap();
+        first_command
+            .env("PI_CODING_AGENT_DIR", &config)
+            .env("PI_TELEMETRY", "0")
+            .env("PI_CODING_AGENT_SESSION_DIR", &history);
+        let state = ConversationChatState::default();
+        let _pool_guard = PiPoolGuard(&state.other_resident);
+        let (tx, rx) = mpsc::channel();
+        let sink: Sink = Arc::new(move |kind, data| {
+            let _ = tx.send((kind.into(), data));
+        });
+        let cancelled =
+            crate::codex_chat::reserve_run(&state, &first_r.project_id, &first_r.run_id).unwrap();
+        start_reserved(
+            &state,
+            *provider_spec("pi").unwrap(),
+            first_r,
+            first_command,
+            cancelled,
+            sink,
+        )
+        .unwrap();
+        let first = until(&rx, "completed");
+        assert!(first.iter().any(
+            |(kind, data)| kind == "assistant_delta" && data["text"] == "PI_ROSTER_TURN_ONE_OK"
+        ));
+        let (thread_id, pid) = {
+            let pool = state.other_resident.inner.lock().unwrap();
+            let session = &pool.sessions[&project];
+            let pid = session.process.lock().unwrap().id();
+            (session.thread.clone(), pid)
+        };
+        let resume_path = std::fs::read_dir(&history)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .expect("Pi 应保存本地历史文件");
+
+        let mut second_r = request(&project, "pi-local-second", &thread_id, "pi");
+        second_r.model = "roster-test/pi-test".into();
+        second_r.effort = "off".into();
+        second_r.prompt = "继续并确认第二轮".into();
+        let mut second_command =
+            pi_command_for_paths(binary, &second_r, history.clone(), Some(resume_path)).unwrap();
+        second_command
+            .env("PI_CODING_AGENT_DIR", &config)
+            .env("PI_TELEMETRY", "0")
+            .env("PI_CODING_AGENT_SESSION_DIR", &history);
+        let (tx, rx) = mpsc::channel();
+        let sink: Sink = Arc::new(move |kind, data| {
+            let _ = tx.send((kind.into(), data));
+        });
+        let cancelled =
+            crate::codex_chat::reserve_run(&state, &second_r.project_id, &second_r.run_id).unwrap();
+        start_reserved(
+            &state,
+            *provider_spec("pi").unwrap(),
+            second_r,
+            second_command,
+            cancelled,
+            sink,
+        )
+        .unwrap();
+        let second = until(&rx, "completed");
+        assert!(second.iter().any(
+            |(kind, data)| kind == "assistant_delta" && data["text"] == "PI_ROSTER_TURN_TWO_OK"
+        ));
+        {
+            let pool = state.other_resident.inner.lock().unwrap();
+            let session = &pool.sessions[&project];
+            assert_eq!(session.thread, thread_id);
+            assert_eq!(session.process.lock().unwrap().id(), pid);
+        }
+        let model_requests =
+            std::fs::read_to_string(project.join("pi-model-requests.jsonl")).unwrap();
+        let requests: Vec<Value> = model_requests
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            requests.len() >= 3,
+            "第1轮读工具与最终回答、第2轮回答都应经过本地模型端点"
+        );
+        let mut offered = requests[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        offered.sort_unstable();
+        assert_eq!(offered, ["find", "grep", "ls", "read"]);
+        assert!(requests.iter().all(|request| {
+            let tools = request["tools"].as_array().cloned().unwrap_or_default();
+            tools
+                .iter()
+                .all(|tool| !matches!(tool.as_str(), Some("write" | "bash" | "powershell")))
+        }));
+        let tool_results: Vec<_> = requests
+            .iter()
+            .flat_map(|request| request["toolResults"].as_array().into_iter().flatten())
+            .collect();
+        assert!(tool_results.iter().any(|result| result["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("ROSTER_PI_READ_OK")));
+        let denied_write = tool_results
+            .iter()
+            .find(|result| result["tool_call_id"] == "write-probe")
+            .expect("未登记的 write tool 应收到失败结果");
+        let denied_text = denied_write["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        assert!(
+            denied_text.contains("error")
+                || denied_text.contains("not found")
+                || denied_text.contains("not available")
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("probe.txt")).unwrap(),
+            "ROSTER_PI_READ_OK"
+        );
+        drop(server);
     }
     #[cfg(unix)]
     #[test]

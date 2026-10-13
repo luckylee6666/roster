@@ -1717,7 +1717,7 @@ async function startSessionHandoff() {
     );
     // These adapters accept a native initial message. Do not race their TUI
     // initialization by typing into a PTY after a fixed delay.
-    const nativePrompt = ['opencode', 'mimo', 'cmd'].includes(targetTool);
+    const nativePrompt = ['opencode', 'mimo', 'cmd', 'pi'].includes(targetTool);
     createdId = await createProjectToolSession(context.project, cliCommandName(targetTool),
       nativePrompt ? { initialPrompt: prompt } : undefined);
     if (sessionHandoffOperation !== operation) throw new Error('交接任务已失效');

@@ -30,8 +30,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
-/// 手机可选的助手：与对话工作台登记的八家一致，顺序即手机上的展示顺序。
-const PROVIDERS: [(&str, &str); 8] = [
+/// 手机可选的助手：与对话工作台登记的九家一致，顺序即手机上的展示顺序。
+const PROVIDERS: [(&str, &str); 9] = [
     ("claude", "Claude"),
     ("codex", "Codex"),
     ("grok", "Grok"),
@@ -40,6 +40,7 @@ const PROVIDERS: [(&str, &str); 8] = [
     ("qwen", "Qwen"),
     ("mimo", "MiMo Code"),
     ("cmd", "cmd"),
+    ("pi", "pi"),
 ];
 
 /// 同时留快照的运行数。应用总并发上限是 4，这里留足余量防止异常路径漏删。
