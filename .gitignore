@@ -70,7 +70,7 @@ __pycache__/
 /design/guofeng-3d/experimental-depth-relief/
 /design/guofeng-3d/previews/
 /design/guofeng-3d/full-frame-reference/
-# 帧与贴图属于本地设计中间产物（65MB），不入库；脚本、sequence.txt 与 README 保留。
+# 帧与贴图属于本地设计中间产物，不入库；仅保留现用 Retina 构建脚本与 README。
 /design/guofeng-3d/**/*.png
 
 # Stitch 设计系统文档可保留；云端元数据与生成稿属于本地中间产物。

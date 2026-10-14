@@ -11,12 +11,18 @@ All notable changes to this project are documented here. 本项目的更新记�
 - The conversation adapter uses Pi RPC and exposes only `read`, `grep`, `find` and `ls` by default. Pi has no native permission/approval mode or OS sandbox in this integration, and no writable mode is registered. Extensions, MCP, skills and prompt templates are disabled; custom slash expansion is not enabled. Roster's `/model` and `/effort` remain available, passing provider/model IDs through and mapping effort to `--thinking`. Dynamic model/thinking discovery is not treated as authoritative. Pi has no supported subscription quota API here, and no context window is assumed or hard-gated.
 - Pi joins the resident structured-session pool: Codex retains its independent App Server pool, while the other seven resident adapters, including Pi, share a pool of up to four idle processes with a 30-minute idle limit. Command Code (`cmd`) remains the per-turn process exception.
 
+**Maintenance**
+- Remove obsolete game-center planning documents and retired 3D/dance experiment scripts and sequence metadata. Keep the active Retina asset builder, its documentation and production theme assets; existing ignored local art files are untouched.
+
 ### 中文
 
 **新增**
 - 新增第九家 CLI 与对话助手 Pi（`pi`）。开发模式使用原生命令 `pi`；对话历史按转录 header 的项目 `cwd` 和当前 `parentId` 分支隔离，支持预览、按完整 ID 精确续接（`pi --session <完整id>`）、交接，以及删除目标历史文件。Windows 原生初始提示启动只接受 `.exe`，明确拒绝 npm 的 `.cmd` 包装器；不宣称已通过 Windows 实机验收。
 - 对话适配器使用 Pi RPC，默认只开放 `read`、`grep`、`find`、`ls` 只读工具。此次接入没有 Pi 原生权限/审批档位，也不提供 OS 沙箱，不登记可写档；关闭扩展、MCP、skills 与 prompt 模板，不启用自定义 slash 展开。Roster 的 `/model` 和 `/effort` 仍可用：provider/model ID 原样传递，推理强度映射到 `--thinking`。动态发现的模型与 thinking 列表不视为权威全集。Pi 没有可用的订阅额度 API，因此不加入 quota 显示；不猜上下文窗口，也不做硬拦截。
 - Pi 加入常驻结构化会话池：Codex 保留独立 App Server 池，其余七家常驻适配器（含 Pi）共用最多 4 个空闲进程，空闲 30 分钟回收。Command Code（`cmd`）仍是每轮单独启动进程的例外。
+
+**维护**
+- 清理旧游戏中心设计/实施文档，以及退役的 3D、舞蹈实验脚本与序列清单。保留现用 Retina 素材生成脚本、说明和生产主题资源，不删除本地已忽略的美术源文件。
 
 ## v1.9.4
 

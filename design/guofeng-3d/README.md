@@ -1,4 +1,6 @@
-# 黛月华裳人物动效说明
+# 黛月华裳分层素材说明
+
+此目录沿用历史名称 `guofeng-3d`，当前只保留生产主题的 Retina 素材构建脚本与说明，不包含运行时 3D 模型。退役的 3D、舞蹈实验脚本及序列清单已移除；本地被 Git 忽略的旧实验产物不在此次清理范围内。
 
 ## 当前生产方案
 
@@ -16,41 +18,27 @@
 
 [`img2threejs`](https://github.com/img2threejs/img2threejs) 强调的“单图隐藏面不可知、动画部位需要显式层级、视觉结果需要质量门禁”用于本方案的设计取舍；本项目没有复制该仓库的生成代码。
 
-## 本地未跟踪的完整 GLB 实验输出
+## 重建生产素材
 
-本机的 `experimental-full-glb/` 可能保留完整拓扑、骨骼、九个面部 morph 和六个状态动画的全 3D 原型，但该目录已被 Git 忽略，不属于仓库制品。用户验收后认为其人物美术质量不达标，因此它已从生产运行路径和安装包中移除；分层素材异常时直接保留原静态主题。需要继续试验时，应运行下方脚本在本机重新生成，不能假定新 clone 的仓库包含这些输出。
-
-契约名称：
-
-- 骨骼：`Head` / `Neck` / `Chest`
-- 表情：`blinkLeft` / `blinkRight` / `smile` / `frown`
-- 口型：`visemeA` / `visemeI` / `visemeU` / `visemeE` / `visemeO`
-- 动画：`idle` / `thinking` / `success` / `error` / `greeting` / `rest`
-
-Blender 5.1 + MPFB 的当前重建命令：
+应用直接使用已经提交到 `src/assets/` 的生成素材。正常构建和安装不需要重新生成；只有修改主题美术时才需要本地 `source-frames/` 原图、FFmpeg（支持 `cas` 滤镜）与 Pillow。原图已被 Git 忽略，新 clone 不包含它们，须从自己的素材备份恢复，不能用运行时裁剪贴片代替。
 
 ```bash
-BLENDER_USER_RESOURCES=/private/tmp/vibe-blender-user \
-  /Applications/Blender.app/Contents/MacOS/Blender \
-  --background --python-exit-code 1 \
-  --python design/guofeng-3d/build_character.py
+python3 design/guofeng-3d/build_retina_assets.py
 ```
 
-## 生成参考资产
+该命令会覆盖生成的主题素材与坐标元数据，执行后应检查差异并完成下方验收。
 
-- `turnaround-front-threequarter-profile.png`：同一人物的正面、三分之四与侧面造型参考。
-- `expression-viseme-sheet.png`：中性、眨眼、微笑、A/O 口型与皱眉参考。
-- `hanfu-brocade-albedo.png`：深青绿与暗金花云纹的无缝汉服锦缎色图。
+- `design/guofeng-3d/source-frames/term-bg-guofeng-beauty.png`：1586×992 待机底图构建源。
 - `design/guofeng-3d/source-frames/term-character-guofeng-beauty-blink.png`：同一人物、同一画布的自然闭眼构建源；运行时使用双眼组合贴片。
 - `design/guofeng-3d/source-frames/term-character-guofeng-beauty-smile.png`：同一人物、同一画布的闭口微笑构建源；运行时使用嘴部贴片。
-- `design/guofeng-3d/dance-frames/`：保留已退役的舞蹈实验关键帧与 `sequence.txt`，仅用于离线复盘，不随前端运行包发布。该实验会在帧间改变人物身份、手指和锦缎细节，未通过生产质量门禁。
 - `design/guofeng-3d/build_retina_assets.py`：从 `source-frames/` 的 1586×992 构建源一次性生成待机 Retina 底图、四张局部 RGBA 贴片和坐标元数据；使用 Lanczos、CAS 和轻度 Unsharp。脚本需要 FFmpeg 和 Pillow，保留原文件供后续重建。
-- `design/guofeng-3d/build_dance_loop.py`：已退役舞蹈实验的离线复现脚本，默认只输出到被 Git 忽略的 `design/guofeng-3d/previews/`，不会写入运行时素材目录。脚本需要在已安装 `rife-mlx`、Pillow、NumPy 且可调用带 `cas` 滤镜的 FFmpeg 环境中执行。
 - `design/guofeng-3d/source-frames/term-bg-guofeng-beauty-coding-a.png`：同一人物、同一画布的坐姿书案 Coding 构建源；运行时使用右侧羽化裁剪贴片。
 - `design/guofeng-3d/source-frames/term-bg-guofeng-beauty-coding-b.png`：保持主帧构图，只改变手指和键帽亮光的敲键构建源；运行时使用双手和键盘局部贴片。
 - `design/guofeng-3d/full-frame-reference/`：迁移前的四张 3584×2240 全画幅动画参考图，仅用于本地视觉回归；目录已加入 `.gitignore`，不会进入 Git 或应用包。
 
 ## 第三方资产与许可
+
+以下 MakeHuman/MPFB 署名仅为本地可能保留的退役 3D 实验资产留档，不表示它们仍进入生产主题或安装包：
 
 - `elvs_50s_updo` 发型：Elvaerwyn，CC BY，来自 [MakeHuman Community Hair02](https://static.makehumancommunity.org/assets/assetpacks/hair02.html) 资产包。
 - `mindfront_kimono` 服装：Mindfront (Sweden)，CC0，来自 [MakeHuman Community Dress01](https://static.makehumancommunity.org/assets/assetpacks/dress01.html) 资产包。
