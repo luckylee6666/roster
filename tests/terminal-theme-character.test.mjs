@@ -150,7 +150,6 @@ test('分层人物位于终端内容后方，待机锁定 Retina 原画且执行
     controller,
     fixture,
     pkg,
-    retinaBuilder,
     patchMetadataSource,
     idle,
     blink,
@@ -164,7 +163,6 @@ test('分层人物位于终端内容后方，待机锁定 Retina 原画且执行
     readFile(new URL('../src/terminal-theme-character.js', import.meta.url), 'utf8'),
     readFile(new URL('./terminal-theme-character-fixture.html', import.meta.url), 'utf8'),
     readFile(new URL('../package.json', import.meta.url), 'utf8'),
-    readFile(new URL('../design/guofeng-3d/build_retina_assets.py', import.meta.url), 'utf8'),
     readFile(new URL('../src/terminal-theme-character-patch-metadata.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/assets/term-bg-guofeng-beauty-retina.png', import.meta.url)),
     readFile(new URL('../src/assets/term-character-guofeng-beauty-blink-patch-retina.png', import.meta.url)),
@@ -198,20 +196,13 @@ test('分层人物位于终端内容后方，待机锁定 Retina 原画且执行
   assert.doesNotMatch(controller, /\.mp4|createElement\(['"]video['"]\)|danceVideo|DANCE_STATES/);
   assert.doesNotMatch(controller, /term-bg-guofeng-beauty-retina\.png/);
   for (const asset of [
-    'term-bg-guofeng-beauty-retina.png',
     'term-character-guofeng-beauty-blink-patch-retina.png',
     'term-character-guofeng-beauty-smile-patch-retina.png',
     'term-bg-guofeng-beauty-coding-a-right-patch-retina.png',
     'term-bg-guofeng-beauty-coding-b-hands-patch-retina.png',
   ]) {
-    assert.ok(retinaBuilder.includes(asset), `Retina 构建脚本应生成 ${asset}`);
-    if (asset.includes('patch')) {
-      assert.ok(patchMetadataSource.includes(asset), `贴片元数据应导出 ${asset}`);
-    }
+    assert.ok(patchMetadataSource.includes(asset), `贴片元数据应导出 ${asset}`);
   }
-  assert.match(retinaBuilder, /SOURCE_DIR[\s\S]*?source-frames/);
-  assert.match(retinaBuilder, /patch\.putalpha\(alpha\)/);
-  assert.match(retinaBuilder, /alpha\.getextrema\(\) != \(0, 255\)/);
   assert.match(controller, /workingQuietTimer[\s\S]*?CHARACTER_WORKING_QUIET_MS/);
   assert.match(controller, /normalized !== 'thinking' && workingQuietTimer[\s\S]*?clearTimeout\(workingQuietTimer\)/);
   assert.match(controller, /dataset\.renderBackend\s*=\s*'layered-2d'/);

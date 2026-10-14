@@ -62,20 +62,13 @@ opencode.json
 .claude/
 .commandcode/
 
-# Generated Python bytecode and local-only 3D experiments.
+# Generated Python bytecode.
 __pycache__/
 *.py[cod]
-/design/guofeng-3d/**/*.blend1
-/design/guofeng-3d/experimental-full-glb/
-/design/guofeng-3d/experimental-depth-relief/
-/design/guofeng-3d/previews/
-/design/guofeng-3d/full-frame-reference/
-# 帧与贴图属于本地设计中间产物，不入库；仅保留现用 Retina 构建脚本与 README。
-/design/guofeng-3d/**/*.png
 
-# Stitch 设计系统文档可保留；云端元数据与生成稿属于本地中间产物。
-/.stitch/metadata.json
-/.stitch/designs/
+# 旧设计目录已退役；本地留存的源图、实验产物和工具生成稿不再入库。
+/design/guofeng-3d/
+/.stitch/
 
 # 安卓外壳构建产物（mobile-android/build.sh）
 /mobile-android/build/

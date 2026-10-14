@@ -12,7 +12,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Pi joins the resident structured-session pool: Codex retains its independent App Server pool, while the other seven resident adapters, including Pi, share a pool of up to four idle processes with a 30-minute idle limit. Command Code (`cmd`) remains the per-turn process exception.
 
 **Maintenance**
-- Remove obsolete game-center planning documents and retired 3D/dance experiment scripts and sequence metadata. Keep the active Retina asset builder, its documentation and production theme assets; existing ignored local art files are untouched.
+- Remove obsolete game-center planning documents and all tracked files under `.stitch/` and `design/guofeng-3d/`, including the offline asset builders. Keep the prebuilt production theme assets, crop metadata and runtime regression checks; existing ignored local art files are untouched, and both retired design directories are now ignored in full.
 
 ### 中文
 
@@ -22,7 +22,7 @@ All notable changes to this project are documented here. 本项目的更新记�
 - Pi 加入常驻结构化会话池：Codex 保留独立 App Server 池，其余七家常驻适配器（含 Pi）共用最多 4 个空闲进程，空闲 30 分钟回收。Command Code（`cmd`）仍是每轮单独启动进程的例外。
 
 **维护**
-- 清理旧游戏中心设计/实施文档，以及退役的 3D、舞蹈实验脚本与序列清单。保留现用 Retina 素材生成脚本、说明和生产主题资源，不删除本地已忽略的美术源文件。
+- 清理旧游戏中心设计/实施文档，并移除 `.stitch/` 和 `design/guofeng-3d/` 下所有已跟踪文件（含离线素材构建脚本）。保留已生成的生产主题资源、裁剪元数据和运行时回归检查；本地已忽略的美术源文件不动，两个退役设计目录改为整目录忽略。
 
 ## v1.9.4
 
