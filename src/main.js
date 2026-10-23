@@ -1,3 +1,4 @@
+import './webkit-compat.js';
 import {
   createLineNumberText,
   editorChangedDuringSave,
@@ -2848,6 +2849,7 @@ async function openTerminal(p, cmd) {
     await createSession({ cwd: p.localPath, name: p.name, autoCmd: cmd });
   } catch (e) {
     console.error('打开终端失败:', e);
+    appLog('error', `打开终端失败：${String(e?.message || e).slice(0, 1000)}`);
     msg('打开终端失败: ' + (e.message || e), 'error');
   }
 }

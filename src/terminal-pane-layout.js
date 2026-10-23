@@ -7,7 +7,7 @@ export const TERMINAL_PANE_LAYOUTS = Object.freeze({
 });
 
 export function normalizeTerminalPaneLayout(layout) {
-  return Object.hasOwn(TERMINAL_PANE_LAYOUTS, layout) ? layout : 'single';
+  return Object.prototype.hasOwnProperty.call(TERMINAL_PANE_LAYOUTS, layout) ? layout : 'single';
 }
 
 export function terminalPaneCapacity(layout) {

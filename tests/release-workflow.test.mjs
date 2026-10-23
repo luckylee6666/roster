@@ -35,28 +35,32 @@ test('发布工作流构建并上传四个平台的正确产物', async () => {
   const platforms = [
     ['build-macos-arm64', 'aarch64-apple-darwin', [
       'src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg',
-    ]],
+    ], 'Upload macOS artifact'],
     ['build-macos-x64', 'x86_64-apple-darwin', [
       'src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg',
-    ]],
+    ], 'Upload Intel macOS artifact'],
     ['build-windows-x64', 'x86_64-pc-windows-msvc', [
       'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe',
       'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi',
-    ]],
+    ], 'Upload Windows x64 artifacts'],
     ['build-windows-arm64', 'aarch64-pc-windows-msvc', [
       'src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe',
       'src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi',
-    ]],
+    ], 'Upload Windows ARM64 artifacts'],
   ];
 
-  for (const [jobName, target, artifactPaths] of platforms) {
+  for (const [jobName, target, artifactPaths, uploadStepName] of platforms) {
     const job = jobBlock(workflow, jobName);
     assert.match(job, new RegExp(`needs: create-release`), `${jobName} 应依赖 release 初始化`);
     assert.ok(job.includes(target), `${jobName} 应使用 ${target}`);
+    const install = namedStepBlock(job, 'Install dependencies');
+    assert.match(install, /run:\s*pnpm install --frozen-lockfile/, `${jobName} 应使用锁文件安装依赖`);
+    const upload = namedStepBlock(job, uploadStepName);
     for (const artifactPath of artifactPaths) {
-      assert.ok(job.includes(artifactPath), `${jobName} 应上传 ${artifactPath}`);
+      assert.ok(upload.includes(artifactPath), `${jobName} 应上传 ${artifactPath}`);
     }
-    assert.match(job, /tag_name:\s*\$\{\{ github\.ref_name \}\}/, `${jobName} 应上传到当前 tag`);
+    assert.match(upload, /tag_name:\s*\$\{\{ github\.ref_name \}\}/, `${jobName} 应上传到当前 tag`);
+    assert.match(upload, /fail_on_unmatched_files:\s*true/, `${jobName} 的预期产物缺失时应失败`);
   }
 
   const releaseJob = jobBlock(workflow, 'create-release');

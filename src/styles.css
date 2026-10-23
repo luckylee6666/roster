@@ -1344,6 +1344,20 @@ body {
   box-shadow: 0 0 0 2px var(--chat-accent-line);
 }
 
+.conversation-file-preview-media {
+  display: block;
+  max-width: 100%;
+  max-height: min(70vh, 680px);
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+.conversation-file-preview-video {
+  width: 100%;
+  background: #000;
+  border-radius: 8px;
+}
+
 .modal-wrap {
   position: absolute;
   inset: 0;

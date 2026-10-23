@@ -26,6 +26,20 @@ test('终端布局只接受单窗、左右、上下、主从和四宫格', () =>
   assert.equal(terminalPaneCapacity('grid'), 4);
 });
 
+test('旧 WebKit 没有 Object.hasOwn 时仍可计算分屏并拒绝原型属性', () => {
+  const hasOwn = Object.hasOwn;
+  Object.hasOwn = undefined;
+  try {
+    assert.equal(terminalPaneCapacity('grid'), 4);
+    assert.equal(terminalPaneArrangement('main', 3), 'main');
+    for (const layout of ['toString', '__proto__', 'unknown', null]) {
+      assert.equal(normalizeTerminalPaneLayout(layout), 'single');
+    }
+  } finally {
+    Object.hasOwn = hasOwn;
+  }
+});
+
 test('可见窗格不足容量时收拢成单窗、左右或主从，不留空位', () => {
   assert.equal(terminalPaneArrangement('columns', 1), 'single');
   assert.equal(terminalPaneArrangement('rows', 1), 'single');

@@ -1,7 +1,7 @@
 use base64::Engine;
 use serde::Serialize;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const MAX_CONVERSATION_MEDIA_BYTES: u64 = 16 * 1024 * 1024;
@@ -35,6 +35,10 @@ pub struct ConversationFilePreview {
     pub truncated: bool,
     pub kind: String,
     pub line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
 }
 
 fn image_mime(bytes: &[u8]) -> Option<&'static str> {
@@ -464,26 +468,67 @@ fn read_link_file_with_memory_root(
     })?;
 
     #[cfg(any(unix, windows))]
-    let bytes = bounded_project_regular_file(
-        &root,
-        &target,
-        MAX_CONVERSATION_LINK_FILE_BYTES,
-        "文件超过 1MB，无法在会话中预览",
-    )?;
+    let mut file = open_project_regular_file(&root, &target)?;
     #[cfg(not(any(unix, windows)))]
-    let bytes = bounded_regular_file(
-        &target,
-        MAX_CONVERSATION_LINK_FILE_BYTES,
-        "文件超过 1MB，无法在会话中预览",
-    )?;
-    if bytes.contains(&0) {
-        return Err("这是二进制文件，无法在会话中预览".into());
+    let mut file = fs::File::open(&target).map_err(|error| error.to_string())?;
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("路径不是普通文件".into());
     }
+    // Detect media from the same rooted file handle before applying the text
+    // limit/NUL check. A .png link must follow the same path as an inline image.
+    let mut prefix = Vec::new();
+    (&mut file)
+        .take(32)
+        .read_to_end(&mut prefix)
+        .map_err(|error| error.to_string())?;
+    let (limit, too_large) = if media_type(&prefix).is_some() {
+        (
+            MAX_CONVERSATION_MEDIA_BYTES,
+            "媒体文件超过 16MB，无法在会话中预览",
+        )
+    } else {
+        (
+            MAX_CONVERSATION_LINK_FILE_BYTES,
+            "文件超过 1MB，无法在会话中预览",
+        )
+    };
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
+    let bytes = read_bounded_regular_file(file, limit, too_large)?;
     let name = target
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| "文件名不是有效 UTF-8".to_string())?
         .to_string();
+    if let Some((kind, mime_type)) = media_type(&bytes) {
+        return Ok(ConversationFilePreview {
+            name,
+            path: target.to_string_lossy().to_string(),
+            content: String::new(),
+            truncated: false,
+            kind: kind.into(),
+            line: None,
+            mime_type: Some(mime_type.into()),
+            data_url: Some(format!(
+                "data:{mime_type};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )),
+        });
+    }
+    // If the file changed while being read, never treat a now-ordinary text
+    // file as eligible for the larger media budget.
+    if bytes.len() as u64 > MAX_CONVERSATION_LINK_FILE_BYTES {
+        return Err("文件超过 1MB，无法在会话中预览".into());
+    }
+    if bytes.contains(&0) {
+        return Err("这是不支持预览的二进制文件".into());
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|_| "这不是 UTF-8 文本或支持的媒体文件，无法预览".to_string())?;
     let kind = match target
         .extension()
         .and_then(|extension| extension.to_str())
@@ -496,10 +541,12 @@ fn read_link_file_with_memory_root(
     Ok(ConversationFilePreview {
         name,
         path: target.to_string_lossy().to_string(),
-        content: String::from_utf8_lossy(&bytes).to_string(),
+        content,
         truncated: false,
         kind: kind.into(),
         line,
+        mime_type: None,
+        data_url: None,
     })
 }
 
@@ -622,9 +669,148 @@ pub fn inline_image_attachment(
     })
 }
 
+/// Codex image-generation results contain bare base64, not a trusted file URL.
+/// Only verified raster bytes become a normalized attachment; never open savedPath.
+pub(crate) fn generated_image_attachment(
+    encoded: &str,
+    remaining_bytes: &mut usize,
+) -> Option<ConversationAttachment> {
+    let padding = encoded
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte == b'=')
+        .take(2)
+        .count();
+    let estimated = (encoded.len().saturating_mul(3) / 4).saturating_sub(padding);
+    if estimated > MAX_INLINE_IMAGE_BYTES || estimated > *remaining_bytes {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let mime = image_mime(&bytes)?;
+    if bytes.len() > *remaining_bytes {
+        return None;
+    }
+    *remaining_bytes -= bytes.len();
+    Some(ConversationAttachment {
+        kind: "image".into(),
+        mime_type: mime.into(),
+        data_url: format!("data:{mime};base64,{encoded}"),
+        alt: "生成的图片".into(),
+    })
+}
+
+pub(crate) fn codex_generated_image_result(item: &serde_json::Value) -> Option<&str> {
+    let recognized = item.get("type").and_then(serde_json::Value::as_str)
+        == Some("imageGeneration")
+        || (item.get("type").and_then(serde_json::Value::as_str) == Some("Extension")
+            && item.get("kind").and_then(serde_json::Value::as_str)
+                == Some("image_gen.generation"));
+    if !recognized
+        || item.get("status").and_then(serde_json::Value::as_str) != Some("completed")
+        || item
+            .get("failure")
+            .is_some_and(|failure| !failure.is_null())
+    {
+        return None;
+    }
+    item.get("result")
+        .and_then(serde_json::Value::as_str)
+        .filter(|result| !result.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_links_preview_images_and_video_before_the_text_binary_check() {
+        let project = tempfile::tempdir().unwrap();
+        let cwd = project.path().to_str().unwrap();
+        let output = project.path().join("output");
+        fs::create_dir(&output).unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.resize(MAX_CONVERSATION_LINK_FILE_BYTES as usize + 10, 0);
+        fs::write(output.join("browser screenshot.png"), &png).unwrap();
+        let preview =
+            read_link_file_with_memory_root(cwd, None, "output/browser%20screenshot.png", None)
+                .unwrap();
+        assert_eq!(preview.kind, "image");
+        assert_eq!(preview.mime_type.as_deref(), Some("image/png"));
+        assert!(preview.content.is_empty());
+        let encoded = preview.data_url.unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded.split_once(',').unwrap().1)
+                .unwrap(),
+            png
+        );
+        fs::write(output.join("clip.mp4"), b"\0\0\0\x18ftypisomdemo").unwrap();
+        let video = read_link_file_with_memory_root(cwd, None, "output/clip.mp4:2", None).unwrap();
+        assert_eq!(video.kind, "video");
+        assert_eq!(video.mime_type.as_deref(), Some("video/mp4"));
+        assert_eq!(video.line, None);
+        let base = output.join("README.md");
+        fs::write(&base, "index").unwrap();
+        assert_eq!(
+            read_link_file_with_memory_root(cwd, None, "browser screenshot.png", base.to_str())
+                .unwrap()
+                .kind,
+            "image"
+        );
+
+        fs::write(output.join("fake.png"), b"plain text").unwrap();
+        let text = read_link_file_with_memory_root(cwd, None, "output/fake.png", None).unwrap();
+        assert_eq!(
+            text.kind, "text",
+            "extensions cannot opt a file into media rendering"
+        );
+        assert!(text.data_url.is_none());
+        fs::write(output.join("unknown.bin"), b"\0binary").unwrap();
+        assert!(read_link_file_with_memory_root(cwd, None, "output/unknown.bin", None).is_err());
+        fs::write(output.join("invalid-utf8.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        assert!(
+            read_link_file_with_memory_root(cwd, None, "output/invalid-utf8.md", None)
+                .unwrap_err()
+                .contains("UTF-8")
+        );
+        fs::write(
+            output.join("large.txt"),
+            vec![b'x'; MAX_CONVERSATION_LINK_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(
+            read_link_file_with_memory_root(cwd, None, "output/large.txt", None)
+                .unwrap_err()
+                .contains("1MB")
+        );
+        png.resize(MAX_CONVERSATION_MEDIA_BYTES as usize + 1, 0);
+        fs::write(output.join("huge.png"), png).unwrap();
+        assert!(
+            read_link_file_with_memory_root(cwd, None, "output/huge.png", None)
+                .unwrap_err()
+                .contains("16MB")
+        );
+    }
+
+    #[test]
+    fn generated_images_only_allow_bounded_raster_data_not_paths_or_svg() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\n");
+        let mut remaining = 8;
+        let image = generated_image_attachment(&encoded, &mut remaining).unwrap();
+        assert_eq!(remaining, 0, "base64 padding must not overcount bytes");
+        assert_eq!(image.mime_type, "image/png");
+        assert!(generated_image_attachment(&encoded, &mut remaining).is_none());
+        let svg = base64::engine::general_purpose::STANDARD.encode(b"<svg onload=alert(1)>");
+        assert!(generated_image_attachment(&svg, &mut 1024).is_none());
+        assert!(generated_image_attachment("/etc/passwd", &mut 1024).is_none());
+        let mut oversized_budget = usize::MAX;
+        assert!(
+            generated_image_attachment(&"A".repeat(16 * 1024 * 1024), &mut oversized_budget)
+                .is_none()
+        );
+    }
 
     #[test]
     fn conversation_file_links_allow_project_and_its_memory_but_reject_other_roots() {

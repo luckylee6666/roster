@@ -49,6 +49,15 @@ function logicalSize(tauri, width, height) {
   return typeof LogicalSize === 'function' ? new LogicalSize(width, height) : { width, height };
 }
 
+// Keep this helper outside the class: older system WebKit cannot parse private
+// class methods, which would stop the entire application's static import graph.
+async function callWebviewMethod(companion, method, ...args) {
+  const view = companion.webview;
+  if (!view || typeof view[method] !== 'function') return false;
+  await view[method](...args);
+  return true;
+}
+
 async function waitForCreation(view, globalObject, timeoutMs = 10000) {
   if (!view || typeof view.once !== 'function') return;
   const setTimer = globalObject?.setTimeout?.bind(globalObject) || setTimeout;
@@ -145,21 +154,21 @@ export class CompanionWebview {
   }
 
   async show() {
-    return this.#call('show');
+    return callWebviewMethod(this, 'show');
   }
 
   async hide() {
-    return this.#call('hide');
+    return callWebviewMethod(this, 'hide');
   }
 
   async focus() {
-    return this.#call('setFocus');
+    return callWebviewMethod(this, 'setFocus');
   }
 
   async setPosition(position) {
     const next = normalizeCompanionBounds({ ...this.bounds, ...position });
     const tauri = getTauriWebviewApi(this.globalObject)?.tauri;
-    const result = await this.#call('setPosition', logicalPosition(tauri, next.x, next.y));
+    const result = await callWebviewMethod(this, 'setPosition', logicalPosition(tauri, next.x, next.y));
     if (result) this.bounds = { ...next };
     return result;
   }
@@ -167,7 +176,7 @@ export class CompanionWebview {
   async setSize(size) {
     const next = normalizeCompanionBounds({ ...this.bounds, ...size });
     const tauri = getTauriWebviewApi(this.globalObject)?.tauri;
-    const result = await this.#call('setSize', logicalSize(tauri, next.width, next.height));
+    const result = await callWebviewMethod(this, 'setSize', logicalSize(tauri, next.width, next.height));
     if (result) this.bounds = { ...next };
     return result;
   }
@@ -184,13 +193,6 @@ export class CompanionWebview {
       this.url = null;
       this.bounds = null;
     }
-    return true;
-  }
-
-  async #call(method, ...args) {
-    const view = this.webview;
-    if (!view || typeof view[method] !== 'function') return false;
-    await view[method](...args);
     return true;
   }
 }

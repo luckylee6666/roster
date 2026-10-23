@@ -2,17 +2,33 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
-## Unreleased
+## v1.9.6
 
 ### English
 
+**Compatibility fixes**
+- Avoid private class methods in the startup import graph and newer `Object.hasOwn` calls on older system WebKit. Add missing `String/Array.at`, structured-clone and microtask fallbacks before terminal creation and Markdown rendering, without replacing native implementations or weakening HTML sanitization.
+- Fall back to safe plain text if conversation Markdown parsing or sanitization throws, so a completed answer remains visible and the send state can finish normally.
+- Open project image and video links in the conversation preview instead of rejecting screenshots as binary text files. Media is identified from file bytes and remains size- and path-bounded; video playback stops when the preview is closed or replaced.
+- Give recognized Codex image results a separate bounded transport path on both Intel and Apple Silicon. Keep ordinary messages at 1 MiB and the turn at 64 MiB; validate raster content before displaying up to 8 MiB / 8 generated images, deduplicate completion snapshots, and restore generated attachments from history without opening arbitrary saved paths. Large images are not broadcast through the phone control queue.
+- Validate Codex history metadata and read content from the same safely opened file handle, reject symbolic-link entries, and bound metadata reads to avoid a file replacement window and unbounded header allocation.
+
 **Build maintenance**
 - Fix Intel Mac architecture verification on older Xcode by placing the input file before `lipo -verify_arch`. Add an existing-tag Intel-only backfill workflow with pinned source commit/version checks and no asset overwrites; no application code or published tags are changed.
+- Use frozen dependency lockfiles for all desktop release jobs and fail an upload if an expected installer is missing.
 
 ### 中文
 
+**兼容修复**
+- 移除启动导入链中的类私有方法语法，并替换旧系统 WebKit 缺失的 `Object.hasOwn` 调用；在创建终端、渲染 Markdown 前补充缺失的 `String/Array.at`、结构化克隆及微任务能力，不覆盖已有原生实现，也不削弱 HTML 净化。
+- 对话 Markdown 解析或净化抛错时降级为安全纯文本，避免已完成的回复无法显示、发送状态无法结束。
+- 修复会话中点击截图、视频链接时误入文本预览而被当二进制文件拒绝的问题；按文件内容识别媒体并保留大小、路径边界，关闭或切换预览时停止视频播放。
+- Intel 与 Apple Silicon 共用 Codex 生图结果的独立有界接收通道，普通消息仍限 1 MiB、全轮协议仍限 64 MiB；图片验格式后显示，每轮合计最多 8 MiB / 8 张，完成快照去重，历史可恢复图片附件，不读取任意 savedPath；大图片不进入手机遥控消息队列。
+- Codex 历史在同一安全打开的文件句柄上完成归属校验和读取，拒绝符号链接文件，并限制元数据首行大小，避免校验后文件替换窗口和无界头部内存分配。
+
 **构建维护**
 - 修正旧版 Xcode 的 Intel Mac 架构校验命令顺序，把输入文件放在 `lipo -verify_arch` 前；增加按现有标签固定源码及版本、仅补 Intel 包且拒绝覆盖附件的手动流程，不改应用代码或已发布标签。
+- 所有桌面发布任务统一按锁文件安装依赖；预期安装包缺失时上传步骤明确失败。
 
 ## v1.9.5
 

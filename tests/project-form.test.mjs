@@ -32,3 +32,16 @@ test('未设置运行环境时不生成“未知”标签', () => {
   assert.deepEqual(projectMachineTag('local'), { className: 'tag-local', label: '本地电脑' });
   assert.deepEqual(projectMachineTag('server'), { className: 'tag-ssh', label: '服务器' });
 });
+
+test('旧 WebKit 没有 Object.hasOwn 时仍可校验运行环境并拒绝原型属性', () => {
+  const hasOwn = Object.hasOwn;
+  Object.hasOwn = undefined;
+  try {
+    assert.deepEqual(normalizeProjectMachine('server', 'server-1'), { machine: 'server', serverId: 'server-1' });
+    for (const value of ['toString', '__proto__', 'unknown', null]) {
+      assert.deepEqual(normalizeProjectMachine(value, 'stale-server'), { machine: '', serverId: '' });
+    }
+  } finally {
+    Object.hasOwn = hasOwn;
+  }
+});

@@ -50,7 +50,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         # Tauri 自带的 DMG 带「拖到 Applications」布局；signingIdentity:"-" 已在构建时 ad-hoc 签名
@@ -63,6 +63,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           files: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          fail_on_unmatched_files: true
 
   build-macos-x64:
     needs: create-release
@@ -141,7 +142,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm tauri build --target x86_64-pc-windows-msvc
@@ -153,6 +154,7 @@ jobs:
           files: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          fail_on_unmatched_files: true
 
   build-windows-arm64:
     needs: create-release
@@ -181,7 +183,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm tauri build --target aarch64-pc-windows-msvc
@@ -193,3 +195,4 @@ jobs:
           files: |
             src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
             src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+          fail_on_unmatched_files: true

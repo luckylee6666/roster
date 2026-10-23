@@ -59,7 +59,10 @@ class FakeEl {
   get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; }
-  removeAttribute(name) { delete this.attributes[name]; }
+  removeAttribute(name) {
+    delete this.attributes[name];
+    if (name === 'src') this.src = '';
+  }
   appendChild(node) {
     node.parentElement?.removeChild(node);
     this.childNodes.push(node);
@@ -129,6 +132,7 @@ class FakeEl {
   querySelectorAll(selector) {
     const tags = selector === 'pre'
       ? new Set(['PRE'])
+      : selector === 'video' ? new Set(['VIDEO'])
       : selector === 'img, video' ? new Set(['IMG', 'VIDEO']) : null;
     if (!tags) return [];
     const found = [];
@@ -163,6 +167,8 @@ class FakeEl {
 }
 
 const IDS = [
+  'conversation-image-preview',
+  'conversation-image-preview-img',
   'conversation-project-list',
   'conversation-history-list',
   'conversation-history-state',
@@ -259,6 +265,7 @@ function fixture({
   appView,
   history,
   transcript,
+  linkPreview,
   confirm,
   t,
 } = {}) {
@@ -389,6 +396,8 @@ function fixture({
         return attachmentGate ? attachmentGate.promise.then(() => media) : media;
       }
       if (command === 'read_conversation_link_file') {
+        if (typeof linkPreview === 'function') return linkPreview(payload);
+        if (linkPreview) return linkPreview;
         return {
           name: 'wow3d.md',
           path: '/Users/lucky/.claude/projects/project/memory/wow3d.md',
@@ -937,6 +946,55 @@ test('回答里的代码块有独立复制按钮，复制的是代码本身', as
   delete globalThis.window.DOMPurify;
 });
 
+test('Markdown 解析失败仍显示安全纯文本并正常结束发送状态', async t => {
+  globalThis.window.marked = { parse() { throw new TypeError('at is not a function'); } };
+  globalThis.window.DOMPurify = { sanitize() { throw new Error('must not run'); } };
+  t.after(() => {
+    delete globalThis.window.marked;
+    delete globalThis.window.DOMPurify;
+  });
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('hello');
+  const run = fx.startedRuns()[0];
+  const text = '你好 <img src=x onerror=alert(1)>';
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'assistant_message', data: { text } });
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  const content = fx.el('conversation-messages').childNodes[1].childNodes[0].childNodes[1];
+  assert.equal(content.textContent, text);
+  assert.equal(content.innerHTML, '', '不能把未经消毒的 Markdown 写入 innerHTML');
+  assert.equal(fx.el('conversation-stop').hidden, true);
+  await fx.send('第二轮');
+  assert.equal(fx.startedRuns().length, 2, '渲染失败不能卡住下一次发送');
+});
+
+test('生成的图片在回答里显示并可预览，完成后可继续发送', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  await fx.send('生成图片');
+  const run = fx.startedRuns()[0];
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+  fx.el('conversation-image-preview').hidden = true;
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'assistant_image', data: {
+    id: 'generated-image-1', attachments: [{ kind: 'image', mimeType: 'image/png', dataUrl, alt: '生成的图片' }],
+  } });
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'assistant_message', data: { text: '图片已生成' } });
+  fx.emit({ runId: run.runId, providerId: run.providerId, kind: 'completed', data: { status: 'completed' } });
+  await flush();
+  const content = fx.el('conversation-messages').childNodes[1].childNodes[0].childNodes[1];
+  const group = content.childNodes.find(node => node.classNames.has('conversation-message-attachments'));
+  assert.ok(group);
+  assert.equal(group.childNodes[0].src, dataUrl);
+  assert.equal(group.childNodes[0].alt, '生成的图片');
+  fire(group.childNodes[0], 'click');
+  assert.equal(fx.el('conversation-image-preview').hidden, false);
+  assert.equal(fx.el('conversation-image-preview-img').src, dataUrl);
+  assert.equal(fx.el('conversation-stop').hidden, true);
+  await fx.send('继续');
+  assert.equal(fx.startedRuns().length, 2);
+});
+
 test('左侧分组第一次出现时是折叠的，用户展开后保持展开', async t => {
   const fx = fixture({
     t,
@@ -1230,6 +1288,110 @@ test('对话内本地文件链接原地打开只读预览，网页链接仍交�
     fx.invokes.find(entry => entry.command === 'open_url')?.payload,
     { url: 'https://example.com/docs' },
   );
+});
+
+test('本地 PNG 链接使用安全 data URL 在文件预览弹窗显示', async t => {
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+  const fx = fixture({
+    projects: [project('a', '项目 A')],
+    linkPreview: {
+      name: '画面.png', path: '/project/画面.png', content: '', kind: 'image',
+      dataUrl, mimeType: 'image/png', truncated: false, line: null,
+    },
+    t,
+  });
+  await flush();
+  const link = new FakeEl('a');
+  link.setAttribute('href', '/project/画面.png');
+  link.closest = () => link;
+  fire(fx.el('conversation-messages'), 'click', { target: link, preventDefault() {} });
+  await flush();
+
+  const image = fx.el('conversation-file-preview-body').firstChild;
+  assert.equal(image.tagName, 'IMG');
+  assert.equal(image.src, dataUrl);
+  assert.equal(image.alt, '画面.png');
+  assert.equal(fx.el('conversation-file-preview-title').textContent, '画面.png');
+});
+
+test('本地视频链接使用控件手动播放，并在关闭、切换、换项目和销毁时停止', async t => {
+  const fx = fixture({
+    projects: [project('a', '项目 A'), project('b', '项目 B')],
+    linkPreview: payload => payload.source === 'next.md'
+      ? { name: 'next.md', path: '/project/next.md', content: '下一份', kind: 'text' }
+      : {
+        name: 'clip.mp4', path: '/project/clip.mp4', content: '', kind: 'video',
+        dataUrl: 'data:video/mp4;base64,AAAA', mimeType: 'video/mp4', truncated: false, line: null,
+      },
+    t,
+  });
+  await flush();
+  const openVideo = async () => {
+    const link = new FakeEl('a');
+    link.setAttribute('href', 'clip.mp4');
+    link.closest = () => link;
+    fire(fx.el('conversation-messages'), 'click', { target: link, preventDefault() {} });
+    await flush();
+    return fx.el('conversation-file-preview-body').firstChild;
+  };
+  const lifecycleActions = [
+    ['关闭', async () => fire(fx.el('conversation-file-preview-close'), 'click')],
+    ['切换预览', async () => {
+      const link = new FakeEl('a');
+      link.setAttribute('href', 'next.md');
+      link.closest = () => link;
+      fx.el('conversation-file-preview-body').appendChild(link);
+      fire(fx.el('conversation-file-preview-body'), 'click', { target: link, preventDefault() {} });
+      await flush();
+    }],
+    ['切换项目', async () => fx.controller.setProjects([project('b', '项目 B')])],
+    ['销毁', async () => fx.controller.destroy()],
+  ];
+
+  for (const [label, action] of lifecycleActions) {
+    const video = await openVideo();
+    assert.equal(video.tagName, 'VIDEO');
+    assert.equal(video.controls, true);
+    assert.equal(video.preload, 'metadata');
+    assert.equal(video.autoplay, undefined, '本地预览不自动播放');
+    let paused = 0;
+    let loaded = 0;
+    video.pause = () => { paused += 1; };
+    video.load = () => { loaded += 1; };
+    assert.equal(video.src, 'data:video/mp4;base64,AAAA');
+    await action();
+    assert.ok(paused > 0, `${label} 时应暂停视频`);
+    assert.ok(loaded > 0, `${label} 时应释放媒体资源`);
+    assert.equal(video.src, '', `${label} 后应清空视频 src`);
+    assert.equal(video.getAttribute('src'), null, `${label} 后应移除 src 属性`);
+    if (label === '切换项目') fx.controller.setProjects([project('a', '项目 A'), project('b', '项目 B')]);
+  }
+});
+
+test('文件预览拒绝网页 URL、SVG 与不匹配的媒体类型', async t => {
+  const invalid = [
+    { kind: 'image', dataUrl: 'https://example.com/image.png' },
+    { kind: 'image', dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' },
+    { kind: 'video', dataUrl: 'data:video/ogg;base64,AAAA' },
+    { kind: 'image', dataUrl: 'data:video/mp4;base64,AAAA' },
+    { kind: 'video', dataUrl: 'data:video/mp4;base64,AAAA\nhttps://evil.test' },
+  ];
+  for (const response of invalid) {
+    const fx = fixture({
+      projects: [project('a', '项目 A')],
+      linkPreview: { name: 'binary', path: '/project/binary', content: '', ...response },
+      t,
+    });
+    await flush();
+    const link = new FakeEl('a');
+    link.setAttribute('href', '/project/binary');
+    link.closest = () => link;
+    fire(fx.el('conversation-messages'), 'click', { target: link, preventDefault() {} });
+    await flush();
+    const body = fx.el('conversation-file-preview-body');
+    assert.deepEqual(body.querySelectorAll('img, video'), [], '不安全的数据不能创建媒体元素');
+    assert.match(body.firstChild.textContent, /数据无效/);
+  }
 });
 
 test('⌘K 聚焦项目搜索，⌘⇧N 在当前项目开新对话', async t => {

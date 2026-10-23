@@ -5,6 +5,7 @@
 //! 前端只收到经过收敛的消息、计划和活动事件，不接触原始 JSON-RPC、
 //! reasoning 文本、命令完整输出或工具参数。
 
+use crate::conversation_media::{codex_generated_image_result, generated_image_attachment};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -106,6 +107,11 @@ pub(crate) const MAX_ACTIVE_RUNS: usize = 4;
 pub(crate) const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_TEXT_CHARS: usize = 32 * 1024;
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
+// A normal text/command frame still has the 1 MiB bound. Only recognized image
+// results may use this separate hard framing limit (8 MiB decoded + base64/JSON).
+const MAX_IMAGE_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GENERATED_IMAGE_TURN_BYTES: usize = 8 * 1024 * 1024;
+const MAX_GENERATED_IMAGES_PER_TURN: usize = 8;
 const NATIVE_PROVIDER_ID: &str = "roster_openai_native";
 // Process-local alias: Codex still owns authentication and chooses the official
 // ChatGPT/API endpoint. Keep the name OpenAI so Codex preserves its native routing.
@@ -869,6 +875,124 @@ fn respond_to_server_request(
     Ok(true)
 }
 
+fn strip_generated_result(item: &mut Value) -> bool {
+    if codex_generated_image_result(item).is_none() {
+        return false;
+    }
+    // Drop the bulk before sizing the remaining metadata, without cloning it.
+    item["result"] = Value::Null;
+    true
+}
+
+fn oversized_image_frame_allowed(line: &[u8]) -> bool {
+    let Ok(mut message) = serde_json::from_slice::<Value>(line) else {
+        return false;
+    };
+    // Never relax a server request, approval or RPC response.
+    if message.get("id").is_some() {
+        return false;
+    }
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let stripped = match method.as_str() {
+        "item/completed" => message
+            .pointer_mut("/params/item")
+            .is_some_and(strip_generated_result),
+        // Codex also emits the legacy extension notification before its v2 item.
+        // It is ignored by the UI, but must not kill the shared stdout reader.
+        "codex/event/item_completed" => message
+            .pointer_mut("/params/msg/item")
+            .is_some_and(strip_generated_result),
+        "turn/completed" => {
+            let mut found = false;
+            if let Some(items) = message
+                .pointer_mut("/params/turn/items")
+                .and_then(Value::as_array_mut)
+            {
+                if items.len() > MAX_NORMALIZED_EVENTS {
+                    return false;
+                }
+                for item in items {
+                    found |= strip_generated_result(item);
+                }
+            }
+            found
+        }
+        _ => false,
+    };
+    // An image tag cannot smuggle a second huge command/reasoning/unknown field.
+    stripped && message.to_string().len() <= MAX_PROTOCOL_LINE_BYTES
+}
+
+struct GeneratedImages {
+    seen: HashSet<String>,
+    remaining_bytes: usize,
+    preview_notice_sent: bool,
+}
+
+impl Default for GeneratedImages {
+    fn default() -> Self {
+        Self {
+            seen: HashSet::new(),
+            remaining_bytes: MAX_GENERATED_IMAGE_TURN_BYTES,
+            preview_notice_sent: false,
+        }
+    }
+}
+
+impl GeneratedImages {
+    fn events(&mut self, message: &Value) -> Vec<(String, Value)> {
+        // Only v2 notifications have the thread/turn checks used by this UI.
+        // Legacy notifications may duplicate a v2 item and are never forwarded.
+        let items: Vec<&Value> = match message.get("method").and_then(Value::as_str) {
+            Some("item/completed") => message.pointer("/params/item").into_iter().collect(),
+            Some("turn/completed") => message
+                .pointer("/params/turn/items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut events = Vec::new();
+        for item in items {
+            let Some(encoded) = codex_generated_image_result(item) else {
+                continue;
+            };
+            let Some(id) = item
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| valid_protocol_id(id, 160))
+            else {
+                continue;
+            };
+            if self.seen.contains(id) {
+                continue;
+            }
+            if self.seen.len() < MAX_GENERATED_IMAGES_PER_TURN {
+                self.seen.insert(id.to_owned());
+                if let Some(attachment) =
+                    generated_image_attachment(encoded, &mut self.remaining_bytes)
+                {
+                    events.push((
+                        "assistant_image".into(),
+                        json!({ "id": id, "attachments": [attachment] }),
+                    ));
+                    continue;
+                }
+            }
+            if !self.preview_notice_sent {
+                self.preview_notice_sent = true;
+                events.push(("notice".into(), json!({ "message": "图片结果超出预览大小或格式限制，请查看 CLI 保存的图片文件" })));
+            }
+        }
+        events
+    }
+}
+
 fn read_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, String> {
     let mut line = Vec::new();
     loop {
@@ -882,13 +1006,13 @@ fn read_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, Stri
                 }
                 (0, true)
             } else if let Some(index) = available.iter().position(|byte| *byte == b'\n') {
-                if line.len().saturating_add(index) > MAX_PROTOCOL_LINE_BYTES {
+                if line.len().saturating_add(index) > MAX_IMAGE_PROTOCOL_LINE_BYTES {
                     return Err("Codex 返回的单条消息过大，已停止处理".into());
                 }
                 line.extend_from_slice(&available[..index]);
                 (index + 1, true)
             } else {
-                if line.len().saturating_add(available.len()) > MAX_PROTOCOL_LINE_BYTES {
+                if line.len().saturating_add(available.len()) > MAX_IMAGE_PROTOCOL_LINE_BYTES {
                     return Err("Codex 返回的单条消息过大，已停止处理".into());
                 }
                 line.extend_from_slice(available);
@@ -897,6 +1021,9 @@ fn read_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, Stri
         };
         reader.consume(take);
         if complete {
+            if line.len() > MAX_PROTOCOL_LINE_BYTES && !oversized_image_frame_allowed(&line) {
+                return Err("Codex 返回的单条消息过大，已停止处理".into());
+            }
             return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
         }
     }
@@ -1409,6 +1536,7 @@ fn run_protocol_inner(
     };
     let mut assistant_bytes = 0usize;
     let mut assistant_messages = AssistantMessageState::default();
+    let mut generated_images = GeneratedImages::default();
     let mut normalized_events = 0usize;
     let mut budget = ProtocolBudget::default();
     loop {
@@ -1717,6 +1845,24 @@ fn run_protocol_inner(
                 );
             }
             _ => {
+                for (kind, data) in generated_images.events(&message) {
+                    normalized_events = normalized_events.saturating_add(1);
+                    if normalized_events > MAX_NORMALIZED_EVENTS || cancelled.load(Ordering::SeqCst)
+                    {
+                        break;
+                    }
+                    emit_event(event_sink.as_ref(), &run_id, &kind, data);
+                }
+                if normalized_events > MAX_NORMALIZED_EVENTS {
+                    emit_event(
+                        event_sink.as_ref(),
+                        &run_id,
+                        "error",
+                        json!({ "message": "Codex 返回的事件过多，已停止处理" }),
+                    );
+                    reported_error = true;
+                    break;
+                }
                 // Codex 每轮都会主动推一次限流数据。收下写进用量缓存，额度
                 // 就不用再另起一个 app-server 去问同样的问题。
                 if message.get("method").and_then(Value::as_str)
@@ -2036,7 +2182,8 @@ fn start_prepared(
         }
         let process = Arc::new(Mutex::new(child));
         // Bounded even while idle: unsolicited output cannot accumulate without limit.
-        let (line_sender, lines) = mpsc::sync_channel(8);
+        // Keep large raster results from accumulating in an eight-frame queue.
+        let (line_sender, lines) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -2818,6 +2965,166 @@ mod tests {
             ..ProtocolBudget::default()
         };
         assert!(byte_limited.record_protocol_line("{}").is_err());
+    }
+
+    fn image_result(size: usize) -> String {
+        use base64::Engine;
+        let mut bytes = vec![0; size.max(8)];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn image_notification(result: String) -> Value {
+        json!({ "method": "item/completed", "params": {
+            "threadId": "thread-image", "turnId": "turn-image",
+            "item": {"id":"image-1","type":"imageGeneration","status":"completed",
+                "result": result, "savedPath":"/outside/secret.png", "revisedPrompt":"not for UI"}
+        } })
+    }
+
+    #[test]
+    fn large_image_frames_have_separate_bound_without_relaxing_text_or_rpc() {
+        let message = image_notification(image_result(2 * 1024 * 1024));
+        let large_line = message.to_string();
+        assert!(large_line.len() > MAX_PROTOCOL_LINE_BYTES);
+        let mut fragmented = std::io::BufReader::with_capacity(
+            71,
+            std::io::Cursor::new(format!("{large_line}\n{{\"next\":true}}\n").into_bytes()),
+        );
+        assert_eq!(
+            read_protocol_line(&mut fragmented).unwrap().as_deref(),
+            Some(large_line.as_str())
+        );
+        assert_eq!(
+            read_protocol_line(&mut fragmented).unwrap().as_deref(),
+            Some("{\"next\":true}")
+        );
+        let legacy = json!({"method":"codex/event/item_completed", "params":{"msg":{
+            "type":"item_completed", "item":{"id":"image-1","type":"Extension",
+                "kind":"image_gen.generation","status":"completed","result":message["params"]["item"]["result"]}
+        }}});
+        assert!(oversized_image_frame_allowed(legacy.to_string().as_bytes()));
+        let turn = json!({"method":"turn/completed", "params":{"turn":{
+            "id":"turn-image", "status":"completed", "items":[message["params"]["item"]]
+        }}});
+        assert!(oversized_image_frame_allowed(turn.to_string().as_bytes()));
+
+        for (field, value) in [("type", "agentMessage"), ("status", "inProgress")] {
+            let mut invalid = message.clone();
+            invalid["params"]["item"][field] = json!(value);
+            assert!(!oversized_image_frame_allowed(
+                invalid.to_string().as_bytes()
+            ));
+        }
+        let mut rpc = message.clone();
+        rpc["id"] = json!(42);
+        assert!(!oversized_image_frame_allowed(rpc.to_string().as_bytes()));
+        let mut smuggled = message.clone();
+        smuggled["params"]["command"] = json!("x".repeat(MAX_PROTOCOL_LINE_BYTES + 1));
+        assert!(!oversized_image_frame_allowed(
+            smuggled.to_string().as_bytes()
+        ));
+        let mut failed = message.clone();
+        failed["params"]["item"]["failure"] = json!({"type":"failed"});
+        assert!(!oversized_image_frame_allowed(
+            failed.to_string().as_bytes()
+        ));
+        let mut hard_limited = std::io::Cursor::new(vec![b'x'; MAX_IMAGE_PROTOCOL_LINE_BYTES + 1]);
+        assert!(read_protocol_line(&mut hard_limited).is_err());
+        let mut budget = ProtocolBudget::default();
+        budget.record_protocol_line(&large_line).unwrap();
+        assert_eq!(
+            budget.protocol_bytes,
+            large_line.len(),
+            "count raw image bytes, not stripped metadata"
+        );
+    }
+
+    #[test]
+    fn generated_images_are_validated_deduplicated_and_budgeted() {
+        let message = image_notification(image_result(2 * 1024 * 1024));
+        let mut images = GeneratedImages::default();
+        let events = images.events(&message);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "assistant_image");
+        let data = &events[0].1;
+        assert!(data["attachments"][0]["dataUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        assert_eq!(data["attachments"][0]["mimeType"], "image/png");
+        assert!(!data.to_string().contains("secret.png"));
+        assert!(!data.to_string().contains("not for UI"));
+        assert!(images.events(&message).is_empty());
+        let turn = json!({"method":"turn/completed", "params":{"turn":{"items":[message["params"]["item"]]}}});
+        assert!(
+            images.events(&turn).is_empty(),
+            "completion snapshot must not duplicate images"
+        );
+        let mut limited = GeneratedImages {
+            remaining_bytes: 10,
+            ..GeneratedImages::default()
+        };
+        assert_eq!(limited.events(&message)[0].0, "notice");
+        assert!(
+            limited.events(&message).is_empty(),
+            "only one fallback notice"
+        );
+        let mut malformed = image_notification("PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+".into());
+        let mut images = GeneratedImages::default();
+        assert_eq!(
+            images.events(&malformed)[0].0,
+            "notice",
+            "SVG is not a raster attachment"
+        );
+        malformed["params"]["item"]["id"] = json!("bad\nid");
+        assert!(images.events(&malformed).is_empty());
+        let mut count_limited = GeneratedImages::default();
+        for index in 0..MAX_GENERATED_IMAGES_PER_TURN {
+            let mut small = image_notification(image_result(8));
+            small["params"]["item"]["id"] = json!(format!("small-{index}"));
+            assert_eq!(count_limited.events(&small)[0].0, "assistant_image");
+        }
+        assert_eq!(
+            count_limited.events(&image_notification(image_result(8)))[0].0,
+            "notice"
+        );
+        let mut exact_budget = GeneratedImages::default();
+        let exact = image_notification(image_result(MAX_GENERATED_IMAGE_TURN_BYTES));
+        assert_eq!(exact_budget.events(&exact)[0].0, "assistant_image");
+        assert_eq!(exact_budget.remaining_bytes, 0);
+        let mut next = image_notification(image_result(8));
+        next["params"]["item"]["id"] = json!("next-image");
+        assert_eq!(exact_budget.events(&next)[0].0, "notice");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_server_contract_large_image_result_finishes_without_a_transport_error() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = std::fs::canonicalize(root.path()).unwrap();
+        let state = CodexChatState::default();
+        let receiver = contract_start(
+            &state,
+            &cwd,
+            &cwd.join("image-requests.jsonl"),
+            "image-result",
+            "",
+            false,
+        );
+        let events = receive_until_kind(&receiver, "completed");
+        assert!(events.iter().all(|event| event.kind != "error"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "assistant_image")
+                .count(),
+            1
+        );
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "assistant_delta" && event.data["text"] == "图片已生成"));
+        assert_eq!(events.last().unwrap().data["status"], "completed");
     }
 
     #[test]

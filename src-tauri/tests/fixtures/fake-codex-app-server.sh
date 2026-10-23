@@ -88,7 +88,18 @@ read_request file_approval_response
 printf '%s\n' '{"id":103,"method":"item/tool/requestUserInput","params":{}}'
 read_request user_input_response
 
-if [ "$scenario" = "delta-completed" ]; then
+if [ "$scenario" = "image-result" ]; then
+  image_result_path="$(dirname "$log_path")/image-result-base64.txt"
+  (printf '\211PNG\r\n\032\n'; dd if=/dev/zero bs=1048576 count=2 2>/dev/null) | base64 | tr -d '\r\n' >"$image_result_path"
+  # Old extension traffic and the v2 result both carry the same large raster.
+  printf '%s' '{"method":"codex/event/item_completed","params":{"msg":{"type":"item_completed","item":{"type":"Extension","kind":"image_gen.generation","id":"image-contract-1","status":"completed","result":"'
+  tr -d '\r\n' <"$image_result_path"
+  printf '%s\n' '"}}}}'
+  printf '%s' '{"method":"item/completed","params":{"threadId":"thread-contract-1","turnId":"turn-contract-1","item":{"type":"imageGeneration","id":"image-contract-1","status":"completed","result":"'
+  tr -d '\r\n' <"$image_result_path"
+  printf '%s\n' '","savedPath":"/outside/not-forwarded.png"}}}'
+  printf '%s\n' '{"method":"item/agentMessage/delta","params":{"delta":"图片已生成"}}'
+elif [ "$scenario" = "delta-completed" ]; then
   first_delta=$(dd if=/dev/zero bs=1 count=20000 2>/dev/null | tr '\000' a)
   second_delta=$(dd if=/dev/zero bs=1 count=20000 2>/dev/null | tr '\000' b)
   printf '%s%s%s\n' '{"method":"item/agentMessage/delta","params":{"itemId":"agent-stream-1","delta":"' "$first_delta" '"}}'

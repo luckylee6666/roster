@@ -1,23 +1,25 @@
 Cross-platform desktop app: macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 
-## What's new in v1.9.5 / 本版更新
+## What's new in v1.9.6 / 本版更新
 
 **English**
 
-- **Intel Mac installer.** Adds `Roster_1.9.5_x64.dmg` for Intel processors alongside `Roster_1.9.5_aarch64.dmg` for Apple Silicon. The Intel release job verifies the app architecture, ad-hoc signature and DMG integrity before upload. Older releases and tags are unchanged.
-- **Pi CLI integration.** Pi is the ninth registered assistant, with Developer-mode launch, project-scoped history preview/deletion, exact-ID resume and cross-CLI handoff. Conversation mode reuses Pi RPC sessions and offers `/model` and `/effort`.
-- **Pi's read-only tool configuration.** Only `read`, `grep`, `find` and `ls` are enabled; extensions, MCP, skills and prompt templates are disabled. This is not an OS sandbox or a native Pi approval mode. No writable configuration or subscription-quota panel is added. Pi still requires its own installation and login; Windows native initial-prompt launch requires an `.exe` and rejects npm `.cmd` wrappers.
-- **Repository cleanup.** Removes retired design documents and offline asset builders; the prebuilt production theme images and runtime checks remain intact.
-- **Validation scope.** Local cross-compilation validates the Intel binary/package, not real Intel hardware interaction. Pi was tested with the installed CLI against a local synthetic provider, not a real cloud-model task. Windows interactive validation, native file drag-and-drop and video playback/fullscreen checks remain manual follow-ups.
+- **Older macOS compatibility.** Fixes startup and terminal initialization on older system WebKit, including missing runtime APIs. Conversation replies fall back to safe plain text if Markdown rendering fails, allowing the send state to finish normally.
+- **Codex generated images.** Fixes “single message too large” failures when image-generation results exceed the ordinary text limit. Validated raster images display in desktop conversations and are restored from history, with duplicate completion snapshots removed. The same implementation serves Intel and Apple Silicon; ordinary protocol limits and HTML sanitization remain in place.
+- **Clickable screenshot and video links.** Local media links now open an image/video preview within the conversation workspace instead of being rejected by the text-only preview. Media is limited to 16 MiB, with the existing project/memory path boundaries; videos do not autoplay and stop when the preview closes.
+- **History and release reliability.** Codex metadata validation and content reads share one safely opened file handle, with bounded headers and symbolic-link entry rejection. Every desktop release job uses the dependency lockfile and fails if expected installers are missing.
+- **Preview limits.** Generated-image previews are limited to 8 images and 8 MiB decoded per turn. Large image events are not sent to the phone's live control stream. Ordinary generated files still need a file link in the assistant's reply; unsupported document formats do not gain a new embedded viewer.
+- **Validation scope.** Intel macOS 11.7.11 was used to verify startup, conversation replies, real Codex image generation and image recovery after restart. ARM macOS was used to verify startup and an embedded-terminal Codex command. The final Intel interactive CLI-launch check and Windows hardware interaction remain manual checks; automated regression tests and package checks do not replace them.
 
 **中文**
 
-- **Intel Mac 安装包。** 新增适配 Intel 芯片的 `Roster_1.9.5_x64.dmg`，同时保留 Apple Silicon 的 `Roster_1.9.5_aarch64.dmg`；Intel 构建上传前检查架构、adhoc 签名和 DMG 完整性，不改旧版本及标签。
-- **接入 Pi CLI。** Pi 成为第九家助手，支持开发模式启动、按项目隔离的历史预览/删除、完整 ID 精确续接和跨 CLI 交接。会话模式复用 Pi RPC 常驻进程，支持 `/model` 与 `/effort`。
-- **Pi 仅读取工具配置。** 仅开放 `read`、`grep`、`find`、`ls`，关闭扩展、MCP、skills 和提示模板。这不是 OS 沙箱，也不是 Pi 原生审批档位；本版不开放可写配置或订阅用量面板。需用户自行安装和登录 Pi；Windows 原生初始提示启动只接受 `.exe`，拒绝 npm `.cmd` 包装器。
-- **仓库清理。** 移除退役设计文档和离线素材构建器，保留已生成的生产主题图片与运行时回归检查。
-- **验收边界。** 本地交叉编译验证 Intel 二进制和安装包，不代表已验收 Intel 实机交互。Pi 使用已安装 CLI 和本地合成服务验证，未进行真实云端模型任务验收。Windows 实机交互、原生拖放、视频播放/全屏仍待人工复核。
+- **旧版 macOS 兼容。** 修复旧系统 WebKit 的启动、终端初始化和缺失 API 问题。对话 Markdown 渲染异常时会安全降级成纯文本，已完成的回复能显示，发送状态能正常结束。
+- **Codex 生成图片。** 修复生图结果超出普通文本上限后报“单条消息过大”的问题；校验后的图片可在桌面对话里显示，重新打开历史也能恢复，完成快照会去重。Intel 与 Apple Silicon 使用同一实现，保留普通协议上限与 HTML 净化。
+- **截图与视频链接。** 点击本地媒体链接会直接在会话工作台打开图片/视频预览，不再被文本预览器当成二进制拒绝。媒体上限 16 MiB，保留现有项目/记忆目录边界；视频不会自动播放，关闭预览时停止。
+- **历史与发布可靠性。** Codex 历史在同一安全打开的文件句柄上校验归属并读取内容，限制元数据首行大小、拒绝符号链接文件。所有桌面发布任务统一使用依赖锁文件，预期安装包缺失时明确失败。
+- **预览范围。** 单轮最多预览 8 张生成图片、解码后合计 8 MiB，大图片事件不进入手机实时遥控消息流。普通生成文件仍需助手提供文件链接，本版没有新增不支持格式的文档内嵌查看器。
+- **验收范围。** 已在 Intel macOS 11.7.11 验证启动、会话回复、真实 Codex 生图及重启后图片恢复；在 ARM macOS 验证启动与内置终端 Codex 命令。Intel 完整交互 CLI 启动的最后一项核对及 Windows 实机交互仍属人工验证项，自动测试和包校验不代替这些验收。
 
 ## Phone remote / 手机远程
 
@@ -29,7 +31,7 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Android app / 安卓 App
 
-`Roster-Remote_1.9.5_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.5_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+`Roster-Remote_1.9.6_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.6_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
 
 1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
 2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」

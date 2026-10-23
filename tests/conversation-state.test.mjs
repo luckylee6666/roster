@@ -64,6 +64,29 @@ test('连接恢复或完成后清除重试提示，普通通知仍保留', () =>
   assert.equal(apply(ordinary, 'completed', { status: 'completed' }).notice, '模型已切换');
 });
 
+test('生成图片附件追加到当前回答，重复、错轮次、外部地址和超量图片不接收', () => {
+  let state = startConversationTurn(createConversationState({ projectId: 'p1', providerId: 'codex' }), {
+    runId: 'image-run', projectId: 'p1', providerId: 'codex', prompt: '生成图片',
+  });
+  const attachment = { kind: 'image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,iVBORw0KGgo=', alt: '生成的图片' };
+  const imageEvent = (id, extras = {}) => ({
+    runId: 'image-run', providerId: 'codex', kind: 'assistant_image', data: { id, attachments: [attachment] }, ...extras,
+  });
+  assert.equal(applyConversationChatEvent(state, imageEvent('wrong-run', { runId: 'other' })), state);
+  assert.equal(applyConversationChatEvent(state, imageEvent('wrong-cli', { providerId: 'claude' })), state);
+  assert.equal(applyConversationChatEvent(state, imageEvent('external', { data: { id: 'external', attachments: [{ ...attachment, dataUrl: 'https://example.com/a.png' }] } })), state);
+  state = applyConversationChatEvent(state, imageEvent('image-1'));
+  state = applyConversationChatEvent(state, imageEvent('image-1'));
+  assert.equal(state.messages.at(-1).attachments.length, 1);
+  state = applyConversationChatEvent(state, { runId: 'image-run', providerId: 'codex', kind: 'assistant_message', data: { text: '图片已生成。' } });
+  assert.equal(state.messages.at(-1).text, '图片已生成。');
+  assert.equal(state.messages.at(-1).attachments.length, 1, '后续文本不能抹掉生成图片');
+  for (let index = 2; index <= 10; index += 1) state = applyConversationChatEvent(state, imageEvent(`image-${index}`));
+  assert.equal(state.messages.at(-1).attachments.length, 8);
+  state = applyConversationChatEvent(state, { runId: 'image-run', providerId: 'codex', kind: 'completed', data: { status: 'completed' } });
+  assert.equal(applyConversationChatEvent(state, imageEvent('late-image')), state);
+});
+
 test('旧运行事件不能污染当前对话，未知事件安全忽略', () => {
   const state = startConversationTurn(createConversationState({ projectId: 'p1' }), {
     runId: 'chat-new', projectId: 'p1', prompt: '开始',

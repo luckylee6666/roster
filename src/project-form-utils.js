@@ -4,7 +4,7 @@ const PROJECT_MACHINE_TAGS = {
 };
 
 export function normalizeProjectMachine(machine, serverId = '') {
-  const normalizedMachine = Object.hasOwn(PROJECT_MACHINE_TAGS, machine) ? machine : '';
+  const normalizedMachine = Object.prototype.hasOwnProperty.call(PROJECT_MACHINE_TAGS, machine) ? machine : '';
   return {
     machine: normalizedMachine,
     serverId: normalizedMachine === 'server' ? String(serverId || '') : '',

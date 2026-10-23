@@ -288,6 +288,20 @@ export function applyConversationChatEvent(state, envelope) {
       if (typeof data.text !== 'string') return state;
       return updateAssistant(clearRetryNotice(state), message => ({ ...message, text: data.text, pending: false }));
     }
+    case 'assistant_image': {
+      if (typeof data.id !== 'string' || !data.id || data.id.length > 160) return state;
+      const attachments = normalizeConversationAttachments(data.attachments).slice(0, 1);
+      if (!attachments.length) return state;
+      return updateAssistant(clearRetryNotice(state), message => {
+        const imageIds = message.generatedImageIds || [];
+        if (imageIds.includes(data.id) || imageIds.length >= 8) return message;
+        return {
+          ...message,
+          attachments: [...(message.attachments || []), ...attachments],
+          generatedImageIds: [...imageIds, data.id],
+        };
+      });
+    }
     case 'activity':
       return { ...state, activities: upsertActivity(state.activities, data) };
     case 'plan':

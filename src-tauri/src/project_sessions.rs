@@ -1,4 +1,7 @@
-use crate::conversation_media::{inline_image_attachment, ConversationAttachment};
+use crate::conversation_media::{
+    codex_generated_image_result, generated_image_attachment, inline_image_attachment,
+    ConversationAttachment,
+};
 use crate::project_memory::encode_claude_project_dir;
 use crate::session_budget::SessionBudget;
 use serde::{Deserialize, Serialize};
@@ -22,6 +25,7 @@ const TRANSCRIPT_LINE_LIMIT: usize = 256 * 1024;
 // Codex appends compaction/guardian state without removing original messages.
 // Leave bounded headroom so a compaction does not immediately hide old chat.
 const CODEX_TRANSCRIPT_FILE_READ_LIMIT: u64 = 64 * 1024 * 1024;
+const CODEX_HEADER_READ_LIMIT: usize = 1024 * 1024;
 const TRANSCRIPT_MESSAGE_LIMIT: usize = 500;
 const TRANSCRIPT_TEXT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const TRANSCRIPT_INLINE_IMAGE_LIMIT: usize = 8 * 1024 * 1024;
@@ -1227,12 +1231,26 @@ fn read_lossy_prefix(reader: &mut impl Read, limit: u64) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn codex_session_from_jsonl(path: &Path, cwd: &str) -> Option<ProjectHistorySession> {
-    let file = fs::File::open(path).ok()?;
-    let mut reader = BufReader::new(file);
-    let mut first = String::new();
-    reader.read_line(&mut first).ok()?;
-    let value: serde_json::Value = serde_json::from_str(first.trim_end()).ok()?;
+fn read_codex_header(file: &mut fs::File) -> Option<(serde_json::Value, u64)> {
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let mut line = Vec::new();
+    let read = BufReader::new(&mut *file)
+        .take(CODEX_HEADER_READ_LIMIT as u64 + 1)
+        .read_until(b'\n', &mut line)
+        .ok()?;
+    if read == 0 || read > CODEX_HEADER_READ_LIMIT {
+        return None;
+    }
+    file.seek(SeekFrom::Start(read as u64)).ok()?;
+    let value = serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(&line)).ok()?;
+    Some((value, read as u64))
+}
+
+fn codex_header_matches(
+    value: &serde_json::Value,
+    cwd: &str,
+    session_id: Option<&str>,
+) -> Option<String> {
     if value.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
         return None;
     }
@@ -1247,13 +1265,70 @@ fn codex_session_from_jsonl(path: &Path, cwd: &str) -> Option<ProjectHistorySess
     let id = payload
         .get("session_id")
         .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())?
+        .filter(|value| is_safe_component(value))?
         .to_string();
-    // session_meta.timestamp 是会话首次创建时间；`codex resume` 继续旧会话时它不会变。
-    // 最近对话应按 JSONL 的最后写入时间排序，否则今天仍在运行的旧线程会沉到数周前。
-    let at_ms = path
+    if session_id.is_some_and(|expected| expected != id) {
+        return None;
+    }
+    Some(id)
+}
+
+fn open_codex_session_file(
+    home: &Path,
+    path: &Path,
+    cwd: &str,
+    session_id: Option<&str>,
+) -> Result<fs::File, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "找不到这个 Codex 会话".to_string())?;
+    // Resolve macOS's conventional /var -> /private/var alias, then constrain the
+    // canonical directory to the Codex session root. The no-follow opener verifies
+    // the resulting path components again while opening the final file.
+    let root = fs::canonicalize(home.join(".codex").join("sessions"))
+        .map_err(|_| "找不到这个 Codex 会话".to_string())?;
+    let canonical_parent =
+        fs::canonicalize(parent).map_err(|_| "找不到这个 Codex 会话".to_string())?;
+    if !canonical_parent.starts_with(&root) {
+        return Err("找不到这个 Codex 会话".into());
+    }
+    let canonical_path = canonical_parent.join(
+        path.file_name()
+            .ok_or_else(|| "找不到这个 Codex 会话".to_string())?,
+    );
+    // Windows' handle validation constrains the resolved location but does not
+    // itself reject an ordinary final symlink that points within the directory.
+    let entry =
+        fs::symlink_metadata(&canonical_path).map_err(|_| "找不到这个 Codex 会话".to_string())?;
+    if !entry.is_file() || entry.file_type().is_symlink() {
+        return Err("找不到这个 Codex 会话".into());
+    }
+    let mut file =
+        crate::conversation_media::open_project_regular_file(&canonical_parent, &canonical_path)
+            .map_err(|_| "找不到这个 Codex 会话".to_string())?;
+    if !file
         .metadata()
-        .and_then(|meta| meta.modified())
+        .map_err(|_| "找不到这个 Codex 会话".to_string())?
+        .is_file()
+    {
+        return Err("找不到这个 Codex 会话".into());
+    }
+    let (header, _) =
+        read_codex_header(&mut file).ok_or_else(|| "找不到这个 Codex 会话".to_string())?;
+    codex_header_matches(&header, cwd, session_id)
+        .ok_or_else(|| "找不到这个 Codex 会话".to_string())?;
+    Ok(file)
+}
+
+fn codex_session_from_file(file: &mut fs::File, cwd: &str) -> Option<ProjectHistorySession> {
+    let (value, header_end) = read_codex_header(file)?;
+    let id = codex_header_matches(&value, cwd, None)?;
+    let payload = value.get("payload")?;
+    let metadata = file.metadata().ok()?;
+    // session_meta.timestamp 是会话首次创建时间；`codex resume` 继续旧会话时它不会变。
+    // 最近对话应按已打开文件的最后写入时间排序。
+    let at_ms = metadata
+        .modified()
         .ok()
         .map(millis)
         .or_else(|| {
@@ -1263,14 +1338,21 @@ fn codex_session_from_jsonl(path: &Path, cwd: &str) -> Option<ProjectHistorySess
                 .and_then(parse_rfc3339_ms)
         })
         .unwrap_or(0);
+    file.seek(SeekFrom::Start(header_end)).ok()?;
     let mut session = history_session(
         id,
         "codex",
-        &first_codex_user_text(&read_lossy_prefix(&mut reader, 64 * 1024)),
+        &first_codex_user_text(&read_lossy_prefix(file, 64 * 1024)),
         at_ms,
     );
-    session.budget = SessionBudget::for_bytes("codex", file_bytes(path));
+    file.seek(SeekFrom::Start(header_end)).ok()?;
+    session.budget = SessionBudget::for_bytes("codex", metadata.len());
     Some(session)
+}
+
+fn codex_session_from_jsonl(home: &Path, path: &Path, cwd: &str) -> Option<ProjectHistorySession> {
+    let mut file = open_codex_session_file(home, path, cwd, None).ok()?;
+    codex_session_from_file(&mut file, cwd)
 }
 
 fn list_codex_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
@@ -1294,7 +1376,7 @@ fn list_codex_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
                     if scanned > CODEX_SCAN_LIMIT {
                         return finalize_sessions(sessions);
                     }
-                    if let Some(session) = codex_session_from_jsonl(&file, cwd) {
+                    if let Some(session) = codex_session_from_jsonl(home, &file, cwd) {
                         sessions.push(session);
                         if sessions.len() >= MAX_SESSIONS_PER_TOOL {
                             return finalize_sessions(sessions);
@@ -2746,12 +2828,43 @@ fn transcript_image_slot(item: &serde_json::Value) -> bool {
         || item.get("inline_data").is_some()
 }
 
+fn codex_transcript_image_item(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    match value.get("type").and_then(serde_json::Value::as_str) {
+        Some("event_msg")
+            if value
+                .pointer("/payload/type")
+                .and_then(serde_json::Value::as_str)
+                == Some("item_completed") =>
+        {
+            value.pointer("/payload/item")
+        }
+        Some("response_item") => value.get("payload"),
+        _ => None,
+    }
+    .filter(|item| codex_generated_image_result(item).is_some())
+}
+
 fn transcript_message_from_value(
     tool: &str,
     value: &serde_json::Value,
     remaining_image_bytes: &mut usize,
     attachment_count: &mut usize,
 ) -> Option<ConversationTranscriptMessage> {
+    // Recover generated raster results from Codex's own history, not arbitrary
+    // savedPath files. This also restores a result produced before a UI error.
+    if tool == "codex" && *attachment_count < TRANSCRIPT_ATTACHMENT_LIMIT {
+        let image = codex_transcript_image_item(value);
+        if let Some(encoded) = image.and_then(codex_generated_image_result) {
+            if let Some(attachment) = generated_image_attachment(encoded, remaining_image_bytes) {
+                *attachment_count += 1;
+                return Some(ConversationTranscriptMessage {
+                    role: "assistant".into(),
+                    text: String::new(),
+                    attachments: vec![attachment],
+                });
+            }
+        }
+    }
     let role = transcript_role(tool, value)?;
     let base = match tool {
         "claude" => claude_handoff_message(value),
@@ -2814,10 +2927,27 @@ fn jsonl_transcript_candidates(buf: &str, tool: &str) -> Vec<ConversationTranscr
     let mut remaining_image_bytes = TRANSCRIPT_INLINE_IMAGE_LIMIT;
     let mut attachment_count = 0;
     let mut candidates = Vec::new();
+    let mut generated_image_ids = std::collections::HashSet::new();
     for line in buf.lines().rev() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
+        if tool == "codex" {
+            if let Some(id) = codex_transcript_image_item(&value)
+                .and_then(|item| item.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 160)
+            {
+                // Stop tracking after the attachment cap; rejected old images
+                // must not create an unbounded set while scanning the tail.
+                if generated_image_ids.contains(id) {
+                    continue;
+                }
+                if generated_image_ids.len() < TRANSCRIPT_ATTACHMENT_LIMIT {
+                    generated_image_ids.insert(id.to_owned());
+                }
+            }
+        }
         if let Some(message) = transcript_message_from_value(
             tool,
             &value,
@@ -2868,7 +2998,13 @@ fn limit_transcript_messages(
 }
 
 fn read_lossy_tail(path: &Path, limit: u64) -> Result<(String, bool), String> {
-    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    read_lossy_tail_from_file(
+        fs::File::open(path).map_err(|error| error.to_string())?,
+        limit,
+    )
+}
+
+fn read_lossy_tail_from_file(mut file: fs::File, limit: u64) -> Result<(String, bool), String> {
     let len = file.metadata().map_err(|error| error.to_string())?.len();
     let start = len.saturating_sub(limit);
     file.seek(SeekFrom::Start(start))
@@ -3073,33 +3209,8 @@ fn grok_session_dir(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf,
     }
 }
 
-fn codex_file_matches(path: &Path, cwd: &str, session_id: &str) -> bool {
-    let Ok(file) = fs::File::open(path) else {
-        return false;
-    };
-    let mut first = String::new();
-    if BufReader::new(file).read_line(&mut first).is_err() {
-        return false;
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(first.trim_end()) else {
-        return false;
-    };
-    if value.get("type").and_then(|item| item.as_str()) != Some("session_meta") {
-        return false;
-    }
-    let Some(payload) = value.get("payload") else {
-        return false;
-    };
-    if is_codex_subagent(payload) {
-        return false;
-    }
-    let Some(session_cwd) = payload.get("cwd").and_then(|item| item.as_str()) else {
-        return false;
-    };
-    if !same_project_cwd(session_cwd, cwd) {
-        return false;
-    }
-    payload.get("session_id").and_then(|item| item.as_str()) == Some(session_id)
+fn codex_file_matches(home: &Path, path: &Path, cwd: &str, session_id: &str) -> bool {
+    open_codex_session_file(home, path, cwd, Some(session_id)).is_ok()
 }
 
 fn find_codex_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
@@ -3123,8 +3234,39 @@ fn find_codex_session_path(home: &Path, cwd: &str, session_id: &str) -> Result<P
                     if scanned > CODEX_SCAN_LIMIT {
                         return Err("找不到这个 Codex 会话".into());
                     }
-                    if codex_file_matches(&file, cwd, &id) {
+                    if codex_file_matches(home, &file, cwd, &id) {
                         return Ok(file);
+                    }
+                }
+            }
+        }
+    }
+    Err("找不到这个 Codex 会话".into())
+}
+
+fn find_codex_session_file(home: &Path, cwd: &str, session_id: &str) -> Result<fs::File, String> {
+    let id = require_component_id(session_id)?;
+    let root = home.join(".codex").join("sessions");
+    let mut scanned = 0;
+    for year in sorted_named_dirs(&root).into_iter().rev() {
+        for month in sorted_named_dirs(&year).into_iter().rev() {
+            for day in sorted_named_dirs(&month).into_iter().rev() {
+                let mut files = fs::read_dir(&day)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+                    .collect::<Vec<_>>();
+                files.sort();
+                for file in files.into_iter().rev() {
+                    scanned += 1;
+                    if scanned > CODEX_SCAN_LIMIT {
+                        return Err("找不到这个 Codex 会话".into());
+                    }
+                    if let Ok(opened) = open_codex_session_file(home, &file, cwd, Some(&id)) {
+                        return Ok(opened);
                     }
                 }
             }
@@ -3792,8 +3934,8 @@ fn source_handoff_messages(
             )
         }
         "codex" => {
-            let path = find_codex_session_path(home, cwd, session_id)?;
-            let (buf, truncated) = read_lossy_tail(&path, HANDOFF_FILE_READ_LIMIT)?;
+            let file = find_codex_session_file(home, cwd, session_id)?;
+            let (buf, truncated) = read_lossy_tail_from_file(file, HANDOFF_FILE_READ_LIMIT)?;
             (
                 jsonl_handoff_candidates(&buf, codex_handoff_message),
                 truncated,
@@ -3909,8 +4051,9 @@ fn source_transcript_messages(
             (jsonl_transcript_candidates(&buf, "claude"), truncated)
         }
         "codex" => {
-            let path = find_codex_session_path(home, cwd, session_id)?;
-            let (buf, truncated) = read_lossy_tail(&path, CODEX_TRANSCRIPT_FILE_READ_LIMIT)?;
+            let file = find_codex_session_file(home, cwd, session_id)?;
+            let (buf, truncated) =
+                read_lossy_tail_from_file(file, CODEX_TRANSCRIPT_FILE_READ_LIMIT)?;
             (jsonl_transcript_candidates(&buf, "codex"), truncated)
         }
         "grok" => {
@@ -4087,14 +4230,10 @@ pub fn preview_project_session_with_home(
             ))
         }
         "codex" => {
-            let path = find_codex_session_path(home, &cwd, session_id)?;
-            let session = codex_session_from_jsonl(&path, &cwd)
+            let mut file = find_codex_session_file(home, &cwd, session_id)?;
+            let session = codex_session_from_file(&mut file, &cwd)
                 .ok_or_else(|| "找不到这个 Codex 会话".to_string())?;
-            let file = fs::File::open(&path).map_err(|error| error.to_string())?;
-            let mut reader = BufReader::new(file);
-            let mut first = String::new();
-            let _ = reader.read_line(&mut first);
-            let buf = read_lossy_prefix(&mut reader, PREVIEW_FILE_READ_LIMIT);
+            let buf = read_lossy_prefix(&mut file, PREVIEW_FILE_READ_LIMIT);
             Ok(preview_result(
                 session,
                 preview_body(&collect_codex_preview_parts(&buf)),
@@ -4203,6 +4342,41 @@ pub fn delete_project_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_generated_image_history_is_bounded_deduplicated_and_never_reads_saved_path() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\n");
+        let item = serde_json::json!({ "id":"image-history-1", "type":"Extension", "kind":"image_gen.generation",
+            "status":"completed", "result":encoded, "savedPath":"/private/not-read.png", "revisedPrompt":"private prompt" });
+        let event =
+            serde_json::json!({"type":"event_msg","payload":{"type":"item_completed","item":item}});
+        let response = serde_json::json!({"type":"response_item","payload":item});
+        let records = format!("{event}\n{response}\n");
+        let messages = jsonl_transcript_candidates(&records, "codex");
+        assert_eq!(
+            messages.len(),
+            1,
+            "legacy and response history must not duplicate one image"
+        );
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[0].text, "");
+        assert_eq!(messages[0].attachments.len(), 1);
+        assert!(messages[0].attachments[0]
+            .data_url
+            .starts_with("data:image/png;base64,"));
+        let output = serde_json::to_string(&messages).unwrap();
+        assert!(!output.contains("not-read.png") && !output.contains("private prompt"));
+        assert!(jsonl_transcript_candidates(&records, "grok").is_empty());
+        let mut wrong_kind = response.clone();
+        wrong_kind["payload"]["kind"] = serde_json::json!("other.extension");
+        assert!(jsonl_transcript_candidates(&wrong_kind.to_string(), "codex").is_empty());
+        let mut remaining = 0;
+        assert!(transcript_message_from_value("codex", &event, &mut remaining, &mut 0).is_none());
+        let mut bad_payload = event;
+        bad_payload["payload"]["item"]["result"] = serde_json::json!("not base64");
+        assert!(jsonl_transcript_candidates(&bad_payload.to_string(), "codex").is_empty());
+    }
     use std::fs;
 
     /// 人工核对：本机真实项目的历史列表里，各家会话的体积与档位是不是按预期算出来的。
@@ -4248,6 +4422,99 @@ mod tests {
         let home = root.path().join("home");
         fs::create_dir_all(&home).unwrap();
         (root, home)
+    }
+
+    fn codex_fixture_file(home: &Path, name: &str) -> PathBuf {
+        let directory = home.join(".codex/sessions/2026/10/23");
+        fs::create_dir_all(&directory).unwrap();
+        directory.join(name)
+    }
+
+    fn codex_fixture_record(session_id: &str, cwd: &str, prompt: &str) -> String {
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"session_meta","payload":{"session_id":session_id,"cwd":cwd,"timestamp":"2026-10-23T10:00:00Z","thread_source":"user"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}),
+        )
+    }
+
+    #[test]
+    fn codex_history_uses_bounded_header_and_one_validated_open_file() {
+        let (_root, home) = temp_home();
+        let cwd = "/projects/roster";
+        let session_id = "codex-safe-session";
+        let path = codex_fixture_file(&home, "rollout.jsonl");
+        fs::write(
+            &path,
+            codex_fixture_record(session_id, cwd, "original project prompt"),
+        )
+        .unwrap();
+
+        let mut file = open_codex_session_file(&home, &path, cwd, Some(session_id)).unwrap();
+        let session = codex_session_from_file(&mut file, cwd).unwrap();
+        assert_eq!(session.id, session_id);
+        assert_eq!(session.preview, "original project prompt");
+        let preview_text = read_lossy_prefix(&mut file, PREVIEW_FILE_READ_LIMIT);
+        assert!(preview_text.contains("original project prompt"));
+
+        let oversized_path = codex_fixture_file(&home, "oversized.jsonl");
+        let mut oversized_header = serde_json::json!({
+            "type":"session_meta",
+            "payload":{"session_id":"oversized-session","cwd":cwd,"padding":""}
+        });
+        oversized_header["payload"]["padding"] =
+            serde_json::json!("x".repeat(CODEX_HEADER_READ_LIMIT));
+        fs::write(&oversized_path, format!("{}\n", oversized_header)).unwrap();
+        assert!(!codex_file_matches(
+            &home,
+            &oversized_path,
+            cwd,
+            "oversized-session"
+        ));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let target = home.join("outside-project.jsonl");
+            fs::write(
+                &target,
+                codex_fixture_record("symlink-session", "/projects/other", "outside"),
+            )
+            .unwrap();
+            let link = codex_fixture_file(&home, "symlink.jsonl");
+            symlink(&target, &link).unwrap();
+            assert!(open_codex_session_file(
+                &home,
+                &link,
+                "/projects/other",
+                Some("symlink-session")
+            )
+            .is_err());
+        }
+
+        // Rename the checked path and replace it with an ordinary record for a
+        // different project. The already-open handle remains pinned to the
+        // original inode, while a fresh validation rejects the replacement.
+        let replacement_path = codex_fixture_file(&home, "replace.jsonl");
+        fs::write(
+            &replacement_path,
+            codex_fixture_record(session_id, cwd, "same project original"),
+        )
+        .unwrap();
+        let old_file =
+            open_codex_session_file(&home, &replacement_path, cwd, Some(session_id)).unwrap();
+        let moved_path = replacement_path.with_extension("held");
+        fs::rename(&replacement_path, &moved_path).unwrap();
+        fs::write(
+            &replacement_path,
+            codex_fixture_record(session_id, "/projects/other", "different project secret"),
+        )
+        .unwrap();
+        let (old_contents, _) =
+            read_lossy_tail_from_file(old_file, HANDOFF_FILE_READ_LIMIT).unwrap();
+        assert!(old_contents.contains("same project original"));
+        assert!(!old_contents.contains("different project secret"));
+        assert!(open_codex_session_file(&home, &replacement_path, cwd, Some(session_id)).is_err());
     }
 
     fn pi_fixture_entries(session_id: &str, cwd: &str) -> Vec<serde_json::Value> {

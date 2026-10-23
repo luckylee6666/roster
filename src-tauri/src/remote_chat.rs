@@ -208,8 +208,14 @@ fn send_frame(relay: &Relay, frame: Value) {
 
 /// 对话事件的抄送口：`conversation_chat` 与 `codex_chat` 发往主窗口的同一份事件。
 /// 记忆回执属于桌面内部状态，不发给手机。
+fn should_relay_event(kind: &str) -> bool {
+    !matches!(kind, "memory" | "memory_saved" | "assistant_image")
+}
+
 pub(crate) fn publish_event(run_id: &str, provider_id: &str, kind: &str, data: &Value) {
-    if matches!(kind, "memory" | "memory_saved") {
+    // Desktop raster results may be multi-MiB. Do not retain/broadcast these in
+    // the phone relay's 1024-frame control queue; phone live preview is separate.
+    if !should_relay_event(kind) {
         return;
     }
     let relay = relay();
@@ -810,6 +816,14 @@ fn handle_phone_text(txt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_desktop_images_do_not_enter_phone_control_queue() {
+        assert!(!should_relay_event("assistant_image"));
+        assert!(!should_relay_event("memory"));
+        assert!(should_relay_event("assistant_message"));
+        assert!(should_relay_event("completed"));
+    }
 
     #[test]
     fn preparing_cancel_reports_terminal_event_without_removing_active_runs() {

@@ -50,6 +50,9 @@ const MAX_DROPPED_PATH_COUNT = 16;
 const MAX_DROPPED_PATH_BYTES = 16 * 1024;
 const MAX_DROPPED_PATH_CHARS = 4096;
 const DROPPED_PATH_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+const CONVERSATION_LINK_MEDIA_DATA_URL_MAX_CHARS = 24 * 1024 * 1024;
+const CONVERSATION_LINK_IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|gif|webp|bmp|x-icon|avif|heic);base64,[a-z\d+/]*={0,2}$/i;
+const CONVERSATION_LINK_VIDEO_DATA_URL = /^data:video\/(?:mp4|webm);base64,[a-z\d+/]*={0,2}$/i;
 
 const utf8Encoder = typeof globalThis.TextEncoder === 'function'
   ? new globalThis.TextEncoder()
@@ -309,14 +312,14 @@ function renderConversationAttachments(document, target, attachments) {
     image.decoding = 'async';
     image.setAttribute('referrerpolicy', 'no-referrer');
     image.addEventListener('error', () => conversationMediaFallback(document, image, '这张历史图片无法显示'));
-    image.addEventListener('click', () => openImagePreview(attachment.dataUrl));
+    image.addEventListener('click', () => openImagePreview(attachment.dataUrl, document));
     image.src = attachment.dataUrl;
     group.appendChild(image);
   });
   if (group.children.length) target.appendChild(group);
 }
 
-function openImagePreview(source) {
+function openImagePreview(source, document = globalThis.document) {
   const mask = document.getElementById('conversation-image-preview');
   const image = document.getElementById('conversation-image-preview-img');
   if (!mask || !image || !String(source || '').startsWith('data:image/')) return;
@@ -339,12 +342,19 @@ function renderMarkdown(document, target, text, loadLocalMedia) {
     target.textContent = source;
     return;
   }
-  const raw = window.marked.parse(source, { gfm: true, breaks: true });
-  target.innerHTML = window.DOMPurify.sanitize(raw, {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ['style', 'iframe', 'object', 'embed'],
-    FORBID_ATTR: ['style', 'id', 'name'],
-  });
+  try {
+    const raw = window.marked.parse(source, { gfm: true, breaks: true });
+    target.innerHTML = window.DOMPurify.sanitize(raw, {
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ['style', 'iframe', 'object', 'embed'],
+      FORBID_ATTR: ['style', 'id', 'name'],
+    });
+  } catch (_) {
+    // Rendering must not hide a completed reply or prevent run-state cleanup.
+    // Plain text is safe even when Markdown parsing or sanitization fails.
+    target.textContent = source;
+    return;
+  }
   target.querySelectorAll('a[href]').forEach(link => {
     link.setAttribute('rel', 'noopener noreferrer');
     link.setAttribute('target', '_blank');
@@ -608,11 +618,39 @@ export function installConversationMode({
     filePreviewRevision += 1;
     dom.filePreview?.classList?.remove('active');
     dom.filePreview?.removeAttribute?.('aria-busy');
+    stopFilePreviewMedia();
     if (dom.filePreviewBody) dom.filePreviewBody.replaceChildren();
     const trigger = filePreviewTrigger;
     filePreviewTrigger = null;
     filePreviewCurrentPath = '';
     trigger?.focus?.({ preventScroll: true });
+  }
+
+  function stopFilePreviewMedia() {
+    dom.filePreviewBody?.querySelectorAll?.('video')?.forEach(video => {
+      try {
+        video.pause?.();
+        video.removeAttribute?.('src');
+        video.load?.();
+      } catch (_) {}
+    });
+  }
+
+  function validLinkPreviewMedia(preview) {
+    const kind = preview?.kind;
+    const dataUrl = typeof preview?.dataUrl === 'string' ? preview.dataUrl : '';
+    if (!dataUrl || dataUrl.length > CONVERSATION_LINK_MEDIA_DATA_URL_MAX_CHARS
+      || /[\0\r\n]/.test(dataUrl)) return null;
+    const mimeType = typeof preview?.mimeType === 'string' ? preview.mimeType.toLowerCase() : '';
+    if (kind === 'image' && CONVERSATION_LINK_IMAGE_DATA_URL.test(dataUrl)) {
+      const expectedMime = dataUrl.slice(5, dataUrl.indexOf(';')).toLowerCase();
+      return !mimeType || mimeType === expectedMime ? { kind, dataUrl } : null;
+    }
+    if (kind === 'video' && CONVERSATION_LINK_VIDEO_DATA_URL.test(dataUrl)) {
+      const expectedMime = dataUrl.slice(5, dataUrl.indexOf(';')).toLowerCase();
+      return !mimeType || mimeType === expectedMime ? { kind, dataUrl } : null;
+    }
+    return null;
   }
 
   async function openFilePreview(source, trigger = null, basePath = null) {
@@ -626,6 +664,7 @@ export function installConversationMode({
     if (dom.filePreviewTitle) dom.filePreviewTitle.textContent = '正在打开文件…';
     if (dom.filePreviewPath) dom.filePreviewPath.textContent = String(source || '');
     dom.filePreviewBody.className = 'conversation-file-preview-body';
+    stopFilePreviewMedia();
     dom.filePreviewBody.replaceChildren(
       element(document, 'div', 'conversation-file-preview-loading', '正在读取只读预览…'),
     );
@@ -645,7 +684,33 @@ export function installConversationMode({
       }
       dom.filePreviewBody.replaceChildren();
       let lineTarget = null;
-      if (preview?.kind === 'markdown' && !preview?.line) {
+      if (preview?.kind === 'image' || preview?.kind === 'video') {
+        const media = validLinkPreviewMedia(preview);
+        if (!media) {
+          dom.filePreviewBody.appendChild(element(
+            document,
+            'div',
+            'conversation-file-preview-error',
+            '图片或视频数据无效，无法预览',
+          ));
+        } else if (media.kind === 'image') {
+          const image = element(document, 'img', 'conversation-file-preview-media conversation-file-preview-image');
+          image.alt = preview.name || '项目图片';
+          image.decoding = 'async';
+          image.addEventListener('error', () => conversationMediaFallback(document, image, '此图片格式无法显示或文件已损坏'));
+          image.src = media.dataUrl;
+          dom.filePreviewBody.appendChild(image);
+        } else {
+          const video = element(document, 'video', 'conversation-file-preview-media conversation-file-preview-video');
+          video.controls = true;
+          video.preload = 'metadata';
+          video.playsInline = true;
+          video.setAttribute('aria-label', preview.name || '项目视频');
+          video.addEventListener('error', () => conversationMediaFallback(document, video, '此视频格式无法播放或文件已损坏'));
+          video.src = media.dataUrl;
+          dom.filePreviewBody.appendChild(video);
+        }
+      } else if (preview?.kind === 'markdown' && !preview?.line) {
         dom.filePreviewBody.classList.add('is-markdown');
         renderMarkdown(document, dom.filePreviewBody, preview.content, null);
         decorateCodeBlocks(dom.filePreviewBody);
@@ -4317,6 +4382,7 @@ export function installConversationMode({
       destroyed = true;
       remotePreparingRuns.forEach(cancelPreparingRemote);
       filePreviewRevision += 1;
+      stopFilePreviewMedia();
       clearUsageExpiryTimer();
       historyRevision += 1;
       transcriptRevision += 1;
