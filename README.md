@@ -10,9 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.9.4** — fixes terminal file drops on Retina Macs, adds ordinary file/folder paths to conversation drafts, and includes agy's opt-in Developer-mode full-access launch option. See the [changelog](CHANGELOG.md) for details.
-
-Unreleased: Pi is being added as the ninth registered CLI and conversation assistant; this capability is not part of v1.9.4.
+Latest release: **v1.9.5** — adds an Intel Mac installer and Pi as the ninth CLI with project history and read-only resident conversations, and removes retired design files. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -44,7 +42,7 @@ Only one instance may use each data directory. `pnpm dev` or `pnpm build:dev` cr
 - **Scan & import** — batch-import git projects from a directory (auto-reads remote, dedups by path)
 - **Search** — quickly filter by name, path, description
 - **Export** — export project data to Excel
-- **Cross-platform** — macOS (Apple Silicon) + Windows (x64 / ARM64)
+- **Cross-platform** — macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 - **Local storage** — data saved to local JSON files
 
 ## Project fields
@@ -210,8 +208,11 @@ Grab the build for your platform from [Releases](https://github.com/luckylee6666
 | Platform | File |
 | --- | --- |
 | macOS (Apple Silicon) | `Roster_x.y.z_aarch64.dmg` |
+| macOS (Intel) | `Roster_x.y.z_x64.dmg` |
 | Windows x64 | `..._x64-setup.exe` (installer) or `..._x64_en-US.msi` |
 | Windows ARM64 | `..._arm64-setup.exe` (installer) or `..._arm64_en-US.msi` (Surface / Snapdragon ARM devices) |
+
+The release workflow builds Apple Silicon and Intel Mac DMGs separately. Choose `aarch64.dmg` for Apple M-series chips and `x64.dmg` for Intel processors. Intel Mac packages are available starting with v1.9.5; older releases are unchanged.
 
 ### macOS install
 

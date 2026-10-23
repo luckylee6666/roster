@@ -64,6 +64,56 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
+  build-macos-x64:
+    needs: create-release
+    # macos-latest 是 Apple Silicon；Intel 包显式使用 x64 runner。
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-x86_64
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        # 同样沿用 tauri.conf.json 的 ad-hoc 签名，不需要 Apple 证书。
+        run: pnpm tauri build --target x86_64-apple-darwin --ci
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Verify Intel app and DMG
+        run: |
+          lipo -verify_arch x86_64 src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Roster.app/Contents/MacOS/roster
+          codesign --verify --deep --strict src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Roster.app
+          hdiutil verify src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload Intel macOS artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          fail_on_unmatched_files: true
+
   build-windows-x64:
     needs: create-release
     runs-on: windows-latest

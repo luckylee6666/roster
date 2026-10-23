@@ -1,21 +1,23 @@
-Cross-platform desktop app: macOS (Apple Silicon) + Windows (x64 / ARM64)
-跨平台桌面版：macOS (Apple Silicon) + Windows (x64 / ARM64)
+Cross-platform desktop app: macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
+跨平台桌面版：macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 
-## What's new in v1.9.4 / 本版更新
+## What's new in v1.9.5 / 本版更新
 
 **English**
 
-- **Reliable terminal file drops.** Fixes incorrect coordinate scaling on Retina Macs that could miss the terminal or target a different pane. Dropped and inserted paths use xterm's paste handling for cmd and other CLIs, without submitting the input. Invalid paths and unavailable terminals show a clear error; startup paste overflow is rejected without leaving partial input.
-- **Files in conversation drafts.** Ordinary files and folders insert quoted paths at the cursor while preserving the draft; supported images remain attachments. Dropping does not send automatically, read ordinary files or grant additional permissions. More than four images now produces an explicit limit message.
-- **agy full-access launch option.** Right-click the agy badge on a project card in Developer mode to opt into `--dangerously-skip-permissions`. It is never the default and uses a red danger badge. Conversation-mode permissions are unchanged.
-- Automated tests cover platform coordinate conversion, pane routing, paste/startup handling and conversation drops. Native Finder/File Explorer drag-and-drop still needs end-to-end confirmation on real machines; CI builds are not a substitute for that check. Video playback/fullscreen manual acceptance from v1.9.3 also remains outstanding.
+- **Intel Mac installer.** Adds `Roster_1.9.5_x64.dmg` for Intel processors alongside `Roster_1.9.5_aarch64.dmg` for Apple Silicon. The Intel release job verifies the app architecture, ad-hoc signature and DMG integrity before upload. Older releases and tags are unchanged.
+- **Pi CLI integration.** Pi is the ninth registered assistant, with Developer-mode launch, project-scoped history preview/deletion, exact-ID resume and cross-CLI handoff. Conversation mode reuses Pi RPC sessions and offers `/model` and `/effort`.
+- **Pi's read-only tool configuration.** Only `read`, `grep`, `find` and `ls` are enabled; extensions, MCP, skills and prompt templates are disabled. This is not an OS sandbox or a native Pi approval mode. No writable configuration or subscription-quota panel is added. Pi still requires its own installation and login; Windows native initial-prompt launch requires an `.exe` and rejects npm `.cmd` wrappers.
+- **Repository cleanup.** Removes retired design documents and offline asset builders; the prebuilt production theme images and runtime checks remain intact.
+- **Validation scope.** Local cross-compilation validates the Intel binary/package, not real Intel hardware interaction. Pi was tested with the installed CLI against a local synthetic provider, not a real cloud-model task. Windows interactive validation, native file drag-and-drop and video playback/fullscreen checks remain manual follow-ups.
 
 **中文**
 
-- **终端拖文件修复。** 修正 Retina Mac 上的坐标重复缩放，避免拖不到终端或落错窗格；cmd 及其他 CLI 的拖入/插入路径统一走 xterm 粘贴处理，不自动回车。非法路径、终端不可用时明确提示；启动缓存不足时整段拒绝，避免留下半截输入。
-- **会话草稿支持文件路径。** 普通文件/目录以带引号的路径插入光标处并保留草稿，支持的图片仍作为附件；不自动发送、不读取普通文件内容、不额外授予权限。超过 4 张图片会明确提示上限。
-- **agy 完全访问启动项。** 在开发模式右键项目卡片的 agy 色标，可主动选择 `--dangerously-skip-permissions`；非默认、红色危险标记，对话模式权限不变。
-- 自动化测试覆盖平台坐标换算、分屏命中、粘贴/启动队列和会话拖入；Finder/资源管理器原生拖放仍需实机端到端确认，不能用 CI 构建替代。v1.9.3 视频播放/全屏人工验收也仍待完成。
+- **Intel Mac 安装包。** 新增适配 Intel 芯片的 `Roster_1.9.5_x64.dmg`，同时保留 Apple Silicon 的 `Roster_1.9.5_aarch64.dmg`；Intel 构建上传前检查架构、adhoc 签名和 DMG 完整性，不改旧版本及标签。
+- **接入 Pi CLI。** Pi 成为第九家助手，支持开发模式启动、按项目隔离的历史预览/删除、完整 ID 精确续接和跨 CLI 交接。会话模式复用 Pi RPC 常驻进程，支持 `/model` 与 `/effort`。
+- **Pi 仅读取工具配置。** 仅开放 `read`、`grep`、`find`、`ls`，关闭扩展、MCP、skills 和提示模板。这不是 OS 沙箱，也不是 Pi 原生审批档位；本版不开放可写配置或订阅用量面板。需用户自行安装和登录 Pi；Windows 原生初始提示启动只接受 `.exe`，拒绝 npm `.cmd` 包装器。
+- **仓库清理。** 移除退役设计文档和离线素材构建器，保留已生成的生产主题图片与运行时回归检查。
+- **验收边界。** 本地交叉编译验证 Intel 二进制和安装包，不代表已验收 Intel 实机交互。Pi 使用已安装 CLI 和本地合成服务验证，未进行真实云端模型任务验收。Windows 实机交互、原生拖放、视频播放/全屏仍待人工复核。
 
 ## Phone remote / 手机远程
 
@@ -27,7 +29,7 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Android app / 安卓 App
 
-`Roster-Remote_1.9.4_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.4_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+`Roster-Remote_1.9.5_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.5_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
 
 1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
 2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」
@@ -42,7 +44,7 @@ Quit the installed Roster before replacing it, then reopen to load the update. R
 
 **macOS** — ad-hoc signed, not notarized / adhoc 签名，未公证：
 
-1. Open the `.dmg`, drag the app into Applications / 打开 `.dmg`，把应用拖入「应用程序」
+1. Choose `aarch64.dmg` for Apple M-series or `x64.dmg` for Intel, then drag the app into Applications / 苹果 M 系列选 `aarch64.dmg`，Intel 选 `x64.dmg`，打开后把应用拖入「应用程序」
 2. If first launch is blocked: **System Settings → Privacy & Security → Open Anyway** / 首次打开被拦：**系统设置 → 隐私与安全性 → 仍要打开**
 
 **Windows** — unsigned, SmartScreen may warn / 未签名，可能出现 SmartScreen 提示：

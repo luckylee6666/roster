@@ -10,9 +10,7 @@
 
 <p align="center">多 AI CLI 指挥台桌面应用，基于 Tauri v2 构建。</p>
 
-最新版本：**v1.9.4** — 修复 Retina Mac 终端拖入文件的坐标问题，会话草稿支持拖入普通文件/目录路径，并包含 agy 开发模式可选的完全访问启动项。详情见[更新日志](CHANGELOG.md)。
-
-尚未发布：正在加入第九家 CLI 与对话助手 Pi；该能力尚未包含在 v1.9.4 中。
+最新版本：**v1.9.5** — 新增 Intel Mac 安装包，接入第九家 CLI Pi、项目历史与只读常驻对话，并清理退役设计文件。详情见[更新日志](CHANGELOG.md)。
 
 ## 功能特性
 
@@ -44,7 +42,7 @@
 - **扫描导入** — 扫描目录批量导入 git 项目（自动读取 remote、按路径去重）
 - **搜索过滤** — 快速搜索项目名称、路径、描述
 - **数据导出** — 导出项目数据为 Excel 文件
-- **跨平台** — macOS (Apple Silicon) + Windows (x64 / ARM64)
+- **跨平台** — macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 - **本地存储** — 数据自动保存到本地 JSON 文件
 
 ## 项目信息字段
@@ -209,8 +207,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 | 平台 | 文件 |
 | --- | --- |
 | macOS (Apple Silicon) | `Roster_x.y.z_aarch64.dmg` |
+| macOS（Intel）| `Roster_x.y.z_x64.dmg` |
 | Windows x64 | `..._x64-setup.exe`（安装版）或 `..._x64_en-US.msi` |
 | Windows ARM64 | `..._arm64-setup.exe`（安装版）或 `..._arm64_en-US.msi`（Surface / 骁龙等 ARM 设备）|
+
+发布流水线分别生成 Apple Silicon 和 Intel Mac 的 DMG：苹果 M 系列芯片选择 `aarch64.dmg`，Intel 芯片选择 `x64.dmg`。Intel Mac 包从 v1.9.5 起提供，旧版本附件不变。
 
 ### macOS 安装说明
 
