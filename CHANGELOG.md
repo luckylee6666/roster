@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased
+
+### English
+
+**Build maintenance**
+- Fix Intel Mac architecture verification on older Xcode by placing the input file before `lipo -verify_arch`. Add an existing-tag Intel-only backfill workflow with pinned source commit/version checks and no asset overwrites; no application code or published tags are changed.
+
+### 中文
+
+**构建维护**
+- 修正旧版 Xcode 的 Intel Mac 架构校验命令顺序，把输入文件放在 `lipo -verify_arch` 前；增加按现有标签固定源码及版本、仅补 Intel 包且拒绝覆盖附件的手动流程，不改应用代码或已发布标签。
+
 ## v1.9.5
 
 ### English

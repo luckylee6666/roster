@@ -103,7 +103,7 @@ jobs:
 
       - name: Verify Intel app and DMG
         run: |
-          lipo -verify_arch x86_64 src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Roster.app/Contents/MacOS/roster
+          lipo src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Roster.app/Contents/MacOS/roster -verify_arch x86_64
           codesign --verify --deep --strict src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Roster.app
           hdiutil verify src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 

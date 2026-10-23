@@ -1,0 +1,103 @@
+name: Backfill Intel Mac DMG
+
+# 修复打包流水线后，用现有标签源码补包；不挪 tag、不改 Release 正文或其他附件。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to build (for example v1.9.5)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: intel-backfill-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  backfill-intel:
+    runs-on: macos-15-intel
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Validate release and resolve original source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag" >&2; exit 1; }
+          test "$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | any')" = false
+          existing_asset="$(gh release view "$RELEASE_TAG" --json assets --jq ".assets[] | select(.name == \"Roster_${RELEASE_TAG#v}_x64.dmg\") | .name")"
+          [[ -z "$existing_asset" ]] || { echo "Intel DMG already exists; refusing to overwrite" >&2; exit 1; }
+          tag_refs="$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}")"
+          release_sha="$(printf '%s\n' "$tag_refs" | awk '$2 ~ /\^\{\}$/ {print $1}')"
+          if [[ -z "$release_sha" ]]; then
+            release_sha="$(printf '%s\n' "$tag_refs" | awk 'NF == 2 {print $1}')"
+          fi
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Release tag did not resolve to one commit" >&2; exit 1; }
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check source version against release tag
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const expected = process.env.RELEASE_TAG.slice(1);
+          const versions = [
+            JSON.parse(fs.readFileSync('package.json', 'utf8')).version,
+            JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).version,
+            fs.readFileSync('src-tauri/Cargo.toml', 'utf8').match(/^version = "([^"]+)"$/m)?.[1],
+            fs.readFileSync('src-tauri/Cargo.lock', 'utf8').match(/\[\[package\]\]\nname = "roster"\nversion = "([^"]+)"/)?.[1],
+          ];
+          if (!versions.every(version => version === expected)) throw new Error('Source versions do not match release tag');
+          NODE
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-x86_64
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm tauri build --target x86_64-apple-darwin --ci
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Verify Intel app and DMG
+        run: |
+          lipo src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Roster.app/Contents/MacOS/roster -verify_arch x86_64
+          codesign --verify --deep --strict src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Roster.app
+          hdiutil verify "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/Roster_${RELEASE_TAG#v}_x64.dmg"
+
+      - name: Upload missing Intel DMG only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/Roster_${RELEASE_TAG#v}_x64.dmg"
