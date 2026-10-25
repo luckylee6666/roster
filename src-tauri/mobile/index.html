@@ -237,6 +237,24 @@
   .md th, .md td { padding: 6px 10px; border: 1px solid var(--line); text-align: left; }
   .md hr { border: 0; height: 1px; background: var(--line); margin: 14px 0; }
   .md .media-placeholder { color: var(--faint); font-size: 13px; }
+  .message-attachments { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .msg.user .message-attachments { align-items: flex-end; }
+  .attachment-preview { max-width: min(100%, 460px); color: var(--muted); font-size: 12px; }
+  .attachment-media { display: block; max-width: 100%; max-height: 55vh; object-fit: contain; border-radius: 12px; background: #111; }
+  .attachment-retry { margin: 6px 6px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; color: var(--ink); background: var(--surface-2); font: inherit; font-size: 12px; }
+  .media-decode-fallback { display: block; color: var(--muted); }
+  img.attachment-media { cursor: zoom-in; }
+  .file-preview-mask, .image-viewer-mask { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; background: var(--bg); }
+  .file-preview-mask[hidden], .image-viewer-mask[hidden] { display: none; }
+  .file-preview-head { display: flex; align-items: center; gap: 12px; min-height: 54px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  .file-preview-head strong { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-preview-head button, .image-viewer-close { border: 0; border-radius: 10px; padding: 8px 12px; color: var(--ink); background: var(--surface-2); font: inherit; }
+  .file-preview-content { flex: 1; overflow: auto; padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); overflow-wrap: anywhere; }
+  .file-preview-content pre { white-space: pre-wrap; font: 13px/1.6 var(--mono); }
+  .file-preview-media { display: block; max-width: 100%; max-height: 100%; margin: 0 auto; object-fit: contain; }
+  .image-viewer-mask { z-index: 50; align-items: center; justify-content: center; padding: 12px; background: rgba(0, 0, 0, .94); }
+  .image-viewer-close { position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 10px; z-index: 1; color: #fff; background: rgba(80, 80, 80, .7); }
+  .image-viewer-image { max-width: 100%; max-height: 100%; object-fit: contain; }
   .turn-note { display: inline-flex; margin: 8px 0 0; padding: 4px 10px; border-radius: 999px; font-size: 12.5px;
     color: var(--muted); background: var(--surface-2); }
   .md > .turn-note:first-child { margin-top: 0; }
@@ -447,6 +465,14 @@
 
 <div class="sheet-mask" id="sheetMask" hidden>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
+</div>
+<div class="file-preview-mask" id="filePreviewMask" hidden role="dialog" aria-modal="true" aria-labelledby="filePreviewTitle">
+  <header class="file-preview-head"><strong id="filePreviewTitle">文件预览</strong><button id="filePreviewClose" type="button">关闭</button></header>
+  <div class="file-preview-content" id="filePreviewContent"></div>
+</div>
+<div class="image-viewer-mask" id="imageViewerMask" hidden role="dialog" aria-modal="true" aria-label="图片预览">
+  <button class="image-viewer-close" id="imageViewerClose" type="button">关闭</button>
+  <img class="image-viewer-image" id="imageViewerImage" alt="" />
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
 

@@ -1,25 +1,23 @@
 Cross-platform desktop app: macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 
-## What's new in v1.9.6 / 本版更新
+## What's new in v1.9.7 / 本版更新
 
 **English**
 
-- **Older macOS compatibility.** Fixes startup and terminal initialization on older system WebKit, including missing runtime APIs. Conversation replies fall back to safe plain text if Markdown rendering fails, allowing the send state to finish normally.
-- **Codex generated images.** Fixes “single message too large” failures when image-generation results exceed the ordinary text limit. Validated raster images display in desktop conversations and are restored from history, with duplicate completion snapshots removed. The same implementation serves Intel and Apple Silicon; ordinary protocol limits and HTML sanitization remain in place.
-- **Clickable screenshot and video links.** Local media links now open an image/video preview within the conversation workspace instead of being rejected by the text-only preview. Media is limited to 16 MiB, with the existing project/memory path boundaries; videos do not autoplay and stop when the preview closes.
-- **History and release reliability.** Codex metadata validation and content reads share one safely opened file handle, with bounded headers and symbolic-link entry rejection. Every desktop release job uses the dependency lockfile and fails if expected installers are missing.
-- **Preview limits.** Generated-image previews are limited to 8 images and 8 MiB decoded per turn. Large image events are not sent to the phone's live control stream. Ordinary generated files still need a file link in the assistant's reply; unsupported document formats do not gain a new embedded viewer.
-- **Validation scope.** Intel macOS 11.7.11 was used to verify startup, conversation replies, real Codex image generation and image recovery after restart. ARM macOS was used to verify startup and an embedded-terminal Codex command. The final Intel interactive CLI-launch check and Windows hardware interaction remain manual checks; automated regression tests and package checks do not replace them.
+- **Codex model and effort selection.** If the local model catalog is empty, missing or unreadable, Roster falls back to a bounded, read-only App Server model-list query. Model names and effort options come from Codex rather than a hard-coded list. Failed discovery leaves a retry entry and preserves saved choices. This is the same implementation on Intel and Apple Silicon.
+- **Images on your phone.** Generated image attachments now appear live, in history and after reconnecting. Tap an image to enlarge it. WebSocket events contain small opaque references; media is fetched separately with PIN authentication and project checks.
+- **Project file previews on your phone.** Open text/Markdown, raster image and supported small video links without switching to the desktop. The existing project/memory-root and symbolic-link checks remain in place; videos do not autoplay and are released on close. PDF/Office documents do not gain a full embedded viewer.
+- **Bounded media access.** Images are limited to 8 MiB each, videos to 16 MiB, and the server cache to 32 MiB / 64 entries / 10 minutes. Only two media reads run at once, with the permit kept for the lifetime of the response data. Stopping remote access revokes the PIN and clears media; stale requests cannot repopulate a new session's cache. Reopen history to recover expired attachments.
+- **Validation scope.** Automated frontend/Rust regressions cover request races, cache bounds, safe links and process cleanup. Real local Codex model discovery and Chrome at phone dimensions were tested with synthetic HTTP/WebSocket data, including live/history/reconnect images and text/image file previews. Physical Android/Intel/Windows interaction and video codec playback remain manual checks; browser fixtures do not replace them.
 
 **中文**
 
-- **旧版 macOS 兼容。** 修复旧系统 WebKit 的启动、终端初始化和缺失 API 问题。对话 Markdown 渲染异常时会安全降级成纯文本，已完成的回复能显示，发送状态能正常结束。
-- **Codex 生成图片。** 修复生图结果超出普通文本上限后报“单条消息过大”的问题；校验后的图片可在桌面对话里显示，重新打开历史也能恢复，完成快照会去重。Intel 与 Apple Silicon 使用同一实现，保留普通协议上限与 HTML 净化。
-- **截图与视频链接。** 点击本地媒体链接会直接在会话工作台打开图片/视频预览，不再被文本预览器当成二进制拒绝。媒体上限 16 MiB，保留现有项目/记忆目录边界；视频不会自动播放，关闭预览时停止。
-- **历史与发布可靠性。** Codex 历史在同一安全打开的文件句柄上校验归属并读取内容，限制元数据首行大小、拒绝符号链接文件。所有桌面发布任务统一使用依赖锁文件，预期安装包缺失时明确失败。
-- **预览范围。** 单轮最多预览 8 张生成图片、解码后合计 8 MiB，大图片事件不进入手机实时遥控消息流。普通生成文件仍需助手提供文件链接，本版没有新增不支持格式的文档内嵌查看器。
-- **验收范围。** 已在 Intel macOS 11.7.11 验证启动、会话回复、真实 Codex 生图及重启后图片恢复；在 ARM macOS 验证启动与内置终端 Codex 命令。Intel 完整交互 CLI 启动的最后一项核对及 Windows 实机交互仍属人工验证项，自动测试和包校验不代替这些验收。
+- **Codex 模型与思考深度。** 本地模型目录为空、缺失或无法读取时，改用有界、只读的 App Server 模型列表查询；模型名称和强度选项来自 Codex，不写死。查询失败保留重试入口和已有选择，Intel 与 Apple Silicon 共用实现。
+- **手机显示图片。** 生成图片附件可实时显示、从历史恢复，并在断线重连后补齐，点击图片可放大。WebSocket 只传小型不透明标识，媒体通过需要 PIN 鉴权、核对项目归属的独立通道读取。
+- **手机文件预览。** 文本/Markdown、图片和受支持的小视频链接可直接在手机打开，不必切回电脑。保留项目/对应记忆目录边界和符号链接检查；视频不自动播放，关闭时释放。不提供完整 PDF/Office 查看器。
+- **媒体读取边界。** 单张图片最多 8 MiB、视频最多 16 MiB；服务端缓存最多 32 MiB / 64 条 / 10 分钟。最多同时两路媒体读取，限流许可随响应数据生命周期释放。停止远程访问时作废 PIN 并清空媒体，旧请求不能跨重开填回新缓存；过期附件可重新打开历史恢复。
+- **验收范围。** 前端/Rust 自动回归覆盖请求竞态、缓存边界、安全链接和进程清理；实际验证本机 Codex 模型查询，并在 Chrome 手机尺寸下用合成 HTTP/WebSocket 数据验证实时/历史/重连图片和文本/图片链接预览。实体安卓、Intel/Windows 交互及视频编码实播仍需人工验收，浏览器夹具不代替真机结论。
 
 ## Phone remote / 手机远程
 
@@ -31,7 +29,7 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Android app / 安卓 App
 
-`Roster-Remote_1.9.6_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.6_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+`Roster-Remote_1.9.7_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.7_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
 
 1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
 2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」

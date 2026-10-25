@@ -23,6 +23,15 @@ const TERMINAL_EVENTS = new Set(['completed', 'error', 'cancelled']);
 // 电脑收下请求后会先登记这一轮；超过这个时间都没有任何回音，多半是电脑端窗口不在了。
 const ACK_TIMEOUT_MS = 25_000;
 const PROMPT_MAX_BYTES = 64 * 1024;
+const MAX_MEDIA_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_MEDIA_URL_COUNT = 24;
+const MAX_MEDIA_URL_BYTES = 64 * 1024 * 1024;
+const MAX_THREAD_MEDIA_COUNT = 16;
+const MAX_THREAD_MEDIA_BYTES = 32 * 1024 * 1024;
+const MEDIA_FETCH_CONCURRENCY = 2;
+const SAFE_IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const SAFE_VIDEO_MIME = new Set(['video/mp4', 'video/webm']);
+const MOBILE_MARKDOWN_URI_REGEXP = /^(?:(?:(?:https?|file):\/\/|mailto:|tel:)|[a-z]:[\\/]|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 const PROVIDERS = {
   claude: { label: 'Claude', mark: 'Cl' },
   codex: { label: 'Codex', mark: 'Cx' },
@@ -59,7 +68,41 @@ function readModes() {
   }
 }
 
+function createMediaRequestQueue(limit) {
+  const pending = [];
+  let active = 0;
+  const pump = () => {
+    while (active < limit && pending.length) {
+      const request = pending.shift();
+      if (!request.isCurrent()) {
+        request.reject(new Error('已离开当前内容'));
+        continue;
+      }
+      active += 1;
+      Promise.resolve().then(request.task).then(request.resolve, request.reject).finally(() => {
+        active -= 1;
+        pump();
+      });
+    }
+  };
+  return {
+    run(task, isCurrent = () => true) {
+      return new Promise((resolve, reject) => {
+        pending.push({ task, isCurrent, resolve, reject });
+        pump();
+      });
+    },
+    pendingCount: () => pending.length,
+    activeCount: () => active,
+  };
+}
+
 let pin = storage.get(PIN_KEY) || '';
+const mediaObjectUrls = new Map();
+let previewRevision = 0;
+let previewUrl = '';
+let enlargedImageUrl = '';
+const mediaRequestQueue = createMediaRequestQueue(MEDIA_FETCH_CONCURRENCY);
 // 扫码进入：URL 带 ?k=PIN 自动登录，并立刻从地址栏抹掉明文 PIN。
 const urlPin = new URLSearchParams(location.search).get('k');
 if (urlPin) {
@@ -168,6 +211,134 @@ async function api(path, params = {}) {
   try { body = await response.json(); } catch (_) {}
   if (!response.ok) throw new Error(body?.error || `请求失败（${response.status}）`);
   return body;
+}
+
+function validAttachment(value) {
+  if (!value || typeof value !== 'object') return null;
+  const id = String(value.id || '');
+  const kind = value.kind;
+  const mimeType = String(value.mimeType || '').toLowerCase();
+  if (!id || id.length > 256 || /[\u0000-\u001f\u007f]/.test(id)) return null;
+  if (kind === 'image' && SAFE_IMAGE_MIME.has(mimeType)) {
+    return { id, kind, mimeType, name: String(value.name || '图片').slice(0, 200) };
+  }
+  if (kind === 'video' && SAFE_VIDEO_MIME.has(mimeType)) {
+    return { id, kind, mimeType, name: String(value.name || '视频').slice(0, 200) };
+  }
+  return null;
+}
+
+async function fetchMedia(projectId, attachment, isCurrent = () => true) {
+  const safe = validAttachment(attachment);
+  if (!safe || !pin) throw new Error('媒体信息无效');
+  let response;
+  try {
+    const query = new URLSearchParams({ token: pin, project: projectId, id: safe.id });
+    response = await fetch(`/api/chat/media?${query}`, { cache: 'no-store' });
+  } catch (_) {
+    throw new Error('媒体读取失败，请确认手机仍连接电脑');
+  }
+  if (response.status === 401) {
+    const error = new Error('PIN 错误或已失效');
+    error.auth = true;
+    throw error;
+  }
+  if (!response.ok) {
+    throw new Error(`媒体读取失败（${response.status}）`);
+  }
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_MEDIA_RESPONSE_BYTES) {
+    throw new Error('媒体文件超过手机预览上限');
+  }
+  const blob = await response.blob();
+  if (blob.size > MAX_MEDIA_RESPONSE_BYTES) throw new Error('媒体文件超过手机预览上限');
+  if (!isCurrent()) throw new Error('已离开当前内容');
+  const mime = String(blob.type || response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  const allowed = safe.kind === 'image' ? SAFE_IMAGE_MIME : SAFE_VIDEO_MIME;
+  if (!allowed.has(mime) || mime !== safe.mimeType) throw new Error('媒体类型与附件信息不符');
+  const inUse = [...mediaObjectUrls.values()].reduce((sum, size) => sum + size, 0);
+  if (mediaObjectUrls.size >= MAX_MEDIA_URL_COUNT || inUse + blob.size > MAX_MEDIA_URL_BYTES) {
+    throw new Error('手机媒体缓存已满，请关闭并重新打开对话');
+  }
+  const url = URL.createObjectURL(blob);
+  mediaObjectUrls.set(url, blob.size);
+  return url;
+}
+
+function addAttachmentRetry(target, thread, attachment, messageId) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'attachment-retry';
+  button.textContent = '重试';
+  button.addEventListener('click', () => {
+    if (app.thread !== thread) return;
+    invalidateThreadAttachment(thread, attachment.id);
+    const entry = thread.nodes.get(messageId);
+    if (entry) entry.attachments = null;
+    renderThread();
+  });
+  target.appendChild(button);
+}
+
+function invalidateThreadAttachment(thread, attachmentId) {
+  const cached = thread?.mediaCache?.get(attachmentId);
+  if (typeof cached === 'string') {
+    const size = mediaObjectUrls.get(cached) || 0;
+    releaseMediaUrl(cached);
+    thread.mediaByteCount = Math.max(0, thread.mediaByteCount - size);
+  }
+  thread?.mediaCache?.delete(attachmentId);
+}
+
+function setMediaDecodeFallback(media, target, name, retry = null) {
+  media.addEventListener('error', () => {
+    stopMediaSources(media.parentElement || target);
+    const fallback = document.createElement('span');
+    fallback.className = 'media-decode-fallback';
+    fallback.textContent = `${name} · 格式无法解码或媒体已损坏`;
+    target.replaceChildren(fallback);
+    if (retry) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'attachment-retry';
+      button.textContent = '重新读取';
+      button.addEventListener('click', retry);
+      target.appendChild(button);
+    }
+  }, { once: true });
+}
+
+function releaseMediaUrl(url) {
+  if (!url || !mediaObjectUrls.has(url)) return;
+  mediaObjectUrls.delete(url);
+  URL.revokeObjectURL(url);
+}
+
+function classifyMarkdownHref(value) {
+  const source = typeof value === 'string' ? value.trim() : '';
+  if (!source) return { kind: 'none' };
+  if (source.startsWith('#')) return { kind: 'anchor', href: source };
+  if (/^file:\/\//i.test(source) || /^[a-z]:[\\/]/i.test(source)) {
+    return { kind: 'local', source };
+  }
+  let parsed = null;
+  try { parsed = new URL(source, location.href); } catch (_) {}
+  if (!parsed || !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    return { kind: 'blocked' };
+  }
+  if (/^(?:https?:)?\/\//i.test(source)) return { kind: 'external', href: parsed.href };
+  return { kind: 'local', source };
+}
+
+function clearMediaUrls() {
+  if (app.thread) releaseThreadMedia(app.thread);
+  stopMediaSources(document);
+  mediaObjectUrls.forEach((_, url) => URL.revokeObjectURL(url));
+  mediaObjectUrls.clear();
+  app.thread?.mediaCache?.clear();
+  if (app.thread) app.thread.mediaByteCount = 0;
+  previewUrl = '';
+  enlargedImageUrl = '';
 }
 
 async function loadBootstrap() {
@@ -285,6 +456,7 @@ function onHello(frame) {
     const snapshot = app.liveRuns.get(thread.state.runId);
     if (snapshot) {
       thread.state = withSnapshot(thread.state, snapshot);
+      addSnapshotAttachments(thread, snapshot);
     } else if (app.seenRuns.has(thread.state.runId)) {
       // 断线期间这一轮已经结束：结果以磁盘历史为准，重新读一遍。
       thread.state = settleLocally(thread.state);
@@ -308,17 +480,27 @@ function onEvent(frame) {
   if (TERMINAL_EVENTS.has(frame.kind)) app.liveRuns.delete(frame.runId);
   else if (run && frame.kind === 'thread' && frame.data?.threadId) run.threadId = frame.data.threadId;
   else if (run && frame.kind === 'turn') run.status = 'running';
+  if (frame.kind === 'assistant_image') {
+    syncLiveRunAttachment(run, frame.providerId, frame.data?.attachment);
+  }
 
   const thread = app.thread;
   if (thread && thread.state.runId === frame.runId) {
     const before = thread.state;
+    let attachmentChanged = false;
+    if (frame.kind === 'assistant_image'
+      && frame.providerId === (before.runProviderId || before.providerId)
+      && ACTIVE.has(before.status)) {
+      const assistant = [...before.messages].reverse().find(message => message.role === 'assistant');
+      attachmentChanged = addThreadAttachment(thread, assistant?.id, frame.data?.attachment);
+    }
     thread.state = applyConversationChatEvent(before, {
       runId: frame.runId,
       providerId: frame.providerId,
       kind: frame.kind,
       data: frame.data,
     });
-    if (thread.state !== before) scheduleThreadRender();
+    if (thread.state !== before || attachmentChanged) scheduleThreadRender();
     if (ACTIVE.has(before.status) && !ACTIVE.has(thread.state.status)) onThreadSettled(thread);
   }
   if (TERMINAL_EVENTS.has(frame.kind) || frame.kind === 'thread') {
@@ -480,6 +662,10 @@ function logout(message = '') {
   clearInterval(pingTimer);
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   terminalPanel.close();
+  if (app.thread) releaseThreadMedia(app.thread, { detachMessages: true });
+  closeFilePreview();
+  closeImageViewer();
+  clearMediaUrls();
   storage.remove(PIN_KEY);
   pin = '';
   app.thread = null;
@@ -693,6 +879,10 @@ function newThread({ projectId, providerId, title, session = null }) {
     // 每一轮的结局（失败原因 / 已停止）留在那一轮的回复里，下一轮开始后也看得到。
     outcomes: new Map(),
     nodes: new Map(),
+    attachmentMetadata: new Map(),
+    mediaCache: new Map(),
+    mediaByteCount: 0,
+    mediaGeneration: 0,
   };
 }
 
@@ -735,9 +925,27 @@ function openLiveRun(run) {
 
 function transcriptText(message) {
   const images = Number(message.images) || 0;
-  const note = images ? `［${images} 张图片，请在电脑上查看］` : '';
+  const hasAttachments = Array.isArray(message.attachments) && message.attachments.length > 0;
+  const note = images && !hasAttachments ? `［${images} 个附件］` : '';
   if (!message.text) return note;
   return note ? `${message.text}\n\n${note}` : message.text;
+}
+
+function normalizePhoneTranscript(messages) {
+  const eligible = Array.isArray(messages)
+    ? messages.filter(message => message && (message.role === 'user' || message.role === 'assistant'))
+    : [];
+  const normalized = eligible.map(message => {
+    const attachments = Array.isArray(message.attachments)
+      ? message.attachments.map(validAttachment).filter(Boolean).slice(0, 8)
+      : [];
+    const baseText = transcriptText({ ...message, attachments });
+    return { role: message.role, text: baseText, attachments };
+  });
+  return {
+    messages: normalized.map(({ role, text }) => ({ role, text })),
+    attachments: normalized.map(message => message.attachments),
+  };
 }
 
 async function loadTranscript(thread) {
@@ -749,13 +957,19 @@ async function loadTranscript(thread) {
   try {
     const data = await api('/api/chat/transcript', { project: thread.projectId, tool: thread.providerId, id: sessionId });
     if (app.thread !== thread || ACTIVE.has(thread.state.status)) return;
+    const transcript = normalizePhoneTranscript(data?.messages);
+    releaseThreadMedia(thread, { detachMessages: true });
     thread.state = loadConversationTranscript({
       projectId: thread.projectId,
       providerId: thread.providerId,
       sourceTool: thread.providerId,
       threadId: sessionId,
-      messages: (Array.isArray(data?.messages) ? data.messages : [])
-        .map(message => ({ role: message.role, text: transcriptText(message) })),
+      messages: transcript.messages,
+    });
+    thread.attachmentMetadata.clear();
+    transcript.attachments.forEach((attachments, index) => {
+      const stateMessage = thread.state.messages[index];
+      if (stateMessage && attachments.length) thread.attachmentMetadata.set(stateMessage.id, attachments);
     });
     thread.truncated = Boolean(data?.truncated);
     if (data?.title && thread.title === '新对话') thread.title = data.title;
@@ -800,12 +1014,44 @@ function withSnapshot(state, run) {
   return next;
 }
 
+function addThreadAttachment(thread, messageId, attachment) {
+  const safe = validAttachment(attachment);
+  if (!safe || !thread || !messageId) return false;
+  const current = thread.attachmentMetadata.get(messageId) || [];
+  if (current.some(item => item.id === safe.id) || current.length >= 8) return false;
+  thread.attachmentMetadata.set(messageId, [...current, safe]);
+  return true;
+}
+
+function syncLiveRunAttachment(run, providerId, attachment) {
+  if (!run || run.providerId !== providerId || !ACTIVE.has(run.status)) return false;
+  const safe = validAttachment(attachment);
+  if (!safe || safe.kind !== 'image') return false;
+  const current = Array.isArray(run.attachments) ? run.attachments : [];
+  if (current.some(item => item?.id === safe.id) || current.length >= 8) return false;
+  run.attachments = [...current, safe];
+  return true;
+}
+
+function addSnapshotAttachments(thread, run) {
+  const message = [...thread.state.messages].reverse().find(item => item.role === 'assistant');
+  if (!message || !Array.isArray(run?.attachments)) return false;
+  let changed = false;
+  run.attachments.slice(0, 8).forEach(attachment => {
+    changed = addThreadAttachment(thread, message.id, attachment) || changed;
+  });
+  return changed;
+}
+
 /** 电脑端（或另一台手机）发起、正好属于当前这条对话的一轮：接上它的事件流。 */
 function attachLiveRun(run) {
   const thread = app.thread;
   if (!thread || thread.loading || !runMatchesThread(run, thread)) return;
   if (thread.state.runId === run.runId) {
-    if (ACTIVE.has(thread.state.status)) thread.state = withSnapshot(thread.state, run);
+    if (ACTIVE.has(thread.state.status)) {
+      thread.state = withSnapshot(thread.state, run);
+      addSnapshotAttachments(thread, run);
+    }
     scheduleThreadRender();
     return;
   }
@@ -823,6 +1069,7 @@ function attachLiveRun(run) {
   });
   if (next === base) return;
   thread.state = withSnapshot(next, run);
+  addSnapshotAttachments(thread, run);
   thread.boundRunId = run.runId;
   thread.startedAt.set(run.runId, Number(run.startedAtMs) || Date.now());
   scheduleThreadRender({ follow: true });
@@ -853,7 +1100,40 @@ function leaveThread() {
   thread.ackTimers.clear();
   clearInterval(elapsedTimer);
   elapsedTimer = null;
+  releaseThreadMedia(thread, { detachMessages: true });
+  closeFilePreview();
+  closeImageViewer();
   app.thread = null;
+}
+
+function stopMediaSources(root) {
+  root?.querySelectorAll?.('video').forEach(video => {
+    try { video.pause(); } catch (_) {}
+    video.querySelectorAll?.('source').forEach(source => source.removeAttribute('src'));
+    video.removeAttribute('src');
+    try { video.load(); } catch (_) {}
+  });
+  root?.querySelectorAll?.('img').forEach(image => {
+    if (String(image.getAttribute('src') || '').startsWith('blob:')) image.removeAttribute('src');
+  });
+}
+
+function releaseThreadMedia(thread, { detachMessages = false } = {}) {
+  if (!thread) return;
+  thread.mediaGeneration += 1;
+  thread.nodes?.forEach(entry => {
+    stopMediaSources(entry.node);
+    entry.node.querySelectorAll?.('img, video').forEach(media => media.remove());
+    if (detachMessages) entry.node.remove();
+    else entry.attachments = null;
+  });
+  if (detachMessages) {
+    thread.nodes?.clear();
+    if (app.thread === thread) $('threadBody').replaceChildren();
+  }
+  thread?.mediaCache?.forEach(value => { if (typeof value === 'string') releaseMediaUrl(value); });
+  thread?.mediaCache?.clear();
+  thread.mediaByteCount = 0;
 }
 
 // ----- 渲染 -----
@@ -865,11 +1145,12 @@ function renderMarkdown(target, text) {
   }
   const fragment = window.DOMPurify.sanitize(window.marked.parse(String(text), { gfm: true, breaks: true }), {
     USE_PROFILES: { html: true },
+    ALLOWED_URI_REGEXP: MOBILE_MARKDOWN_URI_REGEXP,
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'video', 'audio', 'source', 'picture'],
     FORBID_ATTR: ['style', 'id', 'name', 'srcset'],
     RETURN_DOM_FRAGMENT: true,
   });
-  // 图片与本机文件链接在手机上打不开，也不该让手机去请求：换成文字占位。
+  // 正文图片不直接请求其 src；附件通过鉴权媒体端点显示，本地链接走独立预览。
   fragment.querySelectorAll('img').forEach(image => {
     const span = document.createElement('span');
     span.className = 'media-placeholder';
@@ -877,14 +1158,23 @@ function renderMarkdown(target, text) {
     image.replaceWith(span);
   });
   fragment.querySelectorAll('a').forEach(link => {
-    const href = link.getAttribute('href') || '';
-    if (/^https?:\/\//i.test(href)) {
+    const decision = classifyMarkdownHref(link.getAttribute('href'));
+    delete link.dataset.fileSource;
+    if (decision.kind === 'none' || decision.kind === 'blocked') {
+      link.removeAttribute('href');
+      link.removeAttribute('target');
+      link.removeAttribute('rel');
+    } else if (decision.kind === 'anchor') {
+      link.setAttribute('href', decision.href);
+      link.removeAttribute('target');
+      link.removeAttribute('rel');
+    } else if (decision.kind === 'external') {
+      link.setAttribute('href', decision.href);
       link.setAttribute('rel', 'noopener noreferrer');
       link.setAttribute('target', '_blank');
-    } else {
-      const span = document.createElement('span');
-      span.textContent = link.textContent;
-      link.replaceWith(span);
+    } else if (decision.kind === 'local') {
+      link.setAttribute('href', '#');
+      link.dataset.fileSource = decision.source;
     }
   });
   target.replaceChildren(fragment);
@@ -913,20 +1203,229 @@ function outcomeNote(outcome) {
 }
 
 function fillMessage(node, message, thread) {
+  const attachments = thread.attachmentMetadata.get(message.id) || [];
+  const container = node.querySelector('.message-attachments') || document.createElement('div');
+  container.className = 'message-attachments';
+  container.replaceChildren();
+  attachments.forEach(attachment => container.appendChild(createAttachmentElement(thread, attachment, message.id)));
+  if (!attachments.length) container.remove();
   if (message.role === 'user') {
     node.querySelector('.bubble').textContent = message.text;
+    if (attachments.length) node.appendChild(container);
     return;
   }
   const target = node.querySelector('.md');
   if (!message.text && message.pending) {
     target.innerHTML = '<span class="typing" aria-label="正在回复"><i></i><i></i><i></i></span>';
+    if (attachments.length) node.appendChild(container);
     return;
   }
   const outcome = message.pending ? null : thread?.outcomes.get(String(message.id).replace(/-assistant$/, ''));
   if (message.text) renderMarkdown(target, message.text);
   else if (outcome) target.replaceChildren();
-  else target.textContent = '（没有文字回复）';
+  else if (!attachments.length) target.textContent = '（没有文字回复）';
+  else target.replaceChildren();
   if (outcome) target.appendChild(outcomeNote(outcome));
+  if (attachments.length) node.appendChild(container);
+}
+
+function openImageViewer(url, name) {
+  enlargedImageUrl = url;
+  const image = $('imageViewerImage');
+  image.src = url;
+  image.alt = name || '图片';
+  $('imageViewerMask').hidden = false;
+}
+
+function closeImageViewer() {
+  $('imageViewerMask').hidden = true;
+  const image = $('imageViewerImage');
+  image.removeAttribute('src');
+  image.alt = '';
+  enlargedImageUrl = '';
+}
+
+function closeFilePreview() {
+  previewRevision += 1;
+  $('filePreviewMask').hidden = true;
+  $('filePreviewTitle').textContent = '';
+  stopMediaSources($('filePreviewContent'));
+  $('filePreviewContent').replaceChildren();
+  releaseMediaUrl(previewUrl);
+  previewUrl = '';
+}
+
+async function openFilePreview(source, thread) {
+  closeFilePreview();
+  if (!thread || app.thread !== thread || !source) return;
+  const revision = previewRevision;
+  $('filePreviewTitle').textContent = '正在读取文件…';
+  $('filePreviewMask').hidden = false;
+  try {
+    const data = await api('/api/chat/file', { project: thread.projectId, source });
+    if (revision !== previewRevision || app.thread !== thread) return;
+    $('filePreviewTitle').textContent = String(data?.name || '文件').slice(0, 200);
+    const content = $('filePreviewContent');
+    content.replaceChildren();
+    if ((data?.kind === 'text' || data?.kind === 'markdown') && typeof data.content === 'string') {
+      if (data.kind === 'markdown' || /\.md(?:$|:)/i.test(String(data.name || ''))) renderMarkdown(content, data.content);
+      else {
+        const pre = document.createElement('pre');
+        pre.textContent = data.content;
+        content.appendChild(pre);
+      }
+      return;
+    }
+    const attachment = validAttachment(data?.attachment);
+    if (!attachment) throw new Error('文件类型不支持预览');
+    $('filePreviewTitle').textContent = attachment.name;
+    const isCurrent = () => revision === previewRevision && app.thread === thread;
+    const url = await mediaRequestQueue.run(
+      () => fetchMedia(thread.projectId, attachment, isCurrent),
+      isCurrent,
+    );
+    if (revision !== previewRevision || app.thread !== thread) {
+      releaseMediaUrl(url);
+      return;
+    }
+    previewUrl = url;
+    const media = document.createElement(attachment.kind === 'image' ? 'img' : 'video');
+    media.className = 'file-preview-media';
+    media.src = url;
+    setMediaDecodeFallback(media, content, attachment.name, () => { void openFilePreview(source, thread); });
+    if (attachment.kind === 'image') media.alt = attachment.name;
+    else {
+      media.controls = true;
+      media.preload = 'metadata';
+      media.playsInline = true;
+      media.setAttribute('playsinline', '');
+    }
+    content.appendChild(media);
+  } catch (error) {
+    if (revision !== previewRevision) return;
+    if (error.auth) {
+      logout('PIN 已失效，请重新连接电脑');
+      return;
+    }
+    $('filePreviewTitle').textContent = '无法预览';
+    const note = document.createElement('p');
+    note.textContent = error.message === '文件类型不支持预览'
+      ? '这种文件类型暂不支持预览'
+      : '文件读取失败，请检查连接或文件是否仍可访问';
+    $('filePreviewContent').replaceChildren(note);
+    if (error.message !== '文件类型不支持预览') {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'attachment-retry';
+      retry.textContent = '重新读取';
+      retry.addEventListener('click', () => { void openFilePreview(source, thread); });
+      $('filePreviewContent').appendChild(retry);
+    }
+  }
+}
+
+function handleLocalFileClick(event) {
+  const link = event.target.closest?.('a[data-file-source]');
+  if (!link) return;
+  event.preventDefault();
+  if (app.view !== 'thread' || !app.thread) return;
+  void openFilePreview(link.dataset.fileSource, app.thread);
+}
+
+$('threadBody').addEventListener('click', handleLocalFileClick);
+$('filePreviewContent').addEventListener('click', handleLocalFileClick);
+$('filePreviewClose').addEventListener('click', closeFilePreview);
+$('filePreviewMask').addEventListener('click', event => {
+  if (event.target === $('filePreviewMask')) closeFilePreview();
+});
+$('imageViewerClose').addEventListener('click', closeImageViewer);
+$('imageViewerMask').addEventListener('click', event => {
+  if (event.target === $('imageViewerMask')) closeImageViewer();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    if (!$('imageViewerMask').hidden) closeImageViewer();
+    else if (!$('filePreviewMask').hidden) closeFilePreview();
+  }
+});
+window.addEventListener('pagehide', () => {
+  closeFilePreview();
+  closeImageViewer();
+  clearMediaUrls();
+});
+window.addEventListener('pageshow', () => {
+  if (app.view === 'thread') renderThread();
+});
+
+function createAttachmentElement(thread, attachment, messageId) {
+  const safe = validAttachment(attachment);
+  const wrap = document.createElement('div');
+  wrap.className = 'attachment-preview';
+  if (!safe) {
+    wrap.textContent = '附件不可预览';
+    return wrap;
+  }
+  wrap.textContent = `${safe.name} · 正在读取`;
+  let load = thread.mediaCache.get(safe.id);
+  if (!load) {
+    if (thread.mediaCache.size >= MAX_THREAD_MEDIA_COUNT) {
+      wrap.textContent = '手机端附件预览数量已达上限';
+      return wrap;
+    }
+    const generation = thread.mediaGeneration;
+    const isCurrent = () => app.thread === thread && pin !== '' && thread.mediaGeneration === generation;
+    load = mediaRequestQueue.run(
+      () => fetchMedia(thread.projectId, safe, isCurrent),
+      isCurrent,
+    ).then(url => {
+      if (!isCurrent()) {
+        releaseMediaUrl(url);
+        throw new Error('已离开当前内容');
+      }
+      const size = mediaObjectUrls.get(url) || 0;
+      if (thread.mediaByteCount + size > MAX_THREAD_MEDIA_BYTES) {
+        releaseMediaUrl(url);
+        throw new Error('当前对话媒体缓存已达上限');
+      }
+      thread.mediaByteCount += size;
+      thread.mediaCache.set(safe.id, url);
+      return url;
+    }).catch(error => {
+      throw error;
+    });
+    thread.mediaCache.set(safe.id, load);
+  } else if (typeof load === 'string') load = Promise.resolve(load);
+  load.then(url => {
+    if (app.thread !== thread || !wrap.isConnected) return;
+    const media = document.createElement(safe.kind === 'image' ? 'img' : 'video');
+    media.className = 'attachment-media';
+    media.src = url;
+    if (safe.kind === 'image') {
+      media.alt = safe.name;
+      media.addEventListener('click', () => openImageViewer(url, safe.name));
+    } else {
+      media.controls = true;
+      media.preload = 'metadata';
+      media.playsInline = true;
+      media.setAttribute('playsinline', '');
+    }
+    setMediaDecodeFallback(media, wrap, safe.name, () => {
+      invalidateThreadAttachment(thread, safe.id);
+      const entry = thread.nodes.get(messageId);
+      if (entry) entry.attachments = null;
+      renderThread();
+    });
+    wrap.replaceChildren(media);
+  }).catch(error => {
+    if (!wrap.isConnected) return;
+    wrap.replaceChildren();
+    const note = document.createElement('span');
+    note.textContent = error.auth ? '媒体读取需要重新登录' : `${safe.name} · ${error.message === '已离开当前内容' ? '请求已取消' : '无法读取'}`;
+    wrap.appendChild(note);
+    if (!error.auth && error.message !== '已离开当前内容') addAttachmentRetry(wrap, thread, safe, messageId);
+    if (error.auth && app.view !== 'login') logout('PIN 已失效，请重新连接电脑');
+  });
+  return wrap;
 }
 
 function noticeHtml(thread) {
@@ -995,13 +1494,18 @@ function renderThread({ follow = false } = {}) {
   thread.state.messages.forEach(message => {
     let entry = thread.nodes.get(message.id);
     if (!entry) {
-      entry = { node: messageNode(message), text: null, pending: null };
+      entry = { node: messageNode(message), text: null, pending: null, attachments: null };
       thread.nodes.set(message.id, entry);
     }
-    if (entry.text !== message.text || entry.pending !== message.pending) {
+    const attachmentKey = JSON.stringify([
+      message.attachments || [],
+      thread.attachmentMetadata.get(message.id) || [],
+    ]);
+    if (entry.text !== message.text || entry.pending !== message.pending || entry.attachments !== attachmentKey) {
       fillMessage(entry.node, message, thread);
       entry.text = message.text;
       entry.pending = message.pending;
+      entry.attachments = attachmentKey;
     }
     live.add(message.id);
     wanted.push(entry.node);

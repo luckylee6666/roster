@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.9.7
+
+### English
+
+- Recover Codex model and reasoning-effort selection when its local model cache is empty, missing or unreadable by using a bounded, read-only App Server `model/list` probe. Share discovery across model/effort requests; never create a conversation or hard-code model names. Failed discovery keeps a visible retry entry and preserves saved selections.
+- Show generated/history image attachments on the phone through a PIN-authenticated, project-scoped media endpoint, with small opaque references in live events and reconnect snapshots instead of Base64 in the control queue. Bound media cache size, lifetime and concurrent reads; revoke cached media when remote access stops.
+- Preview linked project text/Markdown, images and supported small videos directly on the phone. Keep file-root and symlink checks, HTML sanitization and media type/size limits; release media when leaving the view. This is not a general PDF/Office viewer or a project-external file browser.
+
+### 中文
+
+- 修复 Codex 本地模型缓存为空、缺失或无法读取时模型/思考深度入口消失：通过有界、只读的 App Server `model/list` 获取可选项，模型与强度查询共用探测，不创建对话、不写死模型名；查询失败保留重试入口和已有选择。
+- 手机支持显示生成图片及历史图片附件，实时事件与重连快照只传不透明媒体标识，图片经 PIN 鉴权、项目隔离的独立通道读取，不把 Base64 塞进遥控队列；缓存大小、有效期和并发读取有界，停止远程访问时回收缓存。
+- 手机可直接预览对话链接中的项目文本/Markdown、图片和受支持的小视频，保留目录边界、符号链接检查、HTML 净化及媒体类型/大小限制，离开预览时释放媒体；不提供完整 PDF/Office 查看器或项目外文件浏览。
+
 ## v1.9.6
 
 ### English

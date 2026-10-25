@@ -112,10 +112,10 @@ const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
 const MAX_IMAGE_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_TURN_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GENERATED_IMAGES_PER_TURN: usize = 8;
-const NATIVE_PROVIDER_ID: &str = "roster_openai_native";
+pub(crate) const NATIVE_PROVIDER_ID: &str = "roster_openai_native";
 // Process-local alias: Codex still owns authentication and chooses the official
 // ChatGPT/API endpoint. Keep the name OpenAI so Codex preserves its native routing.
-const NATIVE_PROVIDER_CONFIG: &str = "model_providers.roster_openai_native={name=\"OpenAI\",wire_api=\"responses\",requires_openai_auth=true,supports_websockets=true,stream_max_retries=1,supports_standalone_web_search=true,env_http_headers={OpenAI-Organization=\"OPENAI_ORGANIZATION\",OpenAI-Project=\"OPENAI_PROJECT\"}}";
+pub(crate) const NATIVE_PROVIDER_CONFIG: &str = "model_providers.roster_openai_native={name=\"OpenAI\",wire_api=\"responses\",requires_openai_auth=true,supports_websockets=true,stream_max_retries=1,supports_standalone_web_search=true,env_http_headers={OpenAI-Organization=\"OPENAI_ORGANIZATION\",OpenAI-Project=\"OPENAI_PROJECT\"}}";
 const MAX_PROTOCOL_MESSAGES: usize = 16_384;
 const MAX_PROTOCOL_TURN_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ASSISTANT_TURN_BYTES: usize = 2 * 1024 * 1024;

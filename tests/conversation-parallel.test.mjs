@@ -350,8 +350,14 @@ function fixture({
         return transcript ? { messages: transcript } : null;
       }
       if (command === 'pick_attachment_images') return pickedImages;
-      if (command === 'conversation_model_list') return { models: slashLists.models };
-      if (command === 'conversation_effort_list') return { efforts: slashLists.efforts };
+      if (command === 'conversation_model_list') {
+        if (slashLists.modelsError) throw new Error(slashLists.modelsError);
+        return { models: slashLists.models };
+      }
+      if (command === 'conversation_effort_list') {
+        if (slashLists.effortsError) throw new Error(slashLists.effortsError);
+        return { efforts: slashLists.efforts };
+      }
       if (command === 'conversation_mode_list') {
         if (modeReadQueue.length) return modeReadQueue.shift().promise;
         if (modeGate) return modeGate.promise;
@@ -2043,6 +2049,55 @@ test('模型和推理强度带助手归属，换助手时不会把上一家的�
   );
   await flush();
   assert.deepEqual(fx.tuningRows(), ['mode'], 'Claude 这边确实没有模型列表');
+});
+
+test('Codex 空目录保留模型与推理入口，可重试恢复且不改变权限', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex'], t });
+  await flush();
+  assert.deepEqual(fx.tuningRows(), ['model', 'effort', 'mode']);
+  fx.pickTuning('mode', 'full-access');
+  fx.openTuning('model');
+  const panel = fx.el('conversation-tuning-panel');
+  assert.ok(panel.childNodes.some(node => /暂未读取到模型列表/.test(node.textContent)));
+  assert.deepEqual(fx.tuningOptions(), [], '失败不伪造模型或让默认按钮掩盖故障');
+  const retry = panel.childNodes.find(node => node.dataset.retryCatalog === 'true');
+  assert.ok(retry);
+  fx.setSlashLists({
+    models: [{ id: 'fixture-model', label: '测试模型', efforts: ['medium', 'high'] }],
+    efforts: ['medium', 'high'].map(id => ({ id, label: id })),
+  });
+  fx.clickWithBubble(retry);
+  assert.ok(panel.childNodes.some(node => /正在读取/.test(node.textContent)));
+  await flush();
+  assert.equal(panel.hidden, false, '重试不被外部点击处理误收起');
+  assert.ok(fx.tuningOptions().includes('fixture-model'));
+  fx.pickTuning('model', 'fixture-model');
+  fx.pickTuning('effort', 'high');
+  assert.match(fx.el('conversation-tuning-summary').textContent, /fixture-model · high · 完全访问权限/);
+});
+
+test('模型查询失败不清除已有值、不显示原始错误，切助手清除失败状态', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], installed: ['codex', 'claude'], t });
+  await flush();
+  fx.setSlashLists({ models: [{ id: 'fixture-model', efforts: ['high'] }], efforts: [{ id: 'high' }] });
+  fx.pickAssistant('codex');
+  await flush();
+  fx.pickTuning('model', 'fixture-model');
+  fx.pickTuning('effort', 'high');
+  fx.setSlashLists({ modelsError: 'private-config-location', effortsError: 'private-config-location' });
+  fx.pickAssistant('claude');
+  await flush();
+  fx.pickAssistant('codex');
+  await flush();
+  assert.match(fx.el('conversation-tuning-summary').textContent, /fixture-model · high/);
+  fx.openTuning('effort');
+  const text = fx.el('conversation-tuning-panel').childNodes.map(node => node.textContent).join('\n');
+  assert.match(text, /暂未读取到推理强度/);
+  assert.doesNotMatch(text, /private-config-location/);
+  fx.setSlashLists({ models: [], efforts: [] });
+  fx.pickAssistant('claude');
+  await flush();
+  assert.deepEqual(fx.tuningRows(), ['mode'], '旧助手的失败状态不可串到新助手');
 });
 
 test('CLI 目录里没有的模型/强度会被丢掉，不再每轮带着它去撞 Model not found', async t => {

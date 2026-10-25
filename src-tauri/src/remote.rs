@@ -151,13 +151,14 @@ impl RemoteHub {
     /// 生成新 PIN 并监听）、广播关闭信号（accept 循环停止 + 所有已连接的手机会话断开）。
     pub fn stop(&self) {
         self.started.store(false, Ordering::SeqCst);
-        self.stop_epoch.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut t) = self.token.lock() {
             t.clear();
         }
+        self.stop_epoch.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut g) = self.auth.lock() {
             *g = AuthGuard::default();
         }
+        crate::remote_chat::clear_media_cache();
         let _ = self.shutdown_tx.send(());
     }
 

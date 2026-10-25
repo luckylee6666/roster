@@ -7435,6 +7435,15 @@ html[data-app-view="developer"] #conversation-surface {
 
 .conversation-tuning-row-arrow { color: var(--chat-faint); }
 
+.conversation-tuning-status {
+  max-width: 280px;
+  margin: 4px 9px 8px;
+  color: var(--chat-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
 .conversation-tuning-back {
   color: var(--chat-muted);
   font-size: 11px;

@@ -11,6 +11,8 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod codex_catalog;
+
 const MAX_COMMANDS: usize = 80;
 const MAX_MODELS: usize = 40;
 const MAX_EFFORTS: usize = 8;
@@ -18,7 +20,8 @@ const MAX_SKILL_FILE_BYTES: usize = 64 * 1024;
 const MAX_INSPECT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MODEL_LIST_BYTES: usize = 64 * 1024;
 const MAX_EFFORT_LIST_BYTES: usize = 16 * 1024;
-const MAX_CODEX_MODELS_CACHE_BYTES: usize = 512 * 1024;
+// CLI 缓存还会携带大型说明/提示词；这里只把经白名单收敛的字段交给 UI。
+const MAX_CODEX_MODELS_CACHE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SCANNED_FILES: usize = 240;
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(8);
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(12);
@@ -117,7 +120,7 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
     let provider = normalize_provider(provider_id)?;
     let cwd = crate::codex_chat::validate_project_path(project_path)?;
     let models = match provider {
-        "codex" => parse_codex_models_cache(&read_codex_models_cache().unwrap_or_default()).0,
+        "codex" => codex_catalog::catalog(&cwd)?.0,
         "claude" => {
             let raw = capture_cli_help("claude", &cwd).unwrap_or_default();
             parse_help_model_aliases(&raw)
@@ -478,7 +481,7 @@ pub fn list_efforts(
     let provider = normalize_provider(provider_id)?;
     let cwd = crate::codex_chat::validate_project_path(project_path)?;
     let efforts = match provider {
-        "codex" => parse_codex_models_cache(&read_codex_models_cache().unwrap_or_default()).1,
+        "codex" => codex_catalog::catalog(&cwd)?.1,
         "grok" => grok_catalog(&cwd).1,
         "claude" | "cmd" => {
             let Ok(binary) = resolve_provider_bin(provider) else {
@@ -1117,93 +1120,137 @@ fn finish_efforts(
 }
 
 pub fn parse_codex_models_cache(raw: &str) -> (Vec<ConversationModel>, Vec<ConversationEffort>) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return (Vec::new(), Vec::new());
     };
-    let mut models: Vec<(String, String, bool)> = Vec::new();
+    let Some(items) = value.get("models").and_then(Value::as_array) else {
+        return (Vec::new(), Vec::new());
+    };
+    parse_codex_model_items(items)
+}
+
+/// Both the on-disk catalog and model/list are untrusted CLI data. Only picker
+/// fields survive, with shared per-field and item limits; prompts never escape.
+fn parse_codex_model_items(items: &[Value]) -> (Vec<ConversationModel>, Vec<ConversationEffort>) {
+    let mut models = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut effort_ids = Vec::new();
-    let mut effort_seen = std::collections::HashSet::new();
-    let mut per_model: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    let Some(items) = value.get("models").and_then(serde_json::Value::as_array) else {
-        return (Vec::new(), Vec::new());
-    };
+    let mut default_effort = None;
     for item in items {
-        let visibility = item
-            .get("visibility")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("list");
-        if visibility == "hide" {
+        if item.get("hidden").and_then(Value::as_bool) == Some(true)
+            || item.get("visibility").and_then(Value::as_str) == Some("hide")
+        {
             continue;
         }
         let Some(id) = item
-            .get("slug")
+            .get("model")
+            .or_else(|| item.get("slug"))
             .or_else(|| item.get("id"))
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .and_then(normalize_model_id)
         else {
             continue;
         };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
         let label = item
             .get("display_name")
             .or_else(|| item.get("displayName"))
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("")
             .trim();
         let label = if label.is_empty() {
             id.clone()
         } else {
-            label.chars().take(80).collect()
+            label
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(80)
+                .collect()
         };
+        let current = item
+            .get("isDefault")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut mine = Vec::new();
         if let Some(levels) = item
             .get("supported_reasoning_levels")
-            .and_then(serde_json::Value::as_array)
+            .or_else(|| item.get("supportedReasoningEfforts"))
+            .and_then(Value::as_array)
         {
             for level in levels {
                 if let Some(effort) = level
                     .get("effort")
-                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| level.get("reasoningEffort"))
+                    .and_then(Value::as_str)
                     .and_then(normalize_effort_id)
                 {
                     if !mine.contains(&effort) {
                         mine.push(effort.clone());
-                    }
-                    if effort_seen.insert(effort.clone()) {
                         effort_ids.push(effort);
+                    }
+                    if mine.len() >= MAX_EFFORTS {
+                        break;
                     }
                 }
             }
         }
-        per_model.insert(id.clone(), mine);
-        models.push((id, label, false));
+        if current {
+            default_effort = item
+                .get("defaultReasoningEffort")
+                .and_then(Value::as_str)
+                .and_then(normalize_effort_id)
+                .filter(|effort| mine.contains(effort));
+        }
+        models.push(ConversationModel {
+            id,
+            label,
+            current,
+            efforts: mine,
+        });
+        if models.len() >= MAX_MODELS {
+            break;
+        }
     }
-    const ORDER: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+    const ORDER: [&str; 8] = [
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ];
     effort_ids.sort_by_key(|id| ORDER.iter().position(|item| *item == id).unwrap_or(100));
-    let mut models = finish_models(models);
-    for model in &mut models {
-        model.efforts = per_model.remove(&model.id).unwrap_or_default();
-    }
-    (
-        models,
-        finish_efforts(
-            effort_ids
-                .into_iter()
-                .map(|id| (id.clone(), effort_label(&id), false)),
-        ),
-    )
+    let efforts = finish_efforts(effort_ids.into_iter().map(|id| {
+        let current = default_effort.as_ref() == Some(&id);
+        (id.clone(), effort_label(&id), current)
+    }));
+    (models, efforts)
 }
 
 fn read_codex_models_cache() -> Option<String> {
     let path = dirs::home_dir()?.join(".codex/models_cache.json");
-    let meta = fs::symlink_metadata(&path).ok()?;
+    read_codex_models_cache_path(&path)
+}
+
+fn read_codex_models_cache_path(path: &Path) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
     if meta.file_type().is_symlink() || !meta.is_file() {
         return None;
     }
     if meta.len() > MAX_CODEX_MODELS_CACHE_BYTES as u64 {
         return None;
     }
-    let file = File::open(&path).ok()?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Recheck the opened handle too: replacement after lstat must not turn
+        // this bounded regular-file read into a symlink/FIFO read.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    let opened = file.metadata().ok()?;
+    if !opened.is_file() || opened.len() > MAX_CODEX_MODELS_CACHE_BYTES as u64 {
+        return None;
+    }
     let mut buf = Vec::new();
     file.take((MAX_CODEX_MODELS_CACHE_BYTES + 1) as u64)
         .read_to_end(&mut buf)
@@ -2288,6 +2335,32 @@ mod tests {
             ["low", "xhigh", "max"]
         );
         assert!(!efforts.iter().any(|item| item.id == "ultra"));
+    }
+
+    #[test]
+    fn codex_disk_catalog_accepts_large_metadata_but_rejects_oversized_and_invalid_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("models_cache.json");
+        let raw = json!({"models":[{"slug":"cached-model","instructions":"x".repeat(600 * 1024)}]})
+            .to_string();
+        fs::write(&path, raw).unwrap();
+        let raw = read_codex_models_cache_path(&path).unwrap();
+        assert_eq!(parse_codex_models_cache(&raw).0[0].id, "cached-model");
+        File::create(&path)
+            .unwrap()
+            .set_len((MAX_CODEX_MODELS_CACHE_BYTES + 1) as u64)
+            .unwrap();
+        assert!(read_codex_models_cache_path(&path).is_none());
+        fs::write(&path, [0xff, 0]).unwrap();
+        assert!(read_codex_models_cache_path(&path).is_none());
+        assert!(read_codex_models_cache_path(root.path()).is_none());
+        assert!(read_codex_models_cache_path(&root.path().join("missing")).is_none());
+        #[cfg(unix)]
+        {
+            let link = root.path().join("linked-cache.json");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(read_codex_models_cache_path(&link).is_none());
+        }
     }
 
     #[cfg(unix)]

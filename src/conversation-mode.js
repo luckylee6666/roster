@@ -947,6 +947,8 @@ export function installConversationMode({
   let slashCommands = mergeConversationSlashCommands([]);
   let slashModels = [];
   let slashEfforts = [];
+  let slashModelError = '';
+  let slashEffortError = '';
   let slashModelsLoading = false;
   let slashRevision = 0;
   // 这三份列表是"某个助手在某个项目"下发现的，必须带归属。
@@ -961,6 +963,8 @@ export function installConversationMode({
       slashCommands = mergeConversationSlashCommands([]);
       slashModels = [];
       slashEfforts = [];
+      slashModelError = '';
+      slashEffortError = '';
       slashOwner = '';
       slashModelsLoading = false;
       renderSlashMenu();
@@ -970,10 +974,13 @@ export function installConversationMode({
     const includeEffort = provider.supportsEffort;
     slashModels = [];
     slashEfforts = [];
+    slashModelError = '';
+    slashEffortError = '';
     slashOwner = provider.id;
     slashModelsLoading = true;
     slashCommands = mergeConversationSlashCommands([], { includeModel, includeEffort });
     renderSlashMenu();
+    renderTuning();
     try {
       const [commandsResult, modelsResult, effortsResult] = await Promise.allSettled([
         invoke('conversation_slash_list', {
@@ -1003,6 +1010,14 @@ export function installConversationMode({
       slashEfforts = effortsResult.status === 'fulfilled' && Array.isArray(effortsResult.value?.efforts)
         ? effortsResult.value.efforts
         : [];
+      // Codex 的本地目录可能为空；不把查询失败伪装成「不支持模型选择」。
+      // 不展示原始 IPC 错误，其中可能有本机路径或服务端配置。
+      slashModelError = includeModel && (modelsResult.status === 'rejected'
+        || (provider.id === 'codex' && !slashModels.length))
+        ? '暂未读取到模型列表。可重试，已有选择不会丢失。' : '';
+      slashEffortError = includeEffort && (effortsResult.status === 'rejected'
+        || (provider.id === 'codex' && !slashModels.length && !slashEfforts.length))
+        ? '暂未读取到推理强度列表。可重试，已有选择不会丢失。' : '';
       // 存着的模型/强度这家现在没有了（CLI 升级换过目录、或从别的会话继承来的）
       // 就丢掉。留着它每一轮都会原样发给 CLI，对方只回一句 "Model not found"，
       // 用户看到每轮都失败却不知道为什么。模式表早就是这套做法；列表为空
@@ -1016,6 +1031,8 @@ export function installConversationMode({
       slashCommands = mergeConversationSlashCommands([], { includeModel, includeEffort });
       slashModels = [];
       slashEfforts = [];
+      slashModelError = includeModel ? '读取模型列表失败，请重试。' : '';
+      slashEffortError = includeEffort ? '读取推理强度列表失败，请重试。' : '';
     }
     slashOwner = provider.id;
     slashModelsLoading = false;
@@ -1177,12 +1194,16 @@ export function installConversationMode({
     const sections = [];
     const provider = currentProvider();
     const loadingLists = slashModelsLoading && ownsSlashLists();
+    const modelError = ownsSlashLists() ? slashModelError : '';
+    const effortError = ownsSlashLists() ? slashEffortError : '';
     const models = activeSlashModels();
-    if (models.length || (provider.supportsModel && loadingLists)) {
+    if (models.length || (provider.supportsModel && (loadingLists || modelError))) {
       sections.push({
         key: 'model',
         label: '模型',
-        value: !models.length && loadingLists ? '读取中' : (currentModel() || '默认'),
+        value: modelError ? '读取失败 · 重试' : (!models.length && loadingLists ? '读取中' : (currentModel() || '默认')),
+        error: modelError,
+        loading: loadingLists,
         options: models.map(item => ({ id: item.id, label: item.label || item.id })),
         current: currentModel(),
         apply: id => {
@@ -1195,11 +1216,13 @@ export function installConversationMode({
       });
     }
     const efforts = activeSlashEfforts();
-    if (efforts.length || (provider.supportsEffort && loadingLists)) {
+    if (efforts.length || (provider.supportsEffort && (loadingLists || effortError))) {
       sections.push({
         key: 'effort',
         label: '推理强度',
-        value: !efforts.length && loadingLists ? '读取中' : (currentEffort() || '默认'),
+        value: effortError ? '读取失败 · 重试' : (!efforts.length && loadingLists ? '读取中' : (currentEffort() || '默认')),
+        error: effortError,
+        loading: loadingLists,
         options: efforts.map(item => ({ id: item.id, label: item.label || item.id })),
         current: currentEffort(),
         apply: id => {
@@ -1307,6 +1330,24 @@ export function installConversationMode({
       renderTuning();
     });
     panel.appendChild(back);
+    if (section.loading || section.error) {
+      const status = element(document, 'p', 'conversation-tuning-status',
+        section.loading ? '正在读取可用选项…' : section.error);
+      status.setAttribute('role', 'status');
+      panel.appendChild(status);
+      if (section.error) {
+        const retry = element(document, 'button', 'conversation-tuning-option', '重新读取');
+        retry.type = 'button';
+        retry.dataset.retryCatalog = 'true';
+        retry.disabled = busy;
+        retry.addEventListener('click', event => {
+          event?.stopPropagation?.();
+          if (!isRunning() && !slashModelsLoading) void refreshSlashCommands();
+        });
+        panel.appendChild(retry);
+      }
+      return;
+    }
     [{ id: '', label: '默认', hint: '不指定，交给这家 CLI 自己决定' }, ...section.options]
       .filter(option => option.id !== '' || section.key !== 'mode')
       .forEach(option => {
