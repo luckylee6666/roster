@@ -558,6 +558,9 @@ export function installConversationMode({
   let filePreviewTrigger = null;
   let filePreviewCurrentPath = '';
   let destroyed = false;
+  let composerComposing = false;
+  const startComposerComposition = () => { composerComposing = true; };
+  const resetComposerComposition = () => { composerComposing = false; };
   let unlisten = null;
   const dragUnlisteners = [];
   let listenerReady = false;
@@ -3111,6 +3114,7 @@ export function installConversationMode({
   }
 
   function activateProject(next) {
+    resetComposerComposition();
     if (dom.filePreview?.classList.contains('active')) closeFilePreview();
     stashActiveConversation();
     forceLatestOnNextMessageRender();
@@ -4041,6 +4045,8 @@ export function installConversationMode({
 
   // 只在对话工作台生效，且避开系统菜单已占用的组合键。
   const onWorkspaceKeydown = event => {
+    if (event.isComposing || event.keyCode === 229
+      || (event.target === dom.composer && composerComposing)) return;
     if (event.key === 'Escape' && dom.moreMenu && !dom.moreMenu.hidden) {
       event.preventDefault();
       closeComposerMore(true);
@@ -4226,8 +4232,14 @@ export function installConversationMode({
   dom.createOverlay?.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeCreateProject();
   });
+  dom.composer?.addEventListener('compositionstart', startComposerComposition);
+  dom.composer?.addEventListener('compositionend', resetComposerComposition);
+  dom.composer?.addEventListener('blur', resetComposerComposition);
   dom.composer?.addEventListener('keydown', event => {
-    if (event.isComposing) return;
+    // WebKit may emit compositionend before the confirming Enter keydown.
+    // That key still carries the IME keyCode 229 even when isComposing is false.
+    // Leave its default action intact, before either completion menus or send().
+    if (destroyed || composerComposing || event.isComposing || event.keyCode === 229) return;
     if (mentionOpen()) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
@@ -4419,6 +4431,10 @@ export function installConversationMode({
     focusComposer() { dom.composer?.focus(); },
     isRunning,
     destroy() {
+      resetComposerComposition();
+      dom.composer?.removeEventListener?.('compositionstart', startComposerComposition);
+      dom.composer?.removeEventListener?.('compositionend', resetComposerComposition);
+      dom.composer?.removeEventListener?.('blur', resetComposerComposition);
       closeComposerMore();
       destroyed = true;
       remotePreparingRuns.forEach(cancelPreparingRemote);

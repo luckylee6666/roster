@@ -128,6 +128,9 @@ class FakeEl {
     parent.removeChild(this);
   }
   addEventListener(name, fn) { (this.listeners[name] = this.listeners[name] || []).push(fn); }
+  removeEventListener(name, fn) {
+    this.listeners[name] = (this.listeners[name] || []).filter(listener => listener !== fn);
+  }
   querySelector() { return null; }
   querySelectorAll(selector) {
     const tags = selector === 'pre'
@@ -844,6 +847,139 @@ test('附件读取期间切了项目，图片不能跟着跑进新项目的输�
     0,
     '不能把 A 项目拖的图片挂到 B 项目的输入框',
   );
+});
+
+test('输入法标志和229确认回车都不发送、不阻止输入法默认行为', async t => {
+  for (const imeKey of [
+    { isComposing: true, keyCode: 13 },
+    { isComposing: false, keyCode: 229 },
+  ]) {
+    const fx = fixture({ projects: [project('a', '项目 A')], t });
+    await flush();
+    const composer = fx.el('conversation-composer');
+    composer.value = '你好';
+    let prevented = 0;
+    fire(composer, 'keydown', { key: 'Enter', ...imeKey, preventDefault() { prevented += 1; } });
+    await flush();
+    assert.equal(fx.startedRuns().length, 0);
+    assert.equal(composer.value, '你好', '确认候选字不能清空草稿');
+    assert.equal(prevented, 0, '让输入法自己确认候选字');
+  }
+});
+
+test('组合输入生命周期及WebKit先end再229的顺序不会误发，下一次普通回车立即发送', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  composer.value = 'ni hao';
+  let prevented = 0;
+  fire(composer, 'compositionstart', { data: '' });
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 13, isComposing: false, preventDefault() { prevented += 1; } });
+  await flush();
+  assert.equal(fx.startedRuns().length, 0, '即使缺失事件组合标志，也有本输入框的生命周期保护');
+  composer.value = '你好';
+  fire(composer, 'compositionend', { data: '你好' });
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 229, isComposing: false, preventDefault() { prevented += 1; } });
+  fire(composer, 'keyup', { key: 'Enter', keyCode: 13 });
+  await flush();
+  assert.equal(fx.startedRuns().length, 0, 'end先到不代表这一颗回车是发送');
+  assert.equal(prevented, 0);
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 13, isComposing: false, preventDefault() { prevented += 1; } });
+  await flush();
+  assert.equal(fx.startedRuns().length, 1, '不通过延时吞掉用户紧接着按的发送键');
+  assert.equal(fx.startedRuns()[0].prompt, '你好');
+  assert.equal(prevented, 1);
+});
+
+test('反复选字结束后 Shift+Enter 仍换行，普通 Enter 仍只发一次', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  let prevented = 0;
+  for (const word of ['你好', '测试']) {
+    fire(composer, 'compositionstart', {});
+    composer.value += word;
+    fire(composer, 'compositionend', { data: word });
+    fire(composer, 'keydown', { key: 'Enter', keyCode: 229, isComposing: false, preventDefault() { prevented += 1; } });
+  }
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 13, shiftKey: true, preventDefault() { prevented += 1; } });
+  await flush();
+  assert.equal(fx.startedRuns().length, 0);
+  assert.equal(prevented, 0, 'Shift+Enter 的原生换行不被取消');
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 13, preventDefault() { prevented += 1; } });
+  await flush();
+  assert.equal(fx.startedRuns().length, 1);
+  assert.equal(fx.startedRuns()[0].prompt, '你好测试');
+});
+
+test('选字期间不会抢占@文件补全的方向键/Tab/Enter/Escape', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  composer.value = '看看 @main';
+  composer.selectionStart = composer.value.length;
+  fire(composer, 'input');
+  await flush();
+  assert.equal(fx.el('conversation-mention-menu').hidden, false);
+  fire(composer, 'compositionstart', {});
+  let prevented = 0;
+  for (const key of ['ArrowDown', 'ArrowUp', 'Tab', 'Enter', 'Escape']) {
+    fire(composer, 'keydown', { key, isComposing: false, preventDefault() { prevented += 1; } });
+  }
+  fire(composer, 'compositionend', {});
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 229, isComposing: false, preventDefault() { prevented += 1; } });
+  assert.equal(prevented, 0);
+  assert.equal(composer.value, '看看 @main');
+  assert.equal(fx.el('conversation-mention-menu').hidden, false);
+  assert.equal(fx.startedRuns().length, 0);
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 13, preventDefault() {} });
+  assert.equal(composer.value, '看看 src/main.js ', '下一次正常回车依旧能选择补全');
+  assert.equal(fx.startedRuns().length, 0);
+});
+
+test('输入法确认回车不会执行斜杠命令，普通回车仍可执行', async t => {
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  composer.value = '/model ime-fixture-model';
+  fire(composer, 'input');
+  fire(composer, 'compositionstart', {});
+  fire(composer, 'compositionend', {});
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 229, isComposing: false, preventDefault() { assert.fail('不能抢输入法按键'); } });
+  await flush();
+  assert.equal(composer.value, '/model ime-fixture-model');
+  assert.doesNotMatch(fx.el('conversation-tuning-summary').textContent, /ime-fixture-model/);
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 13, preventDefault() {} });
+  await flush();
+  assert.match(fx.el('conversation-tuning-summary').textContent, /ime-fixture-model/);
+  assert.equal(fx.startedRuns().length, 0, '本地命令不作为消息发送');
+});
+
+test('失焦、切换项目和销毁清理组合输入标记，不残留发送锁', async t => {
+  for (const mode of ['blur', 'project']) {
+    const fx = fixture({ projects: [project('a', '项目 A'), project('b', '项目 B')], t });
+    await flush();
+    const composer = fx.el('conversation-composer');
+    fire(composer, 'compositionstart', {});
+    if (mode === 'blur') fire(composer, 'blur', {});
+    else fx.clickProject('b');
+    await flush();
+    composer.value = '已经确认的文字';
+    fire(composer, 'keydown', { key: 'Enter', keyCode: 13, preventDefault() {} });
+    await flush();
+    assert.equal(fx.startedRuns().length, 1);
+    assert.equal(fx.startedRuns()[0].projectId, mode === 'blur' ? 'a' : 'b');
+  }
+  const fx = fixture({ projects: [project('a', '项目 A')], t });
+  await flush();
+  const composer = fx.el('conversation-composer');
+  fire(composer, 'compositionstart', {});
+  fx.controller.destroy();
+  for (const name of ['compositionstart', 'compositionend', 'blur']) assert.equal(composer.listeners[name].length, 0);
+  composer.value = '销毁后不能发送';
+  fire(composer, 'keydown', { key: 'Enter', keyCode: 13, preventDefault() { assert.fail('销毁后不处理按键'); } });
+  await flush();
+  assert.equal(fx.startedRuns().length, 0);
 });
 
 test('斜杠菜单被 Escape 收起后，Enter 按字面发送', async t => {

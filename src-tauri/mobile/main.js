@@ -1696,7 +1696,8 @@ $('composer').addEventListener('input', () => {
 });
 $('composer').addEventListener('keydown', event => {
   // 手机上回车是换行；外接键盘可用 ⌘/Ctrl + 回车发送。
-  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing) {
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)
+    && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     submit();
   }

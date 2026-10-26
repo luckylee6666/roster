@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased / 未发布
+
+- Do not send conversation messages or accept completion-menu entries while an input method is composing. Track desktop composition state and recognize IME key code 229, including the WebKit sequence where composition ends before the confirming Enter keydown. Preserve normal Enter/Shift+Enter behavior; the phone's external-keyboard send shortcut also ignores IME confirmation keys.
+- 修复会话模式下按回车确认输入法候选字却直接发送的问题：跟踪桌面组合输入状态，并识别输入法键码229，兼容WebKit先结束组词再触发回车的顺序；输入法处理期间不发送、不执行补全选择，正常Enter/Shift+Enter不变，手机外接键盘的发送快捷键也排除输入法确认事件。
+
 ## v1.9.8
 
 - Apply the bounded header/content/footer layout to common dialogs, including project/server forms, long snippet lists and expanded shared-memory editing. Preserve the nested website form and the file preview's four-row grid, so scrolling does not hide their actions.
