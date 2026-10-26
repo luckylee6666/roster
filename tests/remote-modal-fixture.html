@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN" data-ui-scale="large" data-app-view="conversation" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roster remote modal layout fixture</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #68717d; }
+    #fixture-frame { display: block; border: 0; margin: 0 auto; background: transparent; }
+    #fixture-note { position: fixed; z-index: 10; top: 8px; left: 8px; padding: 5px 8px; color: #111; background: #fff; font: 12px sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="fixture-note">加载真实 remote-overlay 与 styles.css…</div>
+  <iframe id="fixture-frame" title="远程弹窗视口"></iframe>
+  <script type="module">
+    const params = new URLSearchParams(location.search);
+    const height = Math.max(320, Math.min(1000, Number(params.get('height')) || 600));
+    const width = Math.max(280, Math.min(1200, Number(params.get('width')) || 390));
+    const zoom = params.get('zoom') === '125' ? 1.25 : 1;
+    const theme = params.get('theme') === 'dark' ? 'dark' : 'light';
+    const scale = params.get('scale') === 'standard' ? 'standard' : 'large';
+    const frame = document.querySelector('#fixture-frame');
+    frame.style.width = `${width}px`;
+    frame.style.height = `${height}px`;
+
+    const source = await fetch('../src/index.html').then((response) => {
+      if (!response.ok) throw new Error(`index.html: ${response.status}`);
+      return response.text();
+    });
+    const parsed = new DOMParser().parseFromString(source, 'text/html');
+    const overlay = parsed.querySelector('#remote-overlay');
+    if (!overlay) throw new Error('Could not find #remote-overlay in src/index.html');
+    overlay.classList.add('active');
+    const addresses = overlay.querySelector('#remote-addrs');
+    addresses.replaceChildren();
+    const samples = [
+      ['局域网', 'https://roster.example.invalid:43821/remote/connect?device=phone-one&source=fixture'],
+      ['局域网', 'https://192.168.100.240:43821/remote/connect?device=phone-two&source=fixture'],
+      ['其他网络', 'https://long-device-name-for-layout-check.tailnet-example.invalid:43821/remote/connect?device=phone-three&source=fixture'],
+      ['其他网络', 'https://roster.example.invalid:43821/remote/connect?device=phone-four&source=fixture']
+    ];
+    for (const [kind, address] of samples) {
+      const card = parsed.createElement('div');
+      card.className = 'remote-card';
+      const kindClass = kind === '局域网' ? 'kind-lan' : 'kind-other';
+      card.innerHTML = `<div class="remote-qr" aria-hidden="true"><svg viewBox="0 0 21 21" role="img" aria-label="合成二维码占位图"><rect width="21" height="21" fill="#fff"/><rect x="1" y="1" width="7" height="7" fill="#111"/><rect x="3" y="3" width="3" height="3" fill="#fff"/><rect x="13" y="1" width="7" height="7" fill="#111"/><rect x="15" y="3" width="3" height="3" fill="#fff"/><rect x="1" y="13" width="7" height="7" fill="#111"/><rect x="3" y="15" width="3" height="3" fill="#fff"/><rect x="10" y="10" width="2" height="2" fill="#111"/><rect x="14" y="12" width="2" height="2" fill="#111"/><rect x="10" y="17" width="2" height="2" fill="#111"/></svg></div><div class="remote-card-info"><span class="remote-kind ${kindClass}"></span><code class="remote-card-url"></code><button class="btn btn-default btn-xs" type="button">复制地址</button></div>`;
+      card.querySelector('.remote-kind').textContent = kind;
+      card.querySelector('.remote-card-url').textContent = address;
+      addresses.append(card);
+    }
+    overlay.querySelector('#remote-pin').textContent = '123456'; // Synthetic fixture value only.
+    const markup = overlay.outerHTML;
+    frame.srcdoc = `<!doctype html><html lang="zh-CN" data-app-view="conversation" data-theme="${theme}" data-ui-scale="${scale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><base href="${new URL('../', location.href)}"><link rel="stylesheet" href="src/styles.css"><style>html,body{margin:0;min-height:100%;overflow:hidden}</style></head><body style="zoom:${zoom}">${markup}</body></html>`;
+    document.querySelector('#fixture-note').textContent = `${width} × ${height}px · ${zoom === 1.25 ? '125% ' : ''}${theme} · ${scale}`;
+  </script>
+</body>
+</html>

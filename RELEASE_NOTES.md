@@ -1,23 +1,21 @@
 Cross-platform desktop app: macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 
-## What's new in v1.9.7 / 本版更新
+## What's new in v1.9.8 / 本版更新
 
 **English**
 
-- **Codex model and effort selection.** If the local model catalog is empty, missing or unreadable, Roster falls back to a bounded, read-only App Server model-list query. Model names and effort options come from Codex rather than a hard-coded list. Failed discovery leaves a retry entry and preserves saved choices. This is the same implementation on Intel and Apple Silicon.
-- **Images on your phone.** Generated image attachments now appear live, in history and after reconnecting. Tap an image to enlarge it. WebSocket events contain small opaque references; media is fetched separately with PIN authentication and project checks.
-- **Project file previews on your phone.** Open text/Markdown, raster image and supported small video links without switching to the desktop. The existing project/memory-root and symbolic-link checks remain in place; videos do not autoplay and are released on close. PDF/Office documents do not gain a full embedded viewer.
-- **Bounded media access.** Images are limited to 8 MiB each, videos to 16 MiB, and the server cache to 32 MiB / 64 entries / 10 minutes. Only two media reads run at once, with the permit kept for the lifetime of the response data. Stopping remote access revokes the PIN and clears media; stale requests cannot repopulate a new session's cache. Reopen history to recover expired attachments.
-- **Validation scope.** Automated frontend/Rust regressions cover request races, cache bounds, safe links and process cleanup. Real local Codex model discovery and Chrome at phone dimensions were tested with synthetic HTTP/WebSocket data, including live/history/reconnect images and text/image file previews. Physical Android/Intel/Windows interaction and video codec playback remain manual checks; browser fixtures do not replace them.
+- **Dialogs fit small windows.** Fixes clipped close, cancel and confirmation controls in project/server forms, snippet lists, expanded shared-memory editing and other dialogs. Panels stay within the available height; headers and footer actions remain visible while content scrolls. Actions originally inside an editor remain reachable by scrolling rather than being moved out of their context.
+- **Phone-remote panel.** QR codes and connection details scroll independently of the close button and the stop/keep-connected actions. Long addresses can shrink without widening the dialog; short windows use tighter spacing and footer buttons can wrap. Stopping remote access and keeping the connection retain their original behavior.
+- **Form and preview compatibility.** The nested website form keeps its native submit behavior. File preview keeps its four-row header/path/content/footer grid, with an independently scrollable body. No data format, CLI permission or backend behavior changes are introduced.
+- **Validation scope.** Browser fixtures using production HTML/CSS and synthetic content were checked across 18 dialogs at 900×600 and at 900×450 with 125% CSS zoom. Shared-memory save was reached by keyboard-driven scrolling, and the file-preview grid was checked at 1200×800 with standard text size. Native Intel/Windows WebView controls remain manual checks; source-contract tests and browser fixtures do not replace device verification.
 
 **中文**
 
-- **Codex 模型与思考深度。** 本地模型目录为空、缺失或无法读取时，改用有界、只读的 App Server 模型列表查询；模型名称和强度选项来自 Codex，不写死。查询失败保留重试入口和已有选择，Intel 与 Apple Silicon 共用实现。
-- **手机显示图片。** 生成图片附件可实时显示、从历史恢复，并在断线重连后补齐，点击图片可放大。WebSocket 只传小型不透明标识，媒体通过需要 PIN 鉴权、核对项目归属的独立通道读取。
-- **手机文件预览。** 文本/Markdown、图片和受支持的小视频链接可直接在手机打开，不必切回电脑。保留项目/对应记忆目录边界和符号链接检查；视频不自动播放，关闭时释放。不提供完整 PDF/Office 查看器。
-- **媒体读取边界。** 单张图片最多 8 MiB、视频最多 16 MiB；服务端缓存最多 32 MiB / 64 条 / 10 分钟。最多同时两路媒体读取，限流许可随响应数据生命周期释放。停止远程访问时作废 PIN 并清空媒体，旧请求不能跨重开填回新缓存；过期附件可重新打开历史恢复。
-- **验收范围。** 前端/Rust 自动回归覆盖请求竞态、缓存边界、安全链接和进程清理；实际验证本机 Codex 模型查询，并在 Chrome 手机尺寸下用合成 HTTP/WebSocket 数据验证实时/历史/重连图片和文本/图片链接预览。实体安卓、Intel/Windows 交互及视频编码实播仍需人工验收，浏览器夹具不代替真机结论。
+- **小屏弹窗适配。** 修复项目/服务器表单、常用指令列表、展开共享记忆编辑等窗口中关闭、取消和确认控件被裁切的问题。弹窗高度不超过可用空间，头部和底部操作固定，中间内容独立滚动；原本位于编辑内容内部的操作保留位置，但可以滚动到达。
+- **手机远程面板。** 二维码和连接信息独立滚动，关闭键及停止/保持连接按钮保持可见；长地址不会撑宽弹窗，短窗口间距更紧凑、底部按钮可换行。停止远程与保持连接的原有行为不变。
+- **表单与预览兼容。** 嵌套网页表单保留原提交行为；文件预览继续使用标题/路径/内容/操作四行布局，内容区独立滚动。本版不改数据格式、CLI 权限或后端行为。
+- **验收范围。** 使用生产 HTML/CSS 和合成内容，在浏览器内逐个检查18个弹窗的900×600布局，以及900×450加125% CSS缩放；验证键盘滚动可到达共享记忆保存按钮，并在1200×800标准字号下检查文件预览四行布局。原生 Intel/Windows WebView 控件仍需人工核对，源码契约测试和浏览器夹具不代替真机验收。
 
 ## Phone remote / 手机远程
 
@@ -29,7 +27,7 @@ Security: LAN + PIN over plain HTTP, private-network and Tailscale peers only �
 
 ## Android app / 安卓 App
 
-`Roster-Remote_1.9.7_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.7_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
+`Roster-Remote_1.9.8_android.apk` is our own small Android shell for the phone remote (source in `mobile-android/`, package `com.lucky.roster.remote`). The UI comes from your computer, so updating the desktop app is what brings phone fixes; reinstalling the APK is optional. / `Roster-Remote_1.9.8_android.apk` 是我们自己的安卓外壳 App（源码在 `mobile-android/`，包名 `com.lucky.roster.remote`）。界面由电脑提供，手机端的修复靠更新电脑上的 Roster 生效，APK 不重装也行。
 
 1. Download the APK on the phone and allow installing from this source when asked / 手机下载 APK，按提示允许安装未知来源应用
 2. It is signed with a debug key for sideloading, so the system may warn that the app is unrecognised — choose to install anyway / 用调试证书签名、供侧载安装，系统可能提示来源未知，选「仍然安装」

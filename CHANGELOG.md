@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## v1.9.8
+
+- Apply the bounded header/content/footer layout to common dialogs, including project/server forms, long snippet lists and expanded shared-memory editing. Preserve the nested website form and the file preview's four-row grid, so scrolling does not hide their actions.
+- 通用弹窗统一限制高度并让内容区独立滚动，修复项目/服务器表单、长指令列表及展开记忆编辑时的裁切；单独适配嵌套网页表单与文件预览四行布局，保留原操作行为。
+- Keep the phone-remote dialog within the available window height. Its header and action buttons remain visible while connection details scroll; compact spacing and shrinkable address rows handle small windows and enlarged UI without changing remote-stop/keep-connected behavior.
+- 修复小屏或放大界面时「手机远程」弹窗顶部关闭键、底部操作按钮被裁切：限制弹窗高度，中间连接信息独立滚动，短窗口使用紧凑间距，长地址不撑宽；停止远程与保持连接的行为不变。
+
 ## v1.9.7
 
 ### English

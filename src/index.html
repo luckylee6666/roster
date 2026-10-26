@@ -911,7 +911,7 @@
             <span class="modal-title" id="companion-site-modal-title">添加到轻松模式</span>
             <button class="modal-x" id="companion-site-modal-close" type="button" aria-label="关闭添加网页窗口">&times;</button>
           </div>
-          <form id="companion-site-form">
+          <form id="companion-site-form" class="modal-form">
             <div class="modal-body">
               <div class="form-item">
                 <label class="form-label" for="companion-site-name">名称</label>
@@ -1084,12 +1084,12 @@
     <!-- 手机远程：两种工作台都能打开，不能放在会被 hidden + inert 的 development-overlays 内 -->
     <div class="modal-mask" id="remote-overlay" data-app-global-overlay>
       <div class="modal-wrap">
-        <div class="modal modal-sm">
+        <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="remote-title">
           <div class="modal-header">
-            <span class="modal-title">手机远程</span>
-            <button class="modal-x" id="remote-close" title="停止手机远程并关闭">&times;</button>
+            <span class="modal-title" id="remote-title">手机远程</span>
+            <button class="modal-x" id="remote-close" type="button" title="停止手机远程并关闭" aria-label="停止手机远程并关闭">&times;</button>
           </div>
-          <div class="modal-body">
+          <div class="modal-body" tabindex="0" role="region" aria-label="远程连接地址与 PIN">
             <div class="remote-info">
               <p class="remote-hint">手机与本机连同一 WiFi 或同一 Tailscale 网络，用相机<b>扫码即自动登录</b>。手机上可以选项目、看历史对话、发指令让电脑上的助手执行，也能镜像终端。</p>
               <div class="remote-addrs" id="remote-addrs">

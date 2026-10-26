@@ -1266,11 +1266,11 @@ body {
 
 #conversation-file-preview { z-index: 1850; }
 
-.conversation-file-preview-modal {
+.modal.conversation-file-preview-modal {
   display: grid;
   width: min(900px, calc(100vw - 48px));
   max-width: 900px;
-  max-height: min(820px, calc(100vh - 48px));
+  max-height: min(820px, 100%);
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
@@ -1289,7 +1289,7 @@ body {
 }
 
 .conversation-file-preview-body {
-  min-height: 260px;
+  min-height: 0;
   padding: 22px 26px 34px;
   overflow: auto;
   color: var(--text-1);
@@ -1368,6 +1368,12 @@ body {
 }
 
 .modal {
+  display: flex;
+  flex-direction: column;
+  /* wrap 的绝对定位提供确定高度，使用其可用空间也兼容页面缩放。 */
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg-0);
   border-radius: var(--radius-lg);
   width: 100%;
@@ -1389,21 +1395,38 @@ body {
   max-width: 640px;
 }
 
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.modal-header,
+.modal-footer { flex: 0 0 auto; }
+
 .modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 16px 24px;
   border-bottom: 1px solid var(--border);
 }
 
 .modal-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--fs-title);
   font-weight: 600;
   color: var(--text-1);
 }
 
 .modal-x {
+  flex: 0 0 auto;
   width: 28px;
   height: 28px;
   display: flex;
@@ -1424,15 +1447,28 @@ body {
 }
 
 .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: 24px;
 }
 
 .modal-footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 24px;
   border-top: 1px solid var(--border);
+}
+
+@media (max-height: 640px), (max-width: 480px) {
+  .modal-wrap { padding: 12px; }
+  .modal-header,
+  .modal-footer { padding: 12px 16px; }
+  .modal-body { padding: 16px; }
 }
 
 /* 表单 */
@@ -2449,10 +2485,6 @@ body {
   line-height: 1.6;
 }
 .modal-orchestra { max-width: 760px; }
-.modal-orchestra .modal-body {
-  max-height: calc(100vh - 180px);
-  overflow-y: auto;
-}
 .orchestra-goal {
   min-height: 96px;
   resize: vertical;
@@ -2518,10 +2550,6 @@ body {
 }
 
 .modal-handoff { max-width: 760px; }
-.modal-handoff .modal-body {
-  max-height: calc(100vh - 168px);
-  overflow-y: auto;
-}
 .handoff-lead {
   margin: 0 0 12px;
   color: var(--text-2);
@@ -5077,6 +5105,37 @@ body {
 }
 
 /* ===== 手机远程 Modal ===== */
+#remote-overlay .modal-wrap { padding: 12px; }
+#remote-overlay .modal {
+  display: flex;
+  flex-direction: column;
+  /* wrap 的 inset:0 提供确定的可用高度；百分比也适配 WebView/CSS 缩放。 */
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+#remote-overlay .modal-header,
+#remote-overlay .modal-footer { flex: 0 0 auto; }
+#remote-overlay .modal-header { gap: 12px; }
+#remote-overlay .modal-x { flex: none; }
+#remote-overlay .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+#remote-overlay .modal-body:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+#remote-overlay .modal-footer { flex-wrap: wrap; }
+#remote-overlay .remote-row,
+#remote-overlay .remote-card,
+#remote-overlay .remote-val,
+#remote-overlay .remote-card-url { min-width: 0; }
+#remote-overlay .remote-card-url { max-width: 100%; overflow-y: hidden; }
+@media (max-height: 640px), (max-width: 480px) {
+  #remote-overlay .modal-header,
+  #remote-overlay .modal-footer { padding: 12px 16px; }
+  #remote-overlay .modal-body { padding: 16px; }
+}
 .remote-info { display: flex; flex-direction: column; gap: 14px; }
 .remote-hint { margin: 0; font-size: 13px; color: var(--text-2); line-height: 1.6; }
 .remote-row { display: flex; align-items: center; gap: 10px; }

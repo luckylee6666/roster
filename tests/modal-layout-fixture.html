@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN" data-ui-scale="large" data-app-view="conversation" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roster modal layout fixture</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #68717d; }
+    #fixture-frame { display: block; border: 0; margin: 0 auto; background: transparent; }
+    #fixture-note { position: fixed; z-index: 10; top: 8px; left: 8px; padding: 5px 8px; color: #111; background: #fff; font: 12px sans-serif; }
+    #panel-picker, #fixture-geometry { position: fixed; z-index: 10; right: 8px; padding: 5px 8px; color: #111; background: #fff; font: 11px sans-serif; }
+    #panel-picker { top: 8px; } #fixture-geometry { bottom: 8px; max-width: 45vw; max-height: 30vh; overflow: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="fixture-note">加载真实弹窗与 styles.css…</div>
+  <label id="panel-picker">弹窗 <select id="panel-select"></select></label>
+  <iframe id="fixture-frame" title="Roster 弹窗布局视口"></iframe>
+  <pre id="fixture-geometry">geometry pending</pre>
+  <script type="module">
+    const params = new URLSearchParams(location.search);
+    const height = Math.max(240, Math.min(1200, Number(params.get('height')) || 520));
+    const width = Math.max(240, Math.min(1400, Number(params.get('width')) || 390));
+    const zoom = Math.max(0.6, Math.min(1.8, Number(params.get('zoom')) || 1));
+    const view = params.get('view') === 'developer' ? 'developer' : 'conversation';
+    const scale = params.get('scale') === 'standard' ? 'standard' : 'large';
+    const theme = params.get('theme') === 'dark' ? 'dark' : 'light';
+    const requested = (params.get('panels') || 'snippet-modal-overlay,shared-memory-overlay,conversation-assistant-overlay,conversation-create-overlay,scan-modal-overlay,server-list-overlay,session-preview-overlay,conversation-file-preview,remote-overlay,proxy-overlay,orchestra-overlay,session-handoff-overlay,usage-overlay,server-modal-overlay,companion-site-modal,context-modal-overlay,confirm-overlay,modal-overlay').split(',').map((id) => id.trim());
+    const frame = document.querySelector('#fixture-frame');
+    frame.style.width = `${width}px`;
+    frame.style.height = `${height}px`;
+    const source = await fetch('../src/index.html').then((response) => {
+      if (!response.ok) throw new Error(`index.html: ${response.status}`);
+      return response.text();
+    });
+    const parsed = new DOMParser().parseFromString(source, 'text/html');
+    const panels = [];
+    for (const id of requested) {
+      const overlay = parsed.getElementById(id);
+      if (!overlay) continue;
+      const addRows = (target, count, build) => { if (target) for (let i = 1; i <= count; i++) target.append(build(i)); };
+      addRows(overlay.querySelector('#snippet-list'), 24, (i) => {
+        const row = parsed.createElement('div'); row.className = 'snippet-row';
+        row.innerHTML = `<div class="snippet-row-main"><div class="snippet-row-title">合成指令 ${i}</div><div class="snippet-row-preview">Synthetic fixture only · synthetic command</div></div><div class="snippet-row-actions"><button class="btn btn-default btn-sm" type="button">查看</button></div>`;
+        return row;
+      });
+      addRows(overlay.querySelector('#shared-memory-overview'), 3, (i) => { const row = parsed.createElement('li'); row.textContent = `合成专题 ${i} · Synthetic fixture only`; return row; });
+      const advanced = overlay.querySelector('#shared-memory-advanced'); if (advanced) advanced.open = true;
+      const editor = overlay.querySelector('#shared-memory-content'); if (editor) editor.textContent = 'Synthetic fixture only\n'.repeat(30);
+      const project = overlay.querySelector('#shared-memory-project'); if (project) project.textContent = '合成项目';
+      const summary = overlay.querySelector('#shared-memory-summary'); if (summary) summary.textContent = '3 个合成专题';
+      const previewBody = overlay.querySelector('#conversation-file-preview-body');
+      addRows(previewBody, 20, (i) => { const row = parsed.createElement('p'); row.textContent = `Synthetic fixture only · 文件段落 ${i} · 验证内容独立滚动`; return row; });
+      if (previewBody) { const code = parsed.createElement('pre'); code.textContent = 'syntheticLongCode'.repeat(80); previewBody.append(code); }
+      const previewPath = overlay.querySelector('#conversation-file-preview-path'); if (previewPath) previewPath.textContent = '/synthetic/project/report.md';
+      const sessionBody = overlay.querySelector('#session-preview-body'); if (sessionBody) sessionBody.textContent = Array.from({length:80}, (_, i) => `Synthetic fixture only · session preview line ${i + 1} · ${'const syntheticValue = "layout-check"; '.repeat(3)}`).join('\n');
+      addRows(overlay.querySelector('#conversation-assistant-list'), 9, (i) => { const row = parsed.createElement('button'); row.className = 'conversation-assistant-item'; row.type = 'button'; row.innerHTML = `<span class="conversation-assistant-item-icon" aria-hidden="true">${i}</span><span class="conversation-assistant-copy"><strong>合成助手 ${i}</strong><small>Synthetic fixture only</small></span>`; return row; });
+      addRows(overlay.querySelector('#server-list'), 16, (i) => { const row = parsed.createElement('div'); row.className = 'server-card'; row.textContent = `合成服务器 ${i} · Synthetic fixture only`; return row; });
+      addRows(overlay.querySelector('#scan-list'), 18, (i) => { const row = parsed.createElement('label'); row.className = 'scan-item'; row.innerHTML = `<input type="checkbox"><span class="scan-item-info"><span class="scan-item-name">合成项目 ${i}</span><span class="scan-item-path">Synthetic fixture only</span></span>`; return row; });
+      panels.push(overlay);
+    }
+    const activeId = params.get('panel') || requested[0];
+    panels.forEach((panel) => panel.classList.toggle('active', panel.id === activeId));
+    const picker = document.querySelector('#panel-select');
+    panels.forEach((panel) => { const option = document.createElement('option'); option.value = panel.id; option.textContent = panel.id; picker.append(option); });
+    picker.value = panels.some((panel) => panel.id === activeId) ? activeId : panels[0]?.id;
+    picker.addEventListener('change', () => { const url = new URL(location.href); url.searchParams.set('panel', picker.value); location.href = url; });
+    const markup = panels.map((panel) => panel.outerHTML).join('');
+    const diagnosticScript = `
+      const visible = (node) => { const r = node.getBoundingClientRect(); return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,inside:r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth}; };
+      const data = [...document.querySelectorAll('.modal-mask.active')].map((overlay) => {
+        const modal = overlay.querySelector('.modal'); const body = modal?.querySelector('.modal-body, .conversation-file-preview-body');
+        const header = modal?.querySelector('.modal-header'); const footer = modal?.querySelector('.modal-footer');
+        const actions=[...modal.querySelectorAll('#shared-memory-save,#companion-site-submit,#scan-import-btn,#remote-ok,#proxy-modal-save')];
+        const actionGeometry = (node) => {
+          const r=node.getBoundingClientRect(), br=body?.getBoundingClientRect();
+          const inBody=!!body&&body.contains(node), zoom=body&&body.clientHeight?br.height/body.clientHeight:1;
+          const offsetTop=inBody?(r.top-br.top)/zoom+body.scrollTop:null;
+          const reachableByBodyScroll=inBody&&offsetTop>=0&&offsetTop+r.height/zoom<=body.scrollHeight+1;
+          const currentlyVisible=visible(node).inside&&(!inBody||(r.top>=br.top&&r.bottom<=br.bottom&&r.left>=br.left&&r.right<=br.right));
+          return {id:node.id,...visible(node),currentlyVisible,offsetTop,reachableByBodyScroll};
+        };
+        return {id:overlay.id,panel:visible(modal),header:visible(header),footer:footer?visible(footer):null,body:body?{...visible(body),scrollHeight:body.scrollHeight,clientHeight:body.clientHeight,scrollable:body.scrollHeight>body.clientHeight}:null,actions:actions.map(actionGeometry)};
+      });
+      document.documentElement.dataset.geometry = JSON.stringify(data);
+      parent.postMessage({type:'modal-layout-geometry',data},'*');
+    `;
+    frame.srcdoc = `<!doctype html><html lang="zh-CN" data-app-view="${view}" data-theme="${theme}" data-ui-scale="${scale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><base href="${new URL('../', location.href)}"><link rel="stylesheet" href="src/styles.css"><style>html,body{margin:0;min-height:100%;overflow:hidden}body{zoom:${zoom}}</style></head><body>${markup}<script>addEventListener('load',()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{${diagnosticScript}})));<\/script></body></html>`;
+    addEventListener('message', (event) => { if (event.source === frame.contentWindow && event.data?.type === 'modal-layout-geometry') document.querySelector('#fixture-geometry').textContent = JSON.stringify(event.data.data,null,2); });
+    document.querySelector('#fixture-note').textContent = `${width} × ${height}px · zoom ${zoom} · ${view} · ${scale} · ${panels.length} panels`;
+  </script>
+</body>
+</html>
