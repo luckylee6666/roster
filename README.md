@@ -10,7 +10,7 @@
 
 <p align="center">A desktop command center for multiple AI CLIs, built with Tauri v2.</p>
 
-Latest release: **v1.9.8** — fixes dialogs being clipped on small screens or enlarged layouts, keeping headers and footer actions visible while long content scrolls. Covers phone remote, project/server forms, snippets, shared memory and file previews. See the [changelog](CHANGELOG.md) for details.
+Latest release: **v1.9.9** — adds Kilo CLI conversations, terminal launch and session history; fixes project sidebar clipping and accidental sends when confirming input-method candidates. See the [changelog](CHANGELOG.md) for details.
 
 ## Features
 
