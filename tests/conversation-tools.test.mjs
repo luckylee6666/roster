@@ -14,11 +14,11 @@ import {
 test('对话 Provider 基于统一 CLI 登记并为未知工具提供只读回退', () => {
   assert.deepEqual(
     CONVERSATION_PROVIDERS.map(provider => provider.id),
-    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi'],
+    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi', 'kilo'],
   );
   assert.deepEqual(
     CONVERSATION_PROVIDERS.filter(provider => provider.runnable).map(provider => provider.id),
-    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi'],
+    ['claude', 'grok', 'codex', 'opencode', 'agy', 'qwen', 'mimo', 'cmd', 'pi', 'kilo'],
   );
   const unknown = conversationProvider(' FutureCLI ', '未来模型');
   assert.deepEqual(
@@ -56,6 +56,12 @@ test('已接入 CLI 都可进入对话模式，模型与推理强度按能力映
   assert.equal(pi.mark, 'Pi');
   assert.equal(pi.supportsModel, true);
   assert.equal(pi.supportsEffort, true);
+  const kilo = conversationProviderOptions(['kilo'])[0];
+  assert.equal(kilo.id, 'kilo');
+  assert.equal(kilo.runnable, true);
+  assert.equal(kilo.mark, 'Ki');
+  assert.equal(kilo.supportsModel, true);
+  assert.equal(kilo.supportsEffort, true);
 });
 
 test('历史键同时包含工具和 id，相同会话 id 不会跨 CLI 冲突', () => {

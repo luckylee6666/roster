@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN" data-app-view="developer" data-ui-scale="large" data-theme="light">
+<meta charset="utf-8">
+<title>项目侧栏长列表验收</title>
+<link rel="stylesheet" href="../src/styles.css">
+<style>
+  body { padding: 20px; }
+  .fixture-controls { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .fixture-stage { display: flex; height: 520px; width: 520px; border: 1px solid var(--border); }
+  .fixture-main { padding: 20px; flex: 1; }
+  #report { white-space: pre-wrap; font-size: 13px; }
+</style>
+<div class="fixture-controls">
+  <button id="toggle">展开 / 收起</button>
+  <button id="bottom">滚动到底部</button>
+</div>
+<div class="fixture-stage">
+  <aside class="sider">
+    <div class="sider-logo">Roster</div>
+    <div class="sider-menu">
+      <div class="menu-label">工作台</div>
+      <a class="menu-item" href="#">全部项目 <span class="menu-badge">65</span></a>
+      <div class="menu-label">项目分组</div>
+      <div class="menu-group-item expanded" id="group">
+        <a class="menu-item active" href="#"><span class="group-name">self</span><span class="menu-badge" id="count">64</span></a>
+        <div class="group-children" id="items"></div>
+      </div>
+      <div class="menu-group-item"><a class="menu-item" href="#">后续分组 <span class="menu-badge">1</span></a></div>
+    </div>
+  </aside>
+  <main class="fixture-main"><strong>长列表布局验收</strong><p>真实 styles.css，16 / 64 / 200 项、两档字号和两种高度。</p><pre id="report">检查中…</pre></main>
+</div>
+<script type="module">
+  const $ = id => document.getElementById(id);
+  const menu = document.querySelector('.sider-menu');
+  const stage = document.querySelector('.fixture-stage');
+  const params = new URLSearchParams(location.search);
+  if (params.has('baseline')) {
+    const style = document.createElement('style');
+    style.textContent = '.group-children { display:block; max-height:0; overflow:hidden; } .menu-group-item.expanded .group-children { max-height:500px; }';
+    document.head.append(style);
+  }
+  function populate(count) {
+    $('count').textContent = count;
+    $('items').replaceChildren(...Array.from({ length: count }, (_, i) => {
+      const item = document.createElement('a');
+      item.className = 'menu-child-item';
+      item.href = '#';
+      const text = document.createElement('span');
+      text.textContent = i === count - 1 ? `最后一个项目 ${count}` : `项目 ${i + 1} / 很长的项目名称用于检查省略显示`;
+      item.append(text);
+      return item;
+    }));
+  }
+  const results = [];
+  for (const scale of ['standard', 'large']) {
+    document.documentElement.dataset.uiScale = scale;
+    for (const height of [420, 680]) {
+      stage.style.height = `${height}px`;
+      for (const count of [16, 64, 200]) {
+        populate(count);
+        const list = $('items');
+        const last = list.lastElementChild;
+        const unclipped = list.getBoundingClientRect().bottom + 1 >= last.getBoundingClientRect().bottom;
+        last.scrollIntoView({ block: 'end' });
+        const reachable = last.getBoundingClientRect().bottom <= menu.getBoundingClientRect().bottom + 1;
+        const noHorizontalOverflow = menu.scrollWidth <= menu.clientWidth + 1;
+        results.push(`${unclipped && reachable && noHorizontalOverflow ? 'PASS' : 'FAIL'} ${scale} ${height}px ${count}项`);
+      }
+    }
+  }
+  $('group').classList.remove('expanded');
+  results.push(`${$('items').getBoundingClientRect().height === 0 ? 'PASS' : 'FAIL'} 折叠隐藏列表`);
+  $('group').classList.add('expanded');
+  document.documentElement.dataset.uiScale = 'large';
+  stage.style.height = '520px';
+  populate(64);
+  menu.scrollTop = 0;
+  $('report').textContent = results.join('\n');
+  document.title = `${results.every(line => line.startsWith('PASS')) ? 'PASS' : 'FAIL'} 项目侧栏长列表验收`;
+  $('toggle').onclick = () => $('group').classList.toggle('expanded');
+  $('bottom').onclick = () => { menu.scrollTop = menu.scrollHeight; };
+</script>
+</html>

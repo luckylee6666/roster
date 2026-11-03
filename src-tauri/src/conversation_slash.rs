@@ -159,7 +159,7 @@ pub fn list_models(provider_id: &str, project_path: &str) -> Result<Conversation
 /// Claude / Codex 把多余参数当成 prompt，不能对它们跑 `models`。
 fn model_list_args(provider: &str) -> Option<&'static [&'static str]> {
     match provider {
-        "grok" | "agy" | "opencode" | "mimo" => Some(&["models"]),
+        "grok" | "agy" | "opencode" | "mimo" | "kilo" => Some(&["models"]),
         // Command Code 用标志而不是子命令列模型。
         "cmd" => Some(&["--list-models"]),
         "pi" => Some(&[
@@ -518,7 +518,7 @@ pub fn list_efforts(
             let raw = capture_cli_help("agy", &cwd).unwrap_or_default();
             parse_cli_efforts(&raw)
         }
-        "opencode" | "mimo" => {
+        "opencode" | "mimo" | "kilo" => {
             let Ok(binary) = resolve_provider_bin(provider) else {
                 return Ok(ConversationEffortList {
                     efforts: Vec::new(),
@@ -672,6 +672,7 @@ fn normalize_provider(id: &str) -> Result<&'static str, String> {
         "opencode" => Ok("opencode"),
         "qwen" => Ok("qwen"),
         "mimo" => Ok("mimo"),
+        "kilo" => Ok("kilo"),
         "cmd" => Ok("cmd"),
         "pi" => Ok("pi"),
         _ => Err("这个 CLI 还未接入对话模式".into()),
@@ -1664,7 +1665,7 @@ fn command_id_from_path(provider: &str, root: &Path, path: &Path) -> Option<Stri
         return None;
     }
     parts.push(stem);
-    let separator = if matches!(provider, "opencode" | "mimo") {
+    let separator = if matches!(provider, "opencode" | "mimo" | "kilo") {
         "/"
     } else {
         ":"
@@ -2095,7 +2096,7 @@ mod tests {
     #[test]
     fn all_conversation_providers_accept_dynamic_slash_discovery() {
         for provider in [
-            "claude", "grok", "codex", "opencode", "agy", "qwen", "mimo", "cmd", "pi",
+            "claude", "grok", "codex", "opencode", "agy", "qwen", "mimo", "cmd", "pi", "kilo",
         ] {
             assert_eq!(normalize_provider(provider).unwrap(), provider);
         }

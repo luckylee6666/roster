@@ -10,7 +10,14 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const request = JSON.parse(line);
   fs.appendFileSync(log, JSON.stringify({ pid: process.pid, request }) + '\n');
   if (request.method === 'initialize') return out({ id: request.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-  if (['session/new', 'session/load'].includes(request.method)) return out({ id: request.id, result: { sessionId: session } });
+  if (['session/new', 'session/load'].includes(request.method)) return out({ id: request.id, result: {
+    sessionId: session,
+    ...(provider === 'kilo' ? { configOptions: [
+      { id: 'model', currentValue: 'kilo/provider/model', options: [] },
+      { id: 'effort', currentValue: 'high', options: [{ value: 'high' }] },
+    ] } : {}),
+  } });
+  if (request.method === 'session/set_config_option') return out({ id: request.id, result: { configOptions: [] } });
   if (['session/set_mode', 'session/set_model'].includes(request.method)) return out(scenario === 'reject-mode' ? { id: request.id, error: { message: 'mode rejected' } } : { id: request.id, result: {} });
   if (request.method && request.method !== 'session/prompt') return;
   if (!request.method && !['user'].includes(request.type || request.event)) return;

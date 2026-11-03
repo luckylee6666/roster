@@ -1,6 +1,11 @@
 Cross-platform desktop app: macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 
+## Unreleased / 未发布
+
+- Developer sidebar groups can show any number of projects through scrolling, without the previous 500px clipping limit. / 开发侧栏分组取消 500px 截断限制，项目再多也可通过滚动访问。
+- Kilo is available in Developer and Conversation modes: launch/resume, project-scoped history, handoff, native plan/code agents, model and effort selection. Sign in through Kilo before using a real model. / Kilo 接入开发模式与对话模式：支持启动续接、项目历史、交接、原生 plan/code 模式和模型/强度选择；使用真实模型前需先登录 Kilo。
+
 ## What's new in v1.9.8 / 本版更新
 
 **English**

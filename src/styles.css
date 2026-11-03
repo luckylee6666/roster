@@ -92,6 +92,9 @@
   --tool-pi-ink: #287866;
   --tool-pi-bg: #e8f5f0;
   --tool-pi-line: #c9e7da;
+  --tool-kilo-ink: #705700;
+  --tool-kilo-bg: #fff8cf;
+  --tool-kilo-line: #e8d56b;
 
   /* Ant Design 色彩系统 */
   --blue: #1677ff;
@@ -220,6 +223,7 @@ body {
 
 .sider-menu {
   flex: 1;
+  min-height: 0;
   padding: 8px 12px;
   overflow-y: auto;
 }
@@ -345,13 +349,17 @@ body {
 }
 
 .group-children {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height 0.25s ease;
+  display: none;
 }
 
 .menu-group-item.expanded .group-children {
-  max-height: 500px;
+  display: block;
+}
+
+.menu-child-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .menu-child-item {
@@ -2809,6 +2817,11 @@ body {
 .term-tab-tool.tool-pi {
   color: #5eead4;
   background: rgba(94, 234, 212, 0.16);
+}
+
+.term-tab-tool.tool-kilo {
+  color: #d5b72d;
+  background: rgba(213, 183, 45, 0.16);
 }
 
 /* 标签上下文用量徽标（claude 会话） */
@@ -6491,6 +6504,7 @@ html[data-app-view="developer"] #conversation-surface {
 .conversation-history-tool[data-tool="mimo"] { color: var(--tool-mimo-ink) !important; background: var(--tool-mimo-bg); border-color: var(--tool-mimo-line); }
 .conversation-history-tool[data-tool="cmd"] { color: var(--tool-cmd-ink) !important; background: var(--tool-cmd-bg); border-color: var(--tool-cmd-line); }
 .conversation-history-tool[data-tool="pi"] { color: var(--tool-pi-ink) !important; background: var(--tool-pi-bg); border-color: var(--tool-pi-line); }
+.conversation-history-tool[data-tool="kilo"] { color: var(--tool-kilo-ink) !important; background: var(--tool-kilo-bg); border-color: var(--tool-kilo-line); }
 
 .conversation-history-delete {
   display: inline-flex;
@@ -8010,6 +8024,9 @@ html[data-app-view="developer"] #conversation-surface {
   --tool-pi-ink: #7de8d4;
   --tool-pi-bg: #172d2b;
   --tool-pi-line: #2d4b45;
+  --tool-kilo-ink: #f4da61;
+  --tool-kilo-bg: #302b16;
+  --tool-kilo-line: #564a20;
   color-scheme: dark;
   }
 }
@@ -8104,5 +8121,8 @@ html[data-app-view="conversation"][data-theme="dark"] {
   --tool-pi-ink: #7de8d4;
   --tool-pi-bg: #172d2b;
   --tool-pi-line: #2d4b45;
+  --tool-kilo-ink: #f4da61;
+  --tool-kilo-bg: #302b16;
+  --tool-kilo-line: #564a20;
   color-scheme: dark;
 }

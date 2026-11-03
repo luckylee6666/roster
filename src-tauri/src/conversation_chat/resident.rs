@@ -17,7 +17,7 @@ type Lines = Receiver<Result<Option<String>, String>>;
 pub(super) fn supports(id: &str) -> bool {
     matches!(
         id,
-        "claude" | "agy" | "qwen" | "grok" | "opencode" | "mimo" | "pi"
+        "claude" | "agy" | "qwen" | "grok" | "opencode" | "mimo" | "kilo" | "pi"
     )
 }
 
@@ -393,6 +393,42 @@ fn signature(spec: &ProviderSpec, r: &HeadlessStart, command: &Command) -> u64 {
         };
         files.extend(paths.iter().map(|p| home.join(p)));
     }
+    if spec.id == "kilo" {
+        // Match command-level overrides before inherited environment values.
+        // A custom config can change in place while its environment path stays
+        // unchanged; that must release the process holding the old settings.
+        let env_path = |key: &str| {
+            command
+                .get_envs()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .map(|(_, value)| value.map(PathBuf::from))
+                .unwrap_or_else(|| std::env::var_os(key).map(PathBuf::from))
+                .filter(|path| !path.as_os_str().is_empty())
+        };
+        let config_home = env_path("XDG_CONFIG_HOME")
+            .filter(|path| path.is_absolute())
+            .or_else(|| dirs::home_dir().map(|home| home.join(".config")));
+        for directory in [
+            config_home.map(|path| path.join("kilo")),
+            env_path("KILO_CONFIG_DIR").map(|path| r.cwd.join(path)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for name in [
+                "config.json",
+                "opencode.json",
+                "opencode.jsonc",
+                "kilo.json",
+                "kilo.jsonc",
+            ] {
+                files.push(directory.join(name));
+            }
+        }
+        if let Some(path) = env_path("KILO_CONFIG") {
+            files.push(r.cwd.join(path));
+        }
+    }
     for relative in [
         ".claude/settings.json",
         ".claude/settings.local.json",
@@ -401,10 +437,15 @@ fn signature(spec: &ProviderSpec, r: &HeadlessStart, command: &Command) -> u64 {
         "opencode.json",
         "opencode.jsonc",
         "mimocode.json",
+        "kilo.json",
+        "kilo.jsonc",
+        ".kilo/kilo.json",
+        ".kilo/kilo.jsonc",
     ] {
         files.push(r.cwd.join(relative));
     }
     for file in files {
+        file.hash(&mut hash);
         if let Ok(meta) = std::fs::metadata(file) {
             (meta.len(), meta.modified().ok()).hash(&mut hash);
         }
@@ -512,11 +553,11 @@ fn start_reserved(
     sink: Sink,
 ) -> Result<(), String> {
     command.current_dir(&r.cwd);
-    if matches!(spec.id, "opencode" | "mimo") {
-        let key = if spec.id == "mimo" {
-            "MIMOCODE_CONFIG_CONTENT"
-        } else {
-            "OPENCODE_CONFIG_CONTENT"
+    if matches!(spec.id, "opencode" | "mimo" | "kilo") {
+        let key = match spec.id {
+            "mimo" => "MIMOCODE_CONFIG_CONTENT",
+            "kilo" => "KILO_CONFIG_CONTENT",
+            _ => "OPENCODE_CONFIG_CONTENT",
         };
         let inherited = std::env::var(key).ok();
         command.env(key, noninteractive_config(inherited.as_deref())?);
@@ -591,7 +632,7 @@ fn start_reserved(
             };
             if spec.id == "pi" {
                 turn.pi(&r, reused)
-            } else if matches!(spec.id, "grok" | "opencode" | "mimo") {
+            } else if matches!(spec.id, "grok" | "opencode" | "mimo" | "kilo") {
                 turn.acp(&r, reused)
             } else {
                 turn.stream(&r, reused)
@@ -1180,7 +1221,7 @@ impl Turn<'_> {
                     "noReplay": true,
                     "rules": grok_permission_rule(r.mode.id),
                 });
-            } else if matches!(self.provider, "opencode" | "mimo") {
+            } else if matches!(self.provider, "opencode" | "mimo" | "kilo") {
                 // History is shown from disk. ACP replay of tool output can exceed
                 // the 1 MiB line budget and abort a live turn.
                 params["_meta"] = json!({"noReplay":true});
@@ -1230,13 +1271,27 @@ impl Turn<'_> {
                     json!({"sessionId":thread,"modeId":r.mode.id}),
                     false,
                 )?;
-                let model = acp_model(&info, &r.model, &r.effort)?;
-                if let Some(model) = model {
-                    self.rpc(
-                        "session/set_model",
-                        json!({"sessionId":thread,"modelId":model}),
-                        false,
-                    )?;
+                if self.provider == "kilo" && info["configOptions"].is_array() {
+                    // Kilo 7.8 exposes effort as a separate ACP config option;
+                    // appending it to the model id selects a nonexistent model.
+                    for (id, value) in [("model", &r.model), ("effort", &r.effort)] {
+                        if !value.is_empty() {
+                            self.rpc(
+                                "session/set_config_option",
+                                json!({"sessionId":thread,"configId":id,"value":value}),
+                                false,
+                            )?;
+                        }
+                    }
+                } else {
+                    let model = acp_model(&info, &r.model, &r.effort)?;
+                    if let Some(model) = model {
+                        self.rpc(
+                            "session/set_model",
+                            json!({"sessionId":thread,"modelId":model}),
+                            false,
+                        )?;
+                    }
                 }
             }
         } else {
@@ -1489,7 +1544,7 @@ mod tests {
     }
     #[test]
     fn resident_arguments_preserve_each_cli_permission_and_customization_flags() {
-        for id in ["claude", "qwen", "agy", "grok", "opencode", "mimo"] {
+        for id in ["claude", "qwen", "agy", "grok", "opencode", "mimo", "kilo"] {
             let mut r = request(Path::new("/tmp/project"), "r", "", id);
             let cmd = command(provider_spec(id).unwrap(), PathBuf::from("/bin/cli"), &r);
             let args: Vec<_> = cmd
@@ -1503,7 +1558,7 @@ mod tests {
                     .any(|a| a == ["--input-format", "stream-json"]));
                 assert!(args.contains(&"plan".to_string()));
             }
-            if matches!(id, "opencode" | "mimo") {
+            if matches!(id, "opencode" | "mimo" | "kilo") {
                 assert_eq!(args[0], "acp");
                 assert!(args.contains(&"--pure".into()));
             }
@@ -1641,8 +1696,8 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
-    fn all_six_adapters_reuse_same_process_and_route_only_current_public_reply() {
-        for provider in ["claude", "agy", "qwen", "grok", "opencode", "mimo"] {
+    fn stream_and_acp_adapters_reuse_same_process_and_route_only_current_public_reply() {
+        for provider in ["claude", "agy", "qwen", "grok", "opencode", "mimo", "kilo"] {
             let root = tempfile::tempdir().unwrap();
             let cwd = root.path();
             let state = ConversationChatState::default();
@@ -1688,7 +1743,7 @@ mod tests {
             let requests = std::fs::read_to_string(cwd.join("requests.jsonl")).unwrap();
             assert_eq!(
                 requests.matches("initialize").count(),
-                if matches!(provider, "grok" | "mimo" | "opencode") {
+                if matches!(provider, "grok" | "mimo" | "opencode" | "kilo") {
                     1
                 } else {
                     0
@@ -1704,6 +1759,162 @@ mod tests {
                 .unwrap()
                 .sessions
                 .is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kilo_sets_model_and_effort_as_separate_native_config_options() {
+        let root = tempfile::tempdir().unwrap();
+        let state = ConversationChatState::default();
+        let mut r = request(root.path(), "kilo-config", "", "kilo");
+        r.model = "kilo/provider/model".into();
+        r.effort = "high".into();
+        let events = until(
+            &start_fake(&state, root.path(), "kilo", "normal", r),
+            "completed",
+        );
+        assert!(events
+            .iter()
+            .any(|(kind, value)| kind == "assistant_delta" && value["text"] == "回复1"));
+        let requests: Vec<Value> = std::fs::read_to_string(root.path().join("requests.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["request"].clone())
+            .collect();
+        let configs: Vec<_> = requests
+            .iter()
+            .filter(|r| r["method"] == "session/set_config_option")
+            .map(|r| {
+                (
+                    r["params"]["configId"].as_str().unwrap(),
+                    r["params"]["value"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            configs,
+            vec![("model", "kilo/provider/model"), ("effort", "high")]
+        );
+        assert!(!requests.iter().any(|r| r["method"] == "session/set_model"));
+        state.other_resident.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "手动集成验证：本机 Kilo + 隔离目录 + localhost synthetic provider"]
+    fn installed_kilo_runs_plan_code_and_resume_against_localhost() {
+        use std::os::unix::process::CommandExt;
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let config_dir = root.path().join("config");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(project.join("readme.txt"), "ROSTER_KILO_READ_OK").unwrap();
+        let project = project.canonicalize().unwrap();
+        let mut server = Command::new("node");
+        server
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kilo-smoke-server.cjs"))
+            .arg(&project)
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let child = server.spawn().unwrap();
+        let tree = crate::codex_chat::register_process_tree(&child).unwrap();
+        let mut server = PiSmokeServer { child, tree };
+        let mut ready = String::new();
+        BufReader::new(server.child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let port = serde_json::from_str::<Value>(&ready).unwrap()["port"]
+            .as_u64()
+            .unwrap();
+        let config = json!({
+            "model": "roster-test/kilo-test", "small_model": "roster-test/kilo-test",
+            "enabled_providers": ["roster-test"], "autoupdate": false, "share": "disabled",
+            "provider": {"roster-test": {
+                "npm": "@ai-sdk/openai-compatible", "name": "Roster local test",
+                "options": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "local-only"},
+                "models": {"kilo-test": {"name": "Local fixture", "limit": {"context": 32768, "output": 1024}}}
+            }}
+        });
+        let config_path = config_dir.join("kilo.json");
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let spec = provider_spec("kilo").unwrap();
+        let binary = crate::cli_detect::resolve_registered_cli_bin("kilo").unwrap();
+        let state = ConversationChatState::default();
+        let _pool_guard = PiPoolGuard(&state.other_resident);
+        let mut thread = String::new();
+        let mut previous_pid = 0;
+        for (phase, mode) in [("PLAN", "plan"), ("WRITE", "code"), ("CONTINUE", "code")] {
+            let mut r = request(&project, phase, &thread, "kilo");
+            r.model = "roster-test/kilo-test".into();
+            r.mode = crate::conversation_modes::resolve("kilo", mode).unwrap();
+            r.prompt = format!("ROSTER_KILO_{phase}");
+            let mut cmd = command(spec, binary.clone(), &r);
+            cmd.env("KILO_CONFIG", &config_path)
+                .env("XDG_CONFIG_HOME", &config_dir)
+                .env("XDG_DATA_HOME", root.path().join("data"))
+                .env("XDG_STATE_HOME", root.path().join("state"))
+                .env("XDG_CACHE_HOME", root.path().join("cache"))
+                .env("KILO_TEST_HOME", root.path())
+                .env("KILO_DISABLE_AUTOUPDATE", "1")
+                .env("KILO_DISABLE_MODELS_FETCH", "1")
+                .env("NO_PROXY", "127.0.0.1,localhost")
+                .env("no_proxy", "127.0.0.1,localhost");
+            let cancelled =
+                crate::codex_chat::reserve_run(&state, &r.project_id, &r.run_id).unwrap();
+            let (tx, rx) = mpsc::channel::<(String, Value)>();
+            let sink: Sink = Arc::new(move |kind, data| {
+                let _ = tx.send((kind.into(), data));
+            });
+            start_reserved(&state, *spec, r, cmd, cancelled, sink).unwrap();
+            let mut reply = String::new();
+            loop {
+                let (kind, data) = rx.recv_timeout(Duration::from_secs(90)).unwrap();
+                if kind == "error" {
+                    eprintln!(
+                        "Model requests: {}",
+                        std::fs::read_to_string(project.join("kilo-model-requests.jsonl"))
+                            .unwrap_or_default()
+                    );
+                    panic!("Kilo {phase}: {data}");
+                }
+                if kind == "assistant_delta" || kind == "assistant_message" {
+                    reply.push_str(data["text"].as_str().unwrap_or(""));
+                }
+                if kind == "completed" {
+                    break;
+                }
+            }
+            assert!(
+                reply.contains(&format!("ROSTER_KILO_{phase}_OK")),
+                "{reply}"
+            );
+            let pool = state.other_resident.inner.lock().unwrap();
+            let session = &pool.sessions[&project];
+            let pid = session.process.lock().unwrap().id();
+            if thread.is_empty() {
+                thread = session.thread.clone();
+            }
+            assert_eq!(session.thread, thread);
+            if phase == "CONTINUE" {
+                assert_eq!(pid, previous_pid);
+            }
+            previous_pid = pid;
+            drop(pool);
+            if phase == "PLAN" {
+                assert!(
+                    !project.join("probe.txt").exists(),
+                    "plan 不允许修改项目文件"
+                );
+            } else {
+                assert_eq!(
+                    std::fs::read_to_string(project.join("probe.txt")).unwrap(),
+                    "ROSTER_KILO_WRITE_OK"
+                );
+            }
+            eprintln!("Kilo {phase}: reply, file boundary and session checks passed");
         }
     }
 
@@ -2313,6 +2524,29 @@ mod tests {
             .unwrap();
         assert_ne!(signature(spec, &r, &cmd), first);
     }
+    #[test]
+    fn kilo_config_changes_in_override_locations_invalidate_resident_signature() {
+        let root = tempfile::tempdir().unwrap();
+        let spec = provider_spec("kilo").unwrap();
+        let r = request(root.path(), "first", "", "kilo");
+        let mut cmd = Command::new("/bin/fake");
+        cmd.env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("KILO_CONFIG", "custom.json")
+            .env("KILO_CONFIG_DIR", "extra");
+        for relative in ["config/kilo/kilo.jsonc", "custom.json", "extra/kilo.json"] {
+            let path = root.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let absent = signature(spec, &r, &cmd);
+            std::fs::write(&path, "{}").unwrap();
+            let created = signature(spec, &r, &cmd);
+            assert_ne!(created, absent, "{relative}");
+            std::fs::write(&path, r#"{"permission":{"edit":"deny"}}"#).unwrap();
+            assert_ne!(signature(spec, &r, &cmd), created, "{relative}");
+            std::fs::remove_file(&path).unwrap();
+            assert_eq!(signature(spec, &r, &cmd), absent, "{relative}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     #[ignore = "真实本机 CLI 常驻两轮验收；消耗用量，需通过 ROSTER_PROBE_CLI 指定一家"]

@@ -18,6 +18,22 @@ import {
   withCodexNativeProvider,
 } from '../src/session-restore-utils.js';
 
+test('Kilo 按项目恢复最近会话，并保留明确会话与原有参数', () => {
+  assert.equal(launchCliCommand('kilo'), 'kilo');
+  assert.equal(restoredCliCommand('kilo'), 'kilo --continue');
+  assert.equal(restoredCliCommand('kilo --model provider/model'), 'kilo --model provider/model --continue');
+  for (const command of ['kilo -c', 'kilo --continue', 'kilo -s ses_one', 'kilo --session=ses_one']) {
+    assert.equal(restoredCliCommand(command), command);
+  }
+  const resumed = resumeCliCommand('kilo', 'ses_one');
+  assert.equal(resumed, 'kilo --session ses_one');
+  assert.equal(extractResumedSessionId(resumed), 'ses_one');
+  assert.equal(extractResumedSessionId('kilo -s=ses_two'), 'ses_two');
+  assert.equal(isGenericContinueCommand('kilo -c'), true);
+  assert.equal(isGenericContinueCommand(resumed), false);
+  assert.equal(resumeCliCommand('kilo', '--auto'), '');
+});
+
 test('重启恢复 Codex 标签时按当前项目目录续接最近会话', () => {
   assert.equal(restoredCliCommand('codex'), withCodexNativeProvider('codex resume --last'));
   assert.equal(restoredCliCommand('codex --search'), withCodexNativeProvider('codex resume --last --search'));

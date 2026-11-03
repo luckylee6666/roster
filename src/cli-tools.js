@@ -32,6 +32,7 @@ export const CLI_TOOLS = Object.freeze([
     ]),
   }),
   Object.freeze({ id: 'pi', label: 'pi', keywords: Object.freeze(['pi coding agent', 'earendil-works']) }),
+  Object.freeze({ id: 'kilo', label: 'Kilo', keywords: Object.freeze(['kilocode', 'kilo code']) }),
 ]);
 
 export const CLI_TOOL_IDS = Object.freeze(CLI_TOOLS.map(tool => tool.id));

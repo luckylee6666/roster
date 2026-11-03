@@ -4,6 +4,11 @@ All notable changes to this project are documented here. 本项目的更新记�
 
 ## Unreleased / 未发布
 
+- Remove the developer sidebar's fixed 500px group height so all projects remain reachable by scrolling, including enlarged text and long names.
+- 修复开发侧栏分组项目较多时被 500px 高度截断的问题，全部项目可随侧栏滚动，长名称正常省略。
+- Add Kilo CLI launch/resume, project-scoped SQLite history and handoff, and resident ACP conversations with native plan/code modes and separate model/effort configuration.
+- 新增 Kilo CLI 启动与续接、按项目隔离的 SQLite 历史与交接，以及常驻 ACP 对话；支持原生 plan/code 模式和独立模型/推理强度设置。
+
 - Do not send conversation messages or accept completion-menu entries while an input method is composing. Track desktop composition state and recognize IME key code 229, including the WebKit sequence where composition ends before the confirming Enter keydown. Preserve normal Enter/Shift+Enter behavior; the phone's external-keyboard send shortcut also ignores IME confirmation keys.
 - 修复会话模式下按回车确认输入法候选字却直接发送的问题：跟踪桌面组合输入状态，并识别输入法键码229，兼容WebKit先结束组词再触发回车的顺序；输入法处理期间不发送、不执行补全选择，正常Enter/Shift+Enter不变，手机外接键盘的发送快捷键也排除输入法确认事件。
 

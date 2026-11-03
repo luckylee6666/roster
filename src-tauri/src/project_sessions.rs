@@ -1406,7 +1406,11 @@ fn opencode_db_paths(home: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn list_opencode_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
+fn list_sqlite_sessions_from_db(
+    db_path: &Path,
+    cwd: &str,
+    tool: &str,
+) -> Vec<ProjectHistorySession> {
     let Ok(connection) =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
     else {
@@ -1450,7 +1454,7 @@ fn list_opencode_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHisto
         }
         sessions.push(history_session(
             id,
-            "opencode",
+            tool,
             &title,
             time_updated.max(0) as u64,
         ));
@@ -1458,7 +1462,7 @@ fn list_opencode_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHisto
             break;
         }
     }
-    sqlite_sizes_into(&connection, "opencode", &mut sessions);
+    sqlite_sizes_into(&connection, tool, &mut sessions);
     sessions
 }
 
@@ -1467,7 +1471,7 @@ fn list_opencode_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> 
         if !path.is_file() {
             continue;
         }
-        let sessions = list_opencode_sessions_from_db(&path, cwd);
+        let sessions = list_sqlite_sessions_from_db(&path, cwd, "opencode");
         // 空结果不能让第一个存在的库短路掉后面的候选：主库可能是旧路径留下的
         // 空壳，真正的当前库在后面（OpenCode 换过数据目录位置）。
         if !sessions.is_empty() {
@@ -1488,73 +1492,44 @@ fn mimo_db_paths(home: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn list_mimo_sessions_from_db(db_path: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
-    let Ok(connection) =
-        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-    else {
-        return Vec::new();
-    };
-    let normalized = crate::project_memory::normalize_project_cwd(cwd);
-    if normalized.is_empty() {
-        return Vec::new();
-    }
-    let slash = format!("{normalized}/");
-    let backslash = format!("{normalized}\\");
-    let Ok(mut statement) = connection.prepare(
-        "SELECT id, title, time_updated, directory
-         FROM session
-         WHERE (parent_id IS NULL OR parent_id = '')
-           AND directory IN (?1, ?2, ?3)
-         ORDER BY time_updated DESC
-         LIMIT ?4",
-    ) else {
-        return Vec::new();
-    };
-    let rows = statement.query_map(
-        rusqlite::params![normalized, slash, backslash, MAX_SESSIONS_PER_TOOL as i64],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        },
-    );
-    let Ok(rows) = rows else {
-        return Vec::new();
-    };
-    let mut sessions = Vec::new();
-    for row in rows.flatten() {
-        let (id, title, time_updated, directory) = row;
-        if !same_project_cwd(&directory, cwd) {
-            continue;
-        }
-        sessions.push(history_session(
-            id,
-            "mimo",
-            &title,
-            time_updated.max(0) as u64,
-        ));
-        if sessions.len() >= MAX_SESSIONS_PER_TOOL {
-            break;
-        }
-    }
-    sqlite_sizes_into(&connection, "mimo", &mut sessions);
-    sessions
-}
-
 fn list_mimo_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
     for path in mimo_db_paths(home) {
         if !path.is_file() {
             continue;
         }
-        let sessions = list_mimo_sessions_from_db(&path, cwd);
+        let sessions = list_sqlite_sessions_from_db(&path, cwd, "mimo");
         if !sessions.is_empty() {
             return sessions;
         }
     }
     Vec::new()
+}
+
+fn kilo_db_paths(home: &Path) -> Vec<PathBuf> {
+    // Match the CLI's active XDG directory exactly: falling back to an old
+    // default database would expose sessions that this Kilo cannot resume.
+    if dirs::home_dir().as_deref() == Some(home) {
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+            if data.is_absolute() {
+                return vec![data.join("kilo/kilo.db")];
+            }
+        }
+    }
+    vec![home.join(".local/share/kilo/kilo.db")]
+}
+
+fn find_kilo_db(home: &Path) -> Result<PathBuf, String> {
+    kilo_db_paths(home)
+        .into_iter()
+        .next()
+        .filter(|path| path.is_file())
+        .ok_or_else(|| "找不到 Kilo 会话库".into())
+}
+
+fn list_kilo_sessions(home: &Path, cwd: &str) -> Vec<ProjectHistorySession> {
+    find_kilo_db(home)
+        .map(|path| list_sqlite_sessions_from_db(&path, cwd, "kilo"))
+        .unwrap_or_default()
 }
 
 fn qwen_first_user_text(value: &serde_json::Value) -> String {
@@ -2453,6 +2428,7 @@ pub fn list_project_history_with_home(project_path: &str, home: &Path) -> Projec
         list_commandcode_sessions(home, &cwd),
     );
     push_group(&mut groups, "pi", "Pi", list_pi_sessions(&cwd, home));
+    push_group(&mut groups, "kilo", "Kilo", list_kilo_sessions(home, &cwd));
     ProjectHistory { groups }
 }
 
@@ -3281,15 +3257,15 @@ fn find_opencode_db(home: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn preview_opencode(
-    home: &Path,
+fn preview_sqlite_session(
+    db_path: &Path,
+    tool: &str,
     cwd: &str,
     session_id: &str,
 ) -> Result<ProjectHistoryPreview, String> {
     let id = require_component_id(session_id)?;
-    let db_path = find_opencode_db(home).ok_or_else(|| "找不到 OpenCode 会话库".to_string())?;
     let connection =
-        rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| error.to_string())?;
     let normalized = crate::project_memory::normalize_project_cwd(cwd);
     let slash = format!("{normalized}/");
@@ -3312,24 +3288,30 @@ fn preview_opencode(
                 row.get::<_, String>(2)?,
             ))
         })
-        .map_err(|_| "找不到这个 OpenCode 会话".to_string())?;
+        .map_err(|_| format!("找不到这个 {} 会话", handoff_tool_label(tool)))?;
     let (title, time_updated, directory) = row;
     if !same_project_cwd(&directory, cwd) {
-        return Err("找不到这个 OpenCode 会话".into());
+        return Err(format!("找不到这个 {} 会话", handoff_tool_label(tool)));
     }
     Ok(ProjectHistoryPreview {
         id,
-        tool: "opencode".into(),
+        tool: tool.into(),
         title: preview_title(&title),
         at_ms: time_updated.max(0) as u64,
         body: preview_excerpt(&title, PREVIEW_BODY_LIMIT),
     })
 }
 
-fn delete_opencode(home: &Path, cwd: &str, session_id: &str) -> Result<(), String> {
+fn delete_sqlite_session(
+    db_path: &Path,
+    tool: &str,
+    cwd: &str,
+    session_id: &str,
+) -> Result<(), String> {
     let id = require_component_id(session_id)?;
-    let db_path = find_opencode_db(home).ok_or_else(|| "找不到 OpenCode 会话库".to_string())?;
-    let connection = rusqlite::Connection::open(&db_path).map_err(|error| error.to_string())?;
+    let connection =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|error| error.to_string())?;
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|error| error.to_string())?;
@@ -3351,7 +3333,7 @@ fn delete_opencode(home: &Path, cwd: &str, session_id: &str) -> Result<(), Strin
         )
         .map_err(|error| error.to_string())?;
     if deleted == 0 {
-        return Err("找不到这个 OpenCode 会话".into());
+        return Err(format!("找不到这个 {} 会话", handoff_tool_label(tool)));
     }
     Ok(())
 }
@@ -3684,6 +3666,7 @@ fn handoff_tool_label(tool: &str) -> &str {
         "mimo" => "MiMo Code",
         "cmd" => "cmd",
         "pi" => "Pi",
+        "kilo" => "Kilo",
         _ => "CLI",
     }
 }
@@ -4033,6 +4016,10 @@ fn source_handoff_messages(
             let db = find_mimo_db(home).ok_or_else(|| "找不到 MiMo Code 会话库".to_string())?;
             (sqlite_handoff_candidates(&db, cwd, session_id)?, false)
         }
+        "kilo" => (
+            sqlite_handoff_candidates(&find_kilo_db(home)?, cwd, session_id)?,
+            false,
+        ),
         _ => return Err("还不支持从这个工具交接会话".into()),
     };
     Ok(limit_handoff_messages(candidates, source_truncated))
@@ -4144,6 +4131,9 @@ fn source_transcript_messages(
                 sqlite_transcript_candidates_bounded(&db, cwd, session_id, 4000)?;
             (messages, truncated)
         }
+        "kilo" => {
+            sqlite_transcript_candidates_bounded(&find_kilo_db(home)?, cwd, session_id, 4000)?
+        }
         _ => return Err("还不支持读取这个工具的历史对话".into()),
     };
     Ok(limit_transcript_messages(candidates, source_truncated))
@@ -4239,7 +4229,13 @@ pub fn preview_project_session_with_home(
                 preview_body(&collect_codex_preview_parts(&buf)),
             ))
         }
-        "opencode" => preview_opencode(home, &cwd, session_id),
+        "opencode" => preview_sqlite_session(
+            &find_opencode_db(home).ok_or("找不到 OpenCode 会话库")?,
+            "opencode",
+            &cwd,
+            session_id,
+        ),
+        "kilo" => preview_sqlite_session(&find_kilo_db(home)?, "kilo", &cwd, session_id),
         "mimo" => preview_mimo(home, &cwd, session_id),
         "agy" => preview_agy(home, &cwd, session_id),
         "cmd" => preview_commandcode(home, &cwd, session_id),
@@ -4279,7 +4275,13 @@ pub fn delete_project_session_with_home(
             let path = find_codex_session_path(home, &cwd, session_id)?;
             fs::remove_file(path).map_err(|error| error.to_string())
         }
-        "opencode" => delete_opencode(home, &cwd, session_id),
+        "opencode" => delete_sqlite_session(
+            &find_opencode_db(home).ok_or("找不到 OpenCode 会话库")?,
+            "opencode",
+            &cwd,
+            session_id,
+        ),
+        "kilo" => delete_sqlite_session(&find_kilo_db(home)?, "kilo", &cwd, session_id),
         "mimo" => delete_mimo(home, &cwd, session_id),
         "agy" => delete_agy(home, &cwd, session_id),
         "cmd" => delete_commandcode(home, &cwd, session_id),
@@ -4933,6 +4935,78 @@ mod tests {
                 rusqlite::params![session_id],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn kilo_history_transcript_and_handoff_are_bound_to_project_and_provider() {
+        let (_root, home) = temp_home();
+        let cwd = "/project/kilo";
+        let db = home.join(".local/share/kilo/kilo.db");
+        seed_sqlite_handoff_db(&db, cwd, "ses_kilo", "Kilo 对话");
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute(
+                "INSERT INTO session VALUES ('ses_other', NULL, '/other', '其他项目', 900)",
+                [],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO session VALUES ('ses_child', 'ses_kilo', '/project/kilo', '子会话', 800)", []).unwrap();
+        let history = list_project_history_with_home(cwd, &home);
+        let kilo = history
+            .groups
+            .iter()
+            .find(|group| group.tool == "kilo")
+            .unwrap();
+        assert_eq!(kilo.label, "Kilo");
+        assert_eq!(kilo.sessions.len(), 1);
+        assert_eq!(kilo.sessions[0].id, "ses_kilo");
+        assert_eq!(kilo.sessions[0].tool, "kilo");
+        let preview = preview_project_session_with_home(cwd, "kilo", "ses_kilo", &home).unwrap();
+        assert_eq!(preview.title, "Kilo 对话");
+        let transcript =
+            preview_conversation_transcript_with_home(cwd, "kilo", "ses_kilo", &home).unwrap();
+        assert_eq!(transcript.source_tool, "kilo");
+        assert_eq!(transcript.messages.len(), 2);
+        assert_eq!(transcript.messages[0].text, "检查登录实现");
+        let handoff = preview_session_handoff_with_home(cwd, "kilo", "ses_kilo", &home).unwrap();
+        assert_eq!(handoff.messages.last().unwrap().text, "还需要补失败回滚");
+        for id in ["ses_other", "ses_child", "../ses_kilo"] {
+            assert!(preview_project_session_with_home(cwd, "kilo", id, &home).is_err());
+            assert!(preview_conversation_transcript_with_home(cwd, "kilo", id, &home).is_err());
+            assert!(preview_session_handoff_with_home(cwd, "kilo", id, &home).is_err());
+            assert!(delete_project_session_with_home(cwd, "kilo", id, &home).is_err());
+        }
+        assert!(preview_project_session_with_home(cwd, "opencode", "ses_kilo", &home).is_err());
+    }
+
+    #[test]
+    fn kilo_delete_cascades_messages_without_touching_another_project() {
+        let (_root, home) = temp_home();
+        let db = home.join(".local/share/kilo/kilo.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_updated INTEGER);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT REFERENCES session(id) ON DELETE CASCADE, data TEXT);
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT REFERENCES message(id) ON DELETE CASCADE, session_id TEXT, data TEXT);
+             INSERT INTO session VALUES ('ours', NULL, '/project/kilo', 'ours', 1), ('theirs', NULL, '/other', 'theirs', 2);
+             INSERT INTO message VALUES ('m1', 'ours', '{}'), ('m2', 'theirs', '{}');
+             INSERT INTO part VALUES ('p1', 'm1', 'ours', '{}'), ('p2', 'm2', 'theirs', '{}');"
+        ).unwrap();
+        assert!(
+            delete_project_session_with_home("/project/kilo", "kilo", "theirs", &home).is_err()
+        );
+        delete_project_session_with_home("/project/kilo", "kilo", "ours", &home).unwrap();
+        for table in ["session", "message", "part"] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 1, "{table}");
+        }
+        assert!(preview_project_session_with_home("/project/kilo", "kilo", "ours", &home).is_err());
+        assert!(preview_project_session_with_home("/other", "kilo", "theirs", &home).is_ok());
     }
 
     #[test]

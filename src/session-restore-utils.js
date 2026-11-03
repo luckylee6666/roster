@@ -122,6 +122,7 @@ export function resumeCliCommand(tool, sessionId) {
   if (name === 'agy') return `${exe} --conversation ${quoteCliArg(id)}`;
   if (name === 'qwen') return `${exe} --resume ${quoteCliArg(id)}`;
   if (name === 'mimo') return `${exe} --session ${quoteCliArg(id)}`;
+  if (name === 'kilo') return `${exe} --session ${quoteCliArg(id)}`;
   if (name === 'cmd') return `${exe} --session ${quoteCliArg(id)}`;
   if (name === 'pi') return `${exe} --session ${quoteCliArg(id)}`;
   return '';
@@ -165,6 +166,7 @@ export function extractResumedSessionId(command) {
   if (tool === 'agy') return takeFlagValue(args, new Set(['--conversation']));
   if (tool === 'qwen') return takeFlagValue(args, new Set(['--resume', '-r']));
   if (tool === 'mimo') return takeFlagValue(args, new Set(['--session', '-s']));
+  if (tool === 'kilo') return takeFlagValue(args, new Set(['--session', '-s']));
   if (tool === 'cmd') {
     return takeFlagValue(args, new Set(['--session', '--resume', '-r']));
   }
@@ -177,7 +179,7 @@ export function isGenericContinueCommand(command) {
   if (!words.length) return false;
   const tool = normalizeCliToolName(words[0]);
   const args = words.slice(1);
-  if (tool === 'claude' || tool === 'grok' || tool === 'opencode' || tool === 'qwen' || tool === 'mimo' || tool === 'cmd' || tool === 'pi') {
+  if (tool === 'claude' || tool === 'grok' || tool === 'opencode' || tool === 'qwen' || tool === 'mimo' || tool === 'cmd' || tool === 'pi' || tool === 'kilo') {
     return args.includes('--continue') || args.includes('-c');
   }
   if (tool === 'codex') {
@@ -237,7 +239,7 @@ export function restoredCliCommand(command) {
       : `${trimmed} --continue`;
   }
 
-  if (tool === 'mimo') {
+  if (tool === 'mimo' || tool === 'kilo') {
     const hasRestoreArgument = /(^|\s)(--continue|-c)(\s|$)/.test(trimmed)
       || /(^|\s)(--session|-s)(=|\s|$)/.test(trimmed);
     return hasRestoreArgument ? trimmed : `${trimmed} --continue`;

@@ -58,7 +58,7 @@ struct ProviderSpec {
     protocol: HeadlessProtocol,
 }
 
-const HEADLESS_PROVIDERS: [ProviderSpec; 8] = [
+const HEADLESS_PROVIDERS: [ProviderSpec; 9] = [
     ProviderSpec {
         id: "claude",
         label: "Claude",
@@ -109,6 +109,12 @@ const HEADLESS_PROVIDERS: [ProviderSpec; 8] = [
         label: "Pi",
         binary: "pi",
         protocol: HeadlessProtocol::PiRpc,
+    },
+    ProviderSpec {
+        id: "kilo",
+        label: "Kilo",
+        binary: "kilo",
+        protocol: HeadlessProtocol::OpenCodeJson,
     },
 ];
 
@@ -193,6 +199,7 @@ fn provider_label(id: &str) -> &'static str {
         "mimo" => "MiMo Code",
         "cmd" => "cmd",
         "pi" => "Pi",
+        "kilo" => "Kilo",
         _ => "CLI",
     }
 }
@@ -913,7 +920,7 @@ fn push_effort_args(command: &mut Command, spec_id: &str, effort: &str) {
         "grok" | "claude" | "agy" | "cmd" => {
             command.args(["--effort", effort]);
         }
-        "opencode" | "mimo" => {
+        "opencode" | "mimo" | "kilo" => {
             command.args(["--variant", effort]);
         }
         _ => {}
@@ -1108,7 +1115,7 @@ fn provider_command_with_slash(
             push_model_args(&mut command, spec.id, model);
             push_effort_args(&mut command, spec.id, effort);
         }
-        "opencode" | "mimo" => {
+        "opencode" | "mimo" | "kilo" => {
             // `--pure` disables third-party plugins. Do not use the dangerous
             // auto-approval flags. The built-in plan agent supplies the
             // read-only policy; an explicitly writable turn keeps the default
@@ -1120,7 +1127,9 @@ fn provider_command_with_slash(
             // 同样显式传，别把正确性押在两家行为一致上。
             command.arg("--dir");
             command.arg(cwd);
-            if !allow_write {
+            if spec.id == "kilo" {
+                command.args(["--agent", mode.id]);
+            } else if !allow_write {
                 command.args(["--agent", "plan"]);
             }
             if !thread_id.is_empty() {

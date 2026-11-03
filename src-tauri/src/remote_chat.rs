@@ -30,8 +30,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
-/// 手机可选的助手：与对话工作台登记的九家一致，顺序即手机上的展示顺序。
-const PROVIDERS: [(&str, &str); 9] = [
+/// 手机可选的助手：与对话工作台登记的十家一致，顺序即手机上的展示顺序。
+const PROVIDERS: [(&str, &str); 10] = [
     ("claude", "Claude"),
     ("codex", "Codex"),
     ("grok", "Grok"),
@@ -41,6 +41,7 @@ const PROVIDERS: [(&str, &str); 9] = [
     ("mimo", "MiMo Code"),
     ("cmd", "cmd"),
     ("pi", "pi"),
+    ("kilo", "Kilo"),
 ];
 
 /// 同时留快照的运行数。应用总并发上限是 4，这里留足余量防止异常路径漏删。
@@ -1692,6 +1693,21 @@ mod tests {
             "只认后端登记的档位"
         );
         assert!(with("projectId", json!("")).is_err());
+
+        let mut kilo = ok.clone();
+        kilo["providerId"] = json!("kilo");
+        for mode in ["", "plan", "code"] {
+            kilo["mode"] = json!(mode);
+            assert!(matches!(
+                parse_phone_command(&kilo.to_string()),
+                Ok(PhoneCommand::Send { provider_id, mode: parsed_mode, .. })
+                    if provider_id == "kilo" && parsed_mode == mode
+            ));
+        }
+        for mode in ["build", "yolo"] {
+            kilo["mode"] = json!(mode);
+            assert!(parse_phone_command(&kilo.to_string()).is_err());
+        }
     }
 
     #[test]

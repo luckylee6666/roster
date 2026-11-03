@@ -4,8 +4,8 @@ const RUNNABLE_PROVIDER_IDS = new Set(CLI_TOOLS.map(tool => tool.id));
 
 /**
  * 对话工作台负责把选择结果作为安全参数交给后端；并不把 CLI 原生 `/...`
- * 命令伪装成统一能力。模型可在当前七家对话入口中指定；推理强度只给已有
- * 明确后端映射的 CLI 展示。OpenCode 与 MiMo Code 使用 `--variant`，Qwen
+ * 命令伪装成统一能力。模型可在已接入的对话入口中指定；推理强度只给已有
+ * 明确后端映射的 CLI 展示。OpenCode 与 MiMo Code 使用 `--variant`，Kilo 使用 ACP 配置，Qwen
  * 没有对应的稳定推理强度参数。
  */
 export const CONVERSATION_PROVIDER_CAPABILITIES = Object.freeze({
@@ -18,6 +18,7 @@ export const CONVERSATION_PROVIDER_CAPABILITIES = Object.freeze({
   mimo: Object.freeze({ model: true, effort: true }),
   'cmd': Object.freeze({ model: true, effort: true }),
   pi: Object.freeze({ model: true, effort: true }),
+  kilo: Object.freeze({ model: true, effort: true }),
 });
 
 const PROVIDER_MARKS = Object.freeze({
@@ -30,6 +31,7 @@ const PROVIDER_MARKS = Object.freeze({
   mimo: 'Mi',
   'cmd': 'Cc',
   pi: 'Pi',
+  kilo: 'Ki',
 });
 
 function providerRecord(tool) {

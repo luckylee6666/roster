@@ -211,6 +211,23 @@ const AGENT_MODES: &[ConversationMode] = &[
     ),
 ];
 
+// Kilo 7.8.18 uses `code`, not OpenCode's `build`. Its native plan agent
+// disables edits, but remains subject to Kilo's local configuration.
+const KILO_MODES: &[ConversationMode] = &[
+    mode(
+        "plan",
+        "只读计划",
+        "用 Kilo 原生 plan agent，编辑限制由 CLI 执行",
+        false,
+    ),
+    mode(
+        "code",
+        "代码模式",
+        "用 Kilo 原生 code agent，可以改文件",
+        true,
+    ),
+];
+
 // Pi has no native permission tier or OS sandbox exposed here. This mode is
 // only its explicit built-in tool allowlist; keep the wording limited to that.
 const PI_MODES: &[ConversationMode] = &[mode(
@@ -230,6 +247,7 @@ pub fn modes_for(provider: &str) -> &'static [ConversationMode] {
         "opencode" | "mimo" => AGENT_MODES,
         "cmd" => COMMANDCODE_MODES,
         "pi" => PI_MODES,
+        "kilo" => KILO_MODES,
         _ => &[],
     }
 }
@@ -264,7 +282,7 @@ mod tests {
     #[test]
     fn every_provider_starts_read_only_and_rejects_unknown_modes() {
         for provider in [
-            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd", "pi",
+            "claude", "grok", "codex", "qwen", "agy", "opencode", "mimo", "cmd", "pi", "kilo",
         ] {
             let modes = modes_for(provider);
             assert!(!modes.is_empty(), "{provider} 应该有模式表");
