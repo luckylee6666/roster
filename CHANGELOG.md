@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. 本项目的更新记录如下。
 
+## Unreleased / 未发布
+
+- Keep ordinary text selection available in the developer terminal when a CLI enables mouse reporting. Hold Option/Alt to send clicks or drags to the CLI; wheel scrolling is preserved.
+- 修复开发终端在 CLI 开启鼠标上报后拖动无法选中文字的问题；普通拖动选择文字，Option/Alt 加点击或拖动操作 CLI，滚轮行为保留。
+
 ## v1.9.9
 
 ### English

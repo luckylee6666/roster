@@ -104,6 +104,10 @@ macOS 下 Codex 后台会沿用已启用的系统 HTTPS 代理，显式 Roster/�
 - 面板左上「＋」开一个空白终端（不跑任何 CLI）
 - 前提：对应 CLI（`claude` / `grok` / `codex` / `opencode` / `agy` / `qwen` / `mimo` / `cmd` / `pi` / `kilo`；Windows 上 Command Code 是 `cmdc`）需已安装并在 PATH 中（终端走登录 shell，能找到）
 
+**文字选择与 CLI 鼠标操作（未发布）**
+- 普通拖动可选中文字；CLI 开启鼠标交互后也保持可选。macOS 选中后按 `⌘C` 复制。
+- 点击或拖动 CLI 内的交互控件时，按住 `Option`（macOS）或 `Alt`（Windows）；滚轮仍可直接滚动。
+
 **文件树 + 预览**（左侧）
 - 树根为当前标签所在项目目录，切换标签自动跟随；点文件夹懒加载展开
 - **单击文件** → 右侧预览；代码、配置和文本可点预览栏铅笔进入编辑，`⌘/Ctrl + S` 保存；**双击文件** → 把路径插入当前终端

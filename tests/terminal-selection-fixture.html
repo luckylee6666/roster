@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>终端文字拖选验收</title>
+<link rel="stylesheet" href="../src/vendor/xterm.css">
+<style>
+  body { margin: 24px; color: #ddd; background: #161920; font: 15px system-ui; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 17px; }
+  .terminal { padding: 12px; background: #000; }
+  .terminal .xterm { width: max-content; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  button { font: inherit; padding: 8px 14px; }
+  section { margin: 20px 0; }
+</style>
+<h1>终端文字拖选验收</h1>
+<p>两个终端都启用鼠标上报。拖动同一段中文对照；当前配置应能直接选字，按住 Option/Alt 可点击 CLI，滚轮照常工作。</p>
+<p>仅使用合成文本，不连接 PTY，也不读写系统剪贴板。<code>?renderer=webgl</code> 验证 GPU 渲染；默认 DOM 渲染。</p>
+<section><h2>旧配置：普通拖动被 CLI 消费</h2><div id="baseline" class="terminal"></div><pre id="baseline-status"></pre></section>
+<section><h2>当前 Roster 配置</h2><div id="current" class="terminal"></div><pre id="current-status"></pre></section>
+<button id="run" type="button" disabled>运行行为回归</button>
+<pre id="results" role="status">正在加载…</pre>
+<script src="../src/vendor/xterm.js"></script>
+<script src="../src/vendor/addon-webgl.js"></script>
+<script type="module" src="./terminal-selection-fixture.js"></script>
+</html>

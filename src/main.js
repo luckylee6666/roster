@@ -6791,6 +6791,8 @@ async function createSession({ cwd = '', name = '', autoCmd = '', restoreEntry =
     fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
     cursorBlink: (currentThemeDef || TERM_THEMES.classic).cursorBlink !== false,
     scrollback: 5000,
+    // CLI 开启鼠标上报时仍让普通拖动选中文字；Option/Alt 才传递点击和拖动，滚轮不受影响。
+    mouseEventsRequireAlt: true,
     allowTransparency: true, // 让半透明终端底透出图片主题背景
     theme: (currentThemeDef || TERM_THEMES.classic).theme,
     // 默认 4.5：会为对比度再生成一批变体字形，配上彩色中文把 WebGL 纹理图集塞爆

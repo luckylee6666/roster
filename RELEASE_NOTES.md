@@ -1,6 +1,11 @@
 Cross-platform desktop app: macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 跨平台桌面版：macOS (Apple Silicon / Intel) + Windows (x64 / ARM64)
 
+## Unreleased / 未发布
+
+- Developer-terminal text remains selectable by ordinary dragging when a CLI enables mouse interaction. Hold Option/Alt for CLI clicks and drags; wheel scrolling still works normally. This fix is not included in the published v1.9.9 installers.
+- 开发终端在 CLI 开启鼠标交互后仍可直接拖动选中文字；按住 Option/Alt 点击或拖动可操作 CLI，滚轮正常使用。此修复尚未包含在已发布的 v1.9.9 安装包中。
+
 ## What's new in v1.9.9 / 本版更新
 
 **English**

@@ -106,6 +106,10 @@ A bottom-drawer terminal — open it from a project card's Open CLI buttons or t
 - The **+** at the top-left opens a blank terminal (no CLI)
 - Prerequisite: the corresponding CLI (`claude` / `grok` / `codex` / `opencode` / `agy` / `qwen` / `mimo` / `cmd` / `pi` / `kilo`; Command Code uses `cmdc` on Windows) must be installed and on your PATH (the terminal uses a login shell, so it will find them)
 
+**Text selection and CLI mouse interaction (unreleased)**
+- Drag to select terminal text even when the CLI enables mouse interaction. On macOS, press `⌘C` to copy the selection.
+- Hold `Option` on macOS or `Alt` on Windows to click or drag interactive controls inside the CLI. Wheel scrolling works without a modifier.
+
 **File tree + preview** (left)
 - The tree is rooted at the active tab's project directory and follows tab switches; folders load lazily on click
 - **Single-click a file** → preview on the right; use the pencil in the preview bar to edit code, config, and text (`⌘/Ctrl + S` saves); **double-click** → insert its path into the terminal
